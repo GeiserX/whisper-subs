@@ -20,9 +20,15 @@
                     </div>
 
                     <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="txtWhisperBinaryPath">Whisper Binary Path</label>
+                        <input type="text" id="txtWhisperBinaryPath" name="WhisperBinaryPath" class="emby-input" />
+                        <div class="fieldDescription">Absolute path to the whisper-cli binary (e.g., /opt/whisper/whisper-cli). Leave empty to search PATH.</div>
+                    </div>
+
+                    <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="txtWhisperModelPath">Whisper Model Path</label>
                         <input type="text" id="txtWhisperModelPath" name="WhisperModelPath" class="emby-input" />
-                        <div class="fieldDescription">Absolute path to the Whisper model file (e.g., /models/ggml-base.bin).</div>
+                        <div class="fieldDescription">Absolute path to the Whisper model file (e.g., /opt/whisper/models/ggml-medium.bin).</div>
                     </div>
 
                     <div class="checkboxContainer checkboxContainer-withDescription">
@@ -72,6 +78,7 @@
                     ApiClient.getPluginConfiguration(JellySubtitlesConfig.pluginId).then(function (config) {
                         if (config) {
                             page.querySelector('#selectProvider').value = config.SelectedProvider || 'Whisper';
+                            page.querySelector('#txtWhisperBinaryPath').value = config.WhisperBinaryPath || '';
                             page.querySelector('#txtWhisperModelPath').value = config.WhisperModelPath || '';
                             page.querySelector('#chkEnableAutoGeneration').checked = config.EnableAutoGeneration || false;
                         }
@@ -81,6 +88,7 @@
                 saveConfiguration: function (page) {
                     ApiClient.getPluginConfiguration(JellySubtitlesConfig.pluginId).then(function (config) {
                         config.SelectedProvider = page.querySelector('#selectProvider').value;
+                        config.WhisperBinaryPath = page.querySelector('#txtWhisperBinaryPath').value;
                         config.WhisperModelPath = page.querySelector('#txtWhisperModelPath').value;
                         config.EnableAutoGeneration = page.querySelector('#chkEnableAutoGeneration').checked;
                         ApiClient.updatePluginConfiguration(JellySubtitlesConfig.pluginId, config).then(function (result) {

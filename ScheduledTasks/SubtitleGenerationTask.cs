@@ -52,7 +52,7 @@ namespace JellySubtitles.ScheduledTasks
             }
 
             var manager = new SubtitleManager(_libraryManager, _managerLogger);
-            var provider = new WhisperProvider(_providerLogger, config.WhisperModelPath);
+            var provider = new WhisperProvider(_providerLogger, config.WhisperModelPath, config.WhisperBinaryPath);
 
             // TODO: Iterate over enabled libraries and find items
             // var items = _libraryManager.GetItemList(...);

@@ -28,7 +28,7 @@
 |---|---|
 | **Jellyfin** | 10.11.0 or later |
 | **FFmpeg** | Bundled with Jellyfin (`/usr/lib/jellyfin-ffmpeg/ffmpeg`) or available in `PATH`. Used to extract audio from media files. |
-| **whisper.cpp** | The `whisper-cli` (or `main`) binary must be installed and available in `PATH`. See [whisper.cpp releases](https://github.com/ggerganov/whisper.cpp/releases). |
+| **whisper.cpp** | The `whisper-cli` binary. Either in `PATH` or configured via the plugin's **Whisper Binary Path** setting. See [Installing whisper.cpp](#installing-whispercpp) below. |
 | **Whisper Model** | A `.bin` model file (e.g., `ggml-base.bin`, `ggml-medium.bin`). Download from [Hugging Face](https://huggingface.co/ggerganov/whisper.cpp). |
 
 ## Installation
@@ -55,6 +55,69 @@
    ```
 3. Restart Jellyfin.
 
+## Installing whisper.cpp
+
+The plugin requires whisper.cpp for transcription. Choose the method that matches your setup.
+
+### Option A: Pre-built Binary (Recommended)
+
+1. Download the latest release for your platform from [whisper.cpp releases](https://github.com/ggerganov/whisper.cpp/releases).
+2. Extract and place the `whisper-cli` binary somewhere persistent (e.g., `/opt/whisper/`).
+3. Download a model:
+   ```bash
+   mkdir -p /opt/whisper/models
+   # Base model (~148 MB) -- good balance of speed and accuracy
+   wget -O /opt/whisper/models/ggml-base.bin \
+     https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin
+   # Or medium model (~1.5 GB) -- better accuracy, slower
+   wget -O /opt/whisper/models/ggml-medium.bin \
+     https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin
+   ```
+4. In the plugin settings, set **Whisper Binary Path** to `/opt/whisper/whisper-cli` and **Whisper Model Path** to the model file.
+
+### Option B: Build from Source
+
+```bash
+git clone https://github.com/ggerganov/whisper.cpp.git
+cd whisper.cpp
+cmake -B build
+cmake --build build --config Release
+# Binary will be at build/bin/whisper-cli
+```
+
+### Docker / Container Setups
+
+If Jellyfin runs in a Docker container, whisper.cpp must be accessible **inside** the container. The recommended approach is to bind-mount a host directory containing the binary and model:
+
+```yaml
+# docker-compose.yml
+services:
+  jellyfin:
+    image: jellyfin/jellyfin
+    volumes:
+      - /opt/whisper:/opt/whisper:ro   # whisper-cli binary + models
+      # ... your other volumes
+```
+
+Then configure the plugin with:
+- **Whisper Binary Path**: `/opt/whisper/whisper-cli`
+- **Whisper Model Path**: `/opt/whisper/models/ggml-base.bin`
+
+> **Note:** The binary must be compiled for the same architecture as the container (typically x86_64 Linux). Download the `linux-x64` release asset or build inside a matching environment.
+
+### Verifying the Installation
+
+```bash
+# If in PATH:
+whisper-cli --help
+
+# If using an absolute path:
+/opt/whisper/whisper-cli --help
+
+# Inside a Docker container:
+docker exec jellyfin /opt/whisper/whisper-cli --help
+```
+
 ## Configuration
 
 After installation, navigate to **Dashboard** > **Plugins** > **JellySubtitles** to configure:
@@ -62,6 +125,7 @@ After installation, navigate to **Dashboard** > **Plugins** > **JellySubtitles**
 | Setting | Description |
 |---|---|
 | **Subtitle Provider** | The transcription engine to use. Currently `Whisper` is available. |
+| **Whisper Binary Path** | Absolute path to the `whisper-cli` binary (e.g., `/opt/whisper/whisper-cli`). Leave empty to search `PATH`. |
 | **Whisper Model Path** | Absolute path to the `.bin` model file on the server (e.g., `/opt/whisper/models/ggml-medium.bin`). |
 | **Enable Auto-Generation** | When enabled, the scheduled task will scan selected libraries and generate subtitles for items that lack them. |
 | **Enabled Libraries** | Select which libraries should be monitored for automatic subtitle generation. |

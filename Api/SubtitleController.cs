@@ -141,7 +141,8 @@ namespace JellySubtitles.Api
                 {
                     "Whisper" => new WhisperProvider(
                         loggerFactory.CreateLogger<WhisperProvider>(),
-                        config.WhisperModelPath),
+                        config.WhisperModelPath,
+                        config.WhisperBinaryPath),
                     _ => throw new NotSupportedException($"Provider {config.SelectedProvider} is not supported")
                 };
 

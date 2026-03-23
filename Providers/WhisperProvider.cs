@@ -12,13 +12,15 @@ namespace JellySubtitles.Providers
     {
         private readonly ILogger<WhisperProvider> _logger;
         private readonly string _modelPath;
+        private readonly string _binaryPath;
 
         public string Name => "Whisper";
 
-        public WhisperProvider(ILogger<WhisperProvider> logger, string modelPath)
+        public WhisperProvider(ILogger<WhisperProvider> logger, string modelPath, string binaryPath = "")
         {
             _logger = logger;
             _modelPath = modelPath;
+            _binaryPath = binaryPath;
         }
 
         public async Task<string> TranscribeAsync(string audioPath, string language, CancellationToken cancellationToken)
@@ -140,8 +142,10 @@ namespace JellySubtitles.Providers
 
         private string? FindWhisperExecutable()
         {
-            // Try common whisper.cpp executable names
-            var candidates = new[] { "whisper-cli", "main", "whisper" };
+            // If a custom binary path is configured, try it first
+            var candidates = !string.IsNullOrEmpty(_binaryPath)
+                ? new[] { _binaryPath, "whisper-cli", "main", "whisper" }
+                : new[] { "whisper-cli", "main", "whisper" };
             
             foreach (var candidate in candidates)
             {

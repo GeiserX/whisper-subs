@@ -6,6 +6,7 @@ namespace JellySubtitles.Configuration
     {
         public string SelectedProvider { get; set; } = "Whisper";
         public string WhisperModelPath { get; set; } = "";
+        public string WhisperBinaryPath { get; set; } = "";
         public bool EnableAutoGeneration { get; set; } = false;
         
         // List of library IDs to monitor
