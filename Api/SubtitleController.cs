@@ -19,7 +19,7 @@ namespace JellySubtitles.Api
 {
     [ApiController]
     [Route("Plugins/JellySubtitles")]
-    [Authorize(Policy = "DefaultAuthorization")]
+    [Authorize]
     public class SubtitleController : ControllerBase
     {
         private readonly ILibraryManager _libraryManager;
@@ -49,13 +49,11 @@ namespace JellySubtitles.Api
         {
             try
             {
-                var rootFolder = _libraryManager.RootFolder;
-                var libraries = rootFolder.GetChildren(null, true)
-                    .Where(item => item is MediaBrowser.Controller.Entities.CollectionFolder)
-                    .Select(item => new LibraryInfo
+                var libraries = _libraryManager.GetVirtualFolders()
+                    .Select(vf => new LibraryInfo
                     {
-                        Id = item.Id.ToString(),
-                        Name = item.Name
+                        Id = vf.ItemId,
+                        Name = vf.Name
                     })
                     .ToList();
 
