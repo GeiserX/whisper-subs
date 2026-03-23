@@ -26,10 +26,10 @@ namespace JellySubtitles.Controller
             _config = Plugin.Instance.Configuration;
         }
 
-        public async Task GenerateSubtitleAsync(BaseItem item, ISubtitleProvider provider, CancellationToken cancellationToken)
+        public async Task GenerateSubtitleAsync(BaseItem item, ISubtitleProvider provider, string language, CancellationToken cancellationToken)
         {
             if (item == null) throw new ArgumentNullException(nameof(item));
-            
+
             var mediaPath = item.Path;
             if (string.IsNullOrEmpty(mediaPath) || !File.Exists(mediaPath))
             {
@@ -40,16 +40,16 @@ namespace JellySubtitles.Controller
             // 1. Extract Audio using FFmpeg
             var tempAudioPath = Path.Combine(Path.GetTempPath(), $"{item.Id}_{Guid.NewGuid()}.wav");
             _logger.LogInformation("Extracting audio for {ItemName} to {AudioPath}", item.Name, tempAudioPath);
-            
+
             try
             {
                 await ExtractAudioAsync(mediaPath, tempAudioPath, cancellationToken);
-                
+
                 // 2. Transcribe
-                var srtContent = await provider.TranscribeAsync(tempAudioPath, "en", cancellationToken);
+                var srtContent = await provider.TranscribeAsync(tempAudioPath, language, cancellationToken);
 
                 // 3. Save Subtitle
-                var srtPath = Path.ChangeExtension(mediaPath, ".en.generated.srt");
+                var srtPath = Path.ChangeExtension(mediaPath, $".{language}.generated.srt");
                 await File.WriteAllTextAsync(srtPath, srtContent, cancellationToken);
                 _logger.LogInformation("Saved subtitle to {SrtPath}", srtPath);
 

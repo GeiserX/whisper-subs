@@ -147,7 +147,7 @@ namespace JellySubtitles.Api
                 };
 
                 var subtitleManager = GetSubtitleManager();
-                await subtitleManager.GenerateSubtitleAsync(video, provider, cancellationToken);
+                await subtitleManager.GenerateSubtitleAsync(video, provider, language ?? "en", cancellationToken);
 
                 return Ok(new { message = "Subtitle generation started" });
             }
@@ -162,7 +162,7 @@ namespace JellySubtitles.Api
         /// Gets the status of subtitle generation for an item.
         /// </summary>
         [HttpGet("Items/{itemId}/Status")]
-        public ActionResult<SubtitleStatus> GetSubtitleStatus([FromRoute] string itemId)
+        public ActionResult<SubtitleStatus> GetSubtitleStatus([FromRoute] string itemId, [FromQuery] string? language = "en")
         {
             try
             {
@@ -173,7 +173,7 @@ namespace JellySubtitles.Api
                 }
 
                 // Check if subtitle file exists
-                var subtitlePath = System.IO.Path.ChangeExtension(item.Path, ".en.generated.srt");
+                var subtitlePath = System.IO.Path.ChangeExtension(item.Path, $".{language ?? "en"}.generated.srt");
                 var hasGeneratedSubtitle = System.IO.File.Exists(subtitlePath);
 
                 return Ok(new SubtitleStatus

@@ -37,8 +37,9 @@ namespace JellySubtitles.Providers
                 throw new FileNotFoundException($"Audio file not found: {audioPath}");
             }
 
-            // Create temporary output file for SRT
-            var tempSrtPath = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid()}.srt");
+            // Create temporary output prefix for SRT (whisper-cli appends .srt)
+            var tempOutputPrefix = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+            var tempSrtPath = tempOutputPrefix + ".srt";
             
             try
             {
@@ -50,7 +51,7 @@ namespace JellySubtitles.Providers
                         "Whisper executable not found. Please install whisper.cpp and ensure 'whisper-cli' or 'main' is in PATH.");
                 }
 
-                var arguments = $"-m \"{_modelPath}\" -f \"{audioPath}\" -l {language} -osrt -of \"{Path.GetFileNameWithoutExtension(tempSrtPath)}\" -pp \"{Path.GetDirectoryName(tempSrtPath)}\"";
+                var arguments = $"-m \"{_modelPath}\" -f \"{audioPath}\" -l {language} -osrt -of \"{tempOutputPrefix}\"";
 
                 _logger.LogInformation("Running: {Executable} {Arguments}", whisperExecutable, arguments);
 
