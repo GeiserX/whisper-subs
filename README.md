@@ -16,9 +16,11 @@
 ## Features
 
 - **Fully Local Processing** -- Audio is transcribed on your hardware using [whisper.cpp](https://github.com/ggerganov/whisper.cpp). No cloud APIs, no external services, no data exfiltration.
+- **Automatic Language Detection** -- Reads audio stream metadata to detect the spoken language and generate matching subtitles. Falls back to whisper's built-in language detection when tags are absent.
+- **GPU Acceleration** -- Supports Vulkan (Intel / AMD) and CUDA (NVIDIA) for significantly faster transcription.
 - **Admin Dashboard UI** -- Browse libraries, view items, and trigger subtitle generation directly from the Jellyfin admin panel.
 - **Scheduled Tasks** -- Enable automatic scanning so new media gets subtitles without manual intervention.
-- **Pluggable Provider Architecture** -- Built around an `ISubtitleProvider` interface. Whisper is the default; additional providers (Parakeet, custom commands) can be added.
+- **Pluggable Provider Architecture** -- Built around an `ISubtitleProvider` interface. Whisper is the default; additional providers can be added.
 - **Per-Library Control** -- Choose which libraries are monitored for automatic subtitle generation.
 - **SRT Output** -- Generates standard `.srt` subtitle files placed alongside your media, automatically picked up by Jellyfin.
 
@@ -29,7 +31,7 @@
 | **Jellyfin** | 10.11.0 or later |
 | **FFmpeg** | Bundled with Jellyfin (`/usr/lib/jellyfin-ffmpeg/ffmpeg`) or available in `PATH`. Used to extract audio from media files. |
 | **whisper.cpp** | The `whisper-cli` binary. Either in `PATH` or configured via the plugin's **Whisper Binary Path** setting. See [Installing whisper.cpp](#installing-whispercpp) below. |
-| **Whisper Model** | A `.bin` model file (e.g., `ggml-base.bin`, `ggml-medium.bin`). Download from [Hugging Face](https://huggingface.co/ggerganov/whisper.cpp). |
+| **Whisper Model** | A GGML model file (e.g., `ggml-base.bin`, `ggml-large-v3-turbo.bin`). Download from [Hugging Face](https://huggingface.co/ggerganov/whisper.cpp). |
 
 ## Installation
 
@@ -59,31 +61,37 @@
 
 The plugin requires whisper.cpp for transcription. Choose the method that matches your setup.
 
-### Option A: Pre-built Binary (Recommended)
+### Option A: Pre-built Binary (Recommended for most users)
 
 1. Download the latest release for your platform from [whisper.cpp releases](https://github.com/ggerganov/whisper.cpp/releases).
 2. Extract and place the `whisper-cli` binary somewhere persistent (e.g., `/opt/whisper/`).
 3. Download a model:
    ```bash
    mkdir -p /opt/whisper/models
-   # Base model (~148 MB) -- good balance of speed and accuracy
+
+   # Base model (~148 MB) -- fast, good for quick transcription
    wget -O /opt/whisper/models/ggml-base.bin \
      https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin
-   # Or medium model (~1.5 GB) -- better accuracy, slower
-   wget -O /opt/whisper/models/ggml-medium.bin \
-     https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin
+
+   # Large V3 Turbo (~1.6 GB) -- best accuracy with reasonable speed (recommended)
+   wget -O /opt/whisper/models/ggml-large-v3-turbo.bin \
+     https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin
    ```
 4. In the plugin settings, set **Whisper Binary Path** to `/opt/whisper/whisper-cli` and **Whisper Model Path** to the model file.
 
-### Option B: Build from Source
+### Option B: Build from Source (CPU only)
 
 ```bash
 git clone https://github.com/ggerganov/whisper.cpp.git
 cd whisper.cpp
-cmake -B build
-cmake --build build --config Release
+cmake -B build -DBUILD_SHARED_LIBS=OFF
+cmake --build build --config Release -j$(nproc)
 # Binary will be at build/bin/whisper-cli
 ```
+
+### Option C: Build from Source with GPU Acceleration
+
+See [GPU Acceleration](#gpu-acceleration) below for detailed instructions.
 
 ### Docker / Container Setups
 
@@ -101,7 +109,7 @@ services:
 
 Then configure the plugin with:
 - **Whisper Binary Path**: `/opt/whisper/whisper-cli`
-- **Whisper Model Path**: `/opt/whisper/models/ggml-base.bin`
+- **Whisper Model Path**: `/opt/whisper/models/ggml-large-v3-turbo.bin`
 
 > **Note:** The binary must be compiled for the same architecture as the container (typically x86_64 Linux). Download the `linux-x64` release asset or build inside a matching environment.
 
@@ -118,6 +126,158 @@ whisper-cli --help
 docker exec jellyfin /opt/whisper/whisper-cli --help
 ```
 
+## GPU Acceleration
+
+whisper.cpp supports GPU offloading via **Vulkan** (Intel, AMD, and some NVIDIA GPUs) and **CUDA** (NVIDIA). GPU acceleration dramatically reduces transcription time, especially with larger models.
+
+### Vulkan (Intel / AMD)
+
+Vulkan is the best option for Intel iGPUs (e.g., UHD 770) and AMD GPUs. It works through the Mesa Vulkan drivers.
+
+#### Building whisper.cpp with Vulkan
+
+```bash
+git clone https://github.com/ggerganov/whisper.cpp.git
+cd whisper.cpp
+cmake -B build \
+  -DGGML_VULKAN=ON \
+  -DBUILD_SHARED_LIBS=OFF
+cmake --build build --config Release -j$(nproc)
+# Binary: build/bin/whisper-cli
+```
+
+> **Important:** The CMake flag is `-DGGML_VULKAN=ON` (not `-DWHISPER_VULKAN`). This is a common source of confusion.
+
+#### Runtime Dependencies
+
+The Vulkan binary requires these libraries at runtime:
+
+| Package (Debian/Ubuntu) | Purpose |
+|---|---|
+| `libvulkan1` | Vulkan loader |
+| `mesa-vulkan-drivers` | Intel (ANV) and AMD (RADV) Vulkan ICDs |
+| `libgomp1` | OpenMP threading |
+
+```bash
+apt-get install -y libvulkan1 mesa-vulkan-drivers libgomp1
+```
+
+#### Docker: GPU Passthrough for Vulkan
+
+To use an Intel or AMD GPU inside a Docker container:
+
+```yaml
+services:
+  jellyfin:
+    image: jellyfin/jellyfin
+    devices:
+      - /dev/dri:/dev/dri    # GPU render nodes
+    volumes:
+      - /opt/whisper:/opt/whisper:ro
+```
+
+The container also needs the Vulkan runtime libraries. If using the official Jellyfin image (Debian-based), install them on startup:
+
+```yaml
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        dpkg -s libvulkan1 > /dev/null 2>&1 || \
+          (apt-get update -qq && \
+           apt-get install -y -qq --no-install-recommends \
+             libvulkan1 mesa-vulkan-drivers libgomp1 > /dev/null 2>&1 && \
+           rm -rf /var/lib/apt/lists/*)
+        exec /jellyfin/jellyfin
+```
+
+Verify GPU detection inside the container:
+
+```bash
+# Should show your GPU (e.g., "Intel(R) UHD Graphics 770")
+docker exec jellyfin apt-get update -qq && \
+  docker exec jellyfin apt-get install -y -qq vulkan-tools && \
+  docker exec jellyfin vulkaninfo --summary
+```
+
+#### Building Inside Docker (ABI Compatibility)
+
+When Jellyfin runs in a container, the whisper binary must be compiled against matching system libraries. Build inside a container with the same base image:
+
+```bash
+# On the Docker host:
+docker run --rm -v /opt/whisper:/output debian:trixie bash -c '
+  apt-get update && apt-get install -y git cmake g++ libvulkan-dev &&
+  git clone https://github.com/ggerganov/whisper.cpp.git /tmp/whisper &&
+  cd /tmp/whisper &&
+  cmake -B build -DGGML_VULKAN=ON -DBUILD_SHARED_LIBS=OFF &&
+  cmake --build build --config Release -j$(nproc) &&
+  cp build/bin/whisper-cli /output/whisper-cli
+'
+```
+
+### CUDA (NVIDIA)
+
+For NVIDIA GPUs with CUDA support:
+
+#### Building whisper.cpp with CUDA
+
+```bash
+git clone https://github.com/ggerganov/whisper.cpp.git
+cd whisper.cpp
+cmake -B build \
+  -DGGML_CUDA=ON \
+  -DBUILD_SHARED_LIBS=OFF
+cmake --build build --config Release -j$(nproc)
+```
+
+#### Docker: NVIDIA GPU Passthrough
+
+```yaml
+services:
+  jellyfin:
+    image: jellyfin/jellyfin
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - /opt/whisper:/opt/whisper:ro
+```
+
+> Requires the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html).
+
+### Verifying GPU Acceleration
+
+After configuring GPU support, trigger a transcription and check the Jellyfin logs. You should see:
+
+```
+# Vulkan
+whisper_backend_init_gpu: using Vulkan0 backend
+
+# CUDA
+whisper_backend_init_gpu: using CUDA0 backend
+```
+
+If you see `no GPU found` or `using CPU backend`, the binary was not built with GPU support or the runtime drivers are missing.
+
+### Model Recommendations
+
+| Model | Size | Speed (CPU) | Speed (GPU) | Quality | Use Case |
+|---|---|---|---|---|---|
+| `ggml-base.bin` | 148 MB | Fast | Very fast | Good | Quick transcription, testing |
+| `ggml-medium.bin` | 1.5 GB | Moderate | Fast | Very good | Balanced quality/speed |
+| `ggml-large-v3-turbo.bin` | 1.6 GB | Slow | Fast | Excellent | Best accuracy, recommended with GPU |
+| `ggml-large-v3.bin` | 3.1 GB | Very slow | Moderate | Excellent | Maximum accuracy |
+
+With GPU acceleration, `ggml-large-v3-turbo` offers the best quality-to-speed ratio.
+
 ## Configuration
 
 After installation, navigate to **Dashboard** > **Plugins** > **JellySubtitles** to configure:
@@ -126,19 +286,32 @@ After installation, navigate to **Dashboard** > **Plugins** > **JellySubtitles**
 |---|---|
 | **Subtitle Provider** | The transcription engine to use. Currently `Whisper` is available. |
 | **Whisper Binary Path** | Absolute path to the `whisper-cli` binary (e.g., `/opt/whisper/whisper-cli`). Leave empty to search `PATH`. |
-| **Whisper Model Path** | Absolute path to the `.bin` model file on the server (e.g., `/opt/whisper/models/ggml-medium.bin`). |
+| **Whisper Model Path** | Absolute path to the GGML model file (e.g., `/opt/whisper/models/ggml-large-v3-turbo.bin`). |
+| **Default Language** | `Auto-detect` reads the language from each file's audio stream metadata and generates matching subtitles. Choose a specific language to force it for all transcriptions. |
 | **Enable Auto-Generation** | When enabled, the scheduled task will scan selected libraries and generate subtitles for items that lack them. |
 | **Enabled Libraries** | Select which libraries should be monitored for automatic subtitle generation. |
+
+### Language Handling
+
+The plugin supports three language modes:
+
+1. **Auto-detect (recommended)** -- The plugin uses FFprobe to read the audio stream's language tag (e.g., `spa` → `es`, `eng` → `en`). Subtitles are generated in the language that matches the audio. If a file has multiple audio tracks in different languages, subtitles are generated for each one.
+
+2. **Whisper auto-detection** -- When no language metadata is available, the request falls through to whisper's built-in language detection (`-l auto`), which analyzes the first 30 seconds of audio.
+
+3. **Forced language** -- Set a specific language code (e.g., `es`) in the configuration or per-request via the API. This overrides detection and tells whisper to transcribe using that language model.
 
 ## Usage
 
 ### Admin Dashboard
 
-The plugin adds a dedicated page to the Jellyfin admin dashboard (accessible from the main menu). From there you can:
+The plugin adds a dedicated page to the Jellyfin admin dashboard (accessible from **Dashboard** > **Plugins** > **JellySubtitles**, or from the main sidebar menu). From there you can:
 
-- Browse all libraries and their items.
-- See which items already have subtitles.
-- Trigger subtitle generation for individual items with a single click.
+- **Configure** the plugin settings (provider, model, binary path, default language).
+- **Browse** all libraries and their items.
+- **See** which items already have subtitles (green check / orange cross).
+- **Select a language** for subtitle generation (auto-detect or any specific language).
+- **Generate** subtitles for individual items with a single click.
 
 ### REST API
 
@@ -147,20 +320,29 @@ All endpoints require Jellyfin admin authentication.
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/Plugins/JellySubtitles/Libraries` | List all media libraries |
-| `GET` | `/Plugins/JellySubtitles/Libraries/{libraryId}/Items` | List items in a library (Movies, Episodes, Series) |
-| `POST` | `/Plugins/JellySubtitles/Items/{itemId}/Generate?language=en` | Generate subtitles for a specific item |
-| `GET` | `/Plugins/JellySubtitles/Items/{itemId}/Status` | Check subtitle generation status for an item |
+| `GET` | `/Plugins/JellySubtitles/Libraries/{libraryId}/Items` | List items in a library |
+| `POST` | `/Plugins/JellySubtitles/Items/{itemId}/Generate?language=auto` | Generate subtitles for a specific item |
+| `GET` | `/Plugins/JellySubtitles/Items/{itemId}/AudioLanguages` | Detect audio languages in a media file |
+| `GET` | `/Plugins/JellySubtitles/Items/{itemId}/Status` | Check subtitle generation status |
+
+The `language` parameter accepts `auto` (default), or any ISO 639-1 code (`en`, `es`, `fr`, etc.).
 
 ### Scheduled Task
 
-A scheduled task named **Generate Subtitles** is registered under the **JellySubtitles** category. It can be configured in **Dashboard** > **Scheduled Tasks** with your preferred schedule or triggered manually.
+A scheduled task named **Generate Subtitles** is registered under the **JellySubtitles** category. It can be configured in **Dashboard** > **Scheduled Tasks** with your preferred schedule or triggered manually. The task:
+
+1. Scans all enabled libraries (or all libraries if none are explicitly selected).
+2. Finds video items that lack subtitles.
+3. Generates subtitles using the configured default language (auto-detect by default).
+4. Reports progress in the Jellyfin task UI.
 
 ## How It Works
 
-1. **Audio Extraction** -- FFmpeg extracts a 16 kHz mono WAV track from the media file.
-2. **Transcription** -- The extracted audio is passed to whisper.cpp, which produces an SRT subtitle file.
-3. **Output** -- The `.srt` file is saved alongside the original media (e.g., `Movie.en.generated.srt`).
-4. **Metadata Refresh** -- The item's metadata is refreshed so Jellyfin picks up the new subtitle immediately.
+1. **Language Detection** -- FFprobe reads the audio stream metadata to determine the spoken language(s).
+2. **Audio Extraction** -- FFmpeg extracts a 16 kHz mono WAV track from the media file.
+3. **Transcription** -- The extracted audio is passed to whisper.cpp, which produces an SRT subtitle file.
+4. **Output** -- The `.srt` file is saved alongside the original media (e.g., `Movie.es.generated.srt`).
+5. **Metadata Refresh** -- The item's metadata is refreshed so Jellyfin picks up the new subtitle immediately.
 
 Temporary audio files are cleaned up automatically after processing.
 
@@ -168,8 +350,7 @@ Temporary audio files are cleaned up automatically after processing.
 
 - [ ] **Parakeet provider** -- NVIDIA Parakeet integration for GPU-accelerated transcription.
 - [ ] **Custom command provider** -- Define arbitrary CLI commands as transcription backends.
-- [ ] **Language detection** -- Automatic source language detection before transcription.
-- [ ] **Multi-language support** -- Generate subtitles in multiple languages per item.
+- [ ] **Translation** -- Generate subtitles in a different language than the audio (e.g., English subs for Spanish audio).
 - [ ] **Progress tracking** -- Real-time progress reporting in the admin UI during transcription.
 - [ ] **Batch operations** -- Generate subtitles for entire libraries or filtered sets from the dashboard.
 

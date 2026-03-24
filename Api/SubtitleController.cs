@@ -108,11 +108,13 @@ namespace JellySubtitles.Api
 
         /// <summary>
         /// Generates subtitles for a specific item.
+        /// Language defaults to the plugin's configured default (typically "auto").
+        /// "auto" detects the audio language from the file metadata.
         /// </summary>
         [HttpPost("Items/{itemId}/Generate")]
         public async Task<ActionResult> GenerateSubtitle(
             [FromRoute] string itemId,
-            [FromQuery] string? language = "en",
+            [FromQuery] string? language = null,
             CancellationToken cancellationToken = default)
         {
             try
@@ -129,14 +131,14 @@ namespace JellySubtitles.Api
                 }
 
                 var config = Plugin.Instance.Configuration;
-                
-                // Create logger factory for provider
+                var targetLanguage = language ?? config.DefaultLanguage;
+
                 var loggerFactory = HttpContext.RequestServices.GetService(typeof(ILoggerFactory)) as ILoggerFactory;
                 if (loggerFactory == null)
                 {
                     throw new InvalidOperationException("Logger factory not available");
                 }
-                
+
                 ISubtitleProvider provider = config.SelectedProvider switch
                 {
                     "Whisper" => new WhisperProvider(
@@ -147,9 +149,9 @@ namespace JellySubtitles.Api
                 };
 
                 var subtitleManager = GetSubtitleManager();
-                await subtitleManager.GenerateSubtitleAsync(video, provider, language ?? "en", cancellationToken);
+                await subtitleManager.GenerateSubtitleAsync(video, provider, targetLanguage, cancellationToken);
 
-                return Ok(new { message = "Subtitle generation started" });
+                return Ok(new { message = "Subtitle generation complete", language = targetLanguage });
             }
             catch (Exception ex)
             {
@@ -159,10 +161,12 @@ namespace JellySubtitles.Api
         }
 
         /// <summary>
-        /// Gets the status of subtitle generation for an item.
+        /// Detects audio languages present in a media file.
         /// </summary>
-        [HttpGet("Items/{itemId}/Status")]
-        public ActionResult<SubtitleStatus> GetSubtitleStatus([FromRoute] string itemId, [FromQuery] string? language = "en")
+        [HttpGet("Items/{itemId}/AudioLanguages")]
+        public async Task<ActionResult<IEnumerable<string>>> GetAudioLanguages(
+            [FromRoute] string itemId,
+            CancellationToken cancellationToken = default)
         {
             try
             {
@@ -172,8 +176,65 @@ namespace JellySubtitles.Api
                     return NotFound(new { error = "Item not found" });
                 }
 
-                // Check if subtitle file exists
-                var subtitlePath = System.IO.Path.ChangeExtension(item.Path, $".{language ?? "en"}.generated.srt");
+                if (string.IsNullOrEmpty(item.Path) || !System.IO.File.Exists(item.Path))
+                {
+                    return BadRequest(new { error = "Media file not found" });
+                }
+
+                var subtitleManager = GetSubtitleManager();
+                var languages = await subtitleManager.DetectAudioLanguagesAsync(item.Path, cancellationToken);
+                return Ok(languages);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error detecting audio languages for item {ItemId}", itemId);
+                return StatusCode(500, new { error = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// Gets the status of subtitle generation for an item.
+        /// When language is omitted or "auto", checks for any generated .srt file.
+        /// </summary>
+        [HttpGet("Items/{itemId}/Status")]
+        public ActionResult<SubtitleStatus> GetSubtitleStatus(
+            [FromRoute] string itemId,
+            [FromQuery] string? language = null)
+        {
+            try
+            {
+                var item = _libraryManager.GetItemById(Guid.Parse(itemId));
+                if (item == null)
+                {
+                    return NotFound(new { error = "Item not found" });
+                }
+
+                var lang = language ?? Plugin.Instance.Configuration.DefaultLanguage;
+
+                if (string.Equals(lang, "auto", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Look for any generated subtitle file
+                    var dir = System.IO.Path.GetDirectoryName(item.Path);
+                    var baseName = System.IO.Path.GetFileNameWithoutExtension(item.Path);
+                    var found = new List<string>();
+
+                    if (dir != null)
+                    {
+                        foreach (var f in System.IO.Directory.GetFiles(dir, $"{baseName}.*.generated.srt"))
+                        {
+                            found.Add(f);
+                        }
+                    }
+
+                    return Ok(new SubtitleStatus
+                    {
+                        ItemId = itemId,
+                        HasGeneratedSubtitle = found.Count > 0,
+                        SubtitlePath = found.Count > 0 ? string.Join("; ", found) : null
+                    });
+                }
+
+                var subtitlePath = System.IO.Path.ChangeExtension(item.Path, $".{lang}.generated.srt");
                 var hasGeneratedSubtitle = System.IO.File.Exists(subtitlePath);
 
                 return Ok(new SubtitleStatus

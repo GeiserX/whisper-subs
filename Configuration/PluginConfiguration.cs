@@ -8,8 +8,14 @@ namespace JellySubtitles.Configuration
         public string WhisperModelPath { get; set; } = "";
         public string WhisperBinaryPath { get; set; } = "";
         public bool EnableAutoGeneration { get; set; } = false;
-        
-        // List of library IDs to monitor
+
+        /// <summary>
+        /// Default language for subtitle generation.
+        /// "auto" = detect from audio stream metadata, fall back to whisper auto-detection.
+        /// Any ISO 639-1 code (e.g. "es", "en", "fr") forces that language.
+        /// </summary>
+        public string DefaultLanguage { get; set; } = "auto";
+
         public List<string> EnabledLibraries { get; set; } = new List<string>();
 
         public PluginConfiguration()

@@ -1,8 +1,10 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using JellySubtitles.Configuration;
@@ -17,13 +19,11 @@ namespace JellySubtitles.Controller
     {
         private readonly ILibraryManager _libraryManager;
         private readonly ILogger<SubtitleManager> _logger;
-        private readonly PluginConfiguration _config;
 
         public SubtitleManager(ILibraryManager libraryManager, ILogger<SubtitleManager> logger)
         {
             _libraryManager = libraryManager;
             _logger = logger;
-            _config = Plugin.Instance.Configuration;
         }
 
         public async Task GenerateSubtitleAsync(BaseItem item, ISubtitleProvider provider, string language, CancellationToken cancellationToken)
@@ -37,62 +37,155 @@ namespace JellySubtitles.Controller
                 return;
             }
 
-            // 1. Extract Audio using FFmpeg
-            var tempAudioPath = Path.Combine(Path.GetTempPath(), $"{item.Id}_{Guid.NewGuid()}.wav");
-            _logger.LogInformation("Extracting audio for {ItemName} to {AudioPath}", item.Name, tempAudioPath);
+            // Resolve "auto" to the actual audio language(s)
+            var languages = await ResolveLanguagesAsync(mediaPath, language, cancellationToken);
 
-            try
+            foreach (var lang in languages)
             {
-                await ExtractAudioAsync(mediaPath, tempAudioPath, cancellationToken);
-
-                // 2. Transcribe
-                var srtContent = await provider.TranscribeAsync(tempAudioPath, language, cancellationToken);
-
-                // 3. Save Subtitle
-                var srtPath = Path.ChangeExtension(mediaPath, $".{language}.generated.srt");
-                await File.WriteAllTextAsync(srtPath, srtContent, cancellationToken);
-                _logger.LogInformation("Saved subtitle to {SrtPath}", srtPath);
-
-                // 4. Refresh Item
-                await item.RefreshMetadata(cancellationToken);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error generating subtitle for {ItemName}", item.Name);
-                throw;
-            }
-            finally
-            {
-                // Clean up temp audio file
-                if (File.Exists(tempAudioPath))
+                var srtPath = Path.ChangeExtension(mediaPath, $".{lang}.generated.srt");
+                if (File.Exists(srtPath))
                 {
-                    try
+                    _logger.LogInformation("Subtitle already exists for {ItemName} [{Language}], skipping", item.Name, lang);
+                    continue;
+                }
+
+                var tempAudioPath = Path.Combine(Path.GetTempPath(), $"{item.Id}_{Guid.NewGuid()}.wav");
+                _logger.LogInformation("Generating subtitle for {ItemName} [{Language}]", item.Name, lang);
+
+                try
+                {
+                    await ExtractAudioAsync(mediaPath, tempAudioPath, cancellationToken);
+                    var srtContent = await provider.TranscribeAsync(tempAudioPath, lang, cancellationToken);
+
+                    await File.WriteAllTextAsync(srtPath, srtContent, cancellationToken);
+                    _logger.LogInformation("Saved subtitle to {SrtPath}", srtPath);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error generating subtitle for {ItemName} [{Language}]", item.Name, lang);
+                    throw;
+                }
+                finally
+                {
+                    if (File.Exists(tempAudioPath))
                     {
-                        File.Delete(tempAudioPath);
-                        _logger.LogDebug("Deleted temporary audio file: {AudioPath}", tempAudioPath);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "Failed to delete temporary audio file: {AudioPath}", tempAudioPath);
+                        try { File.Delete(tempAudioPath); }
+                        catch (Exception ex) { _logger.LogWarning(ex, "Failed to delete temp audio: {Path}", tempAudioPath); }
                     }
                 }
             }
+
+            await item.RefreshMetadata(cancellationToken);
+        }
+
+        /// <summary>
+        /// Resolves the target language(s) for subtitle generation.
+        /// "auto" detects languages from the media's audio streams via FFprobe.
+        /// A specific language code (e.g. "es") is returned as-is.
+        /// </summary>
+        public async Task<List<string>> ResolveLanguagesAsync(string mediaPath, string language, CancellationToken cancellationToken)
+        {
+            if (!string.Equals(language, "auto", StringComparison.OrdinalIgnoreCase))
+            {
+                return new List<string> { language };
+            }
+
+            var detected = await DetectAudioLanguagesAsync(mediaPath, cancellationToken);
+            if (detected.Count > 0)
+            {
+                return detected;
+            }
+
+            // FFprobe could not determine the language — let whisper auto-detect
+            _logger.LogInformation("No audio language tags found in {Path}, falling back to whisper auto-detection", mediaPath);
+            return new List<string> { "auto" };
+        }
+
+        /// <summary>
+        /// Uses FFprobe to extract audio stream language tags from a media file.
+        /// Returns distinct ISO 639-1 language codes (e.g. "es", "en").
+        /// </summary>
+        public async Task<List<string>> DetectAudioLanguagesAsync(string mediaPath, CancellationToken cancellationToken)
+        {
+            var ffprobePath = FindFfprobeExecutable();
+            if (ffprobePath == null)
+            {
+                _logger.LogWarning("FFprobe not found, cannot detect audio languages");
+                return new List<string>();
+            }
+
+            var arguments = $"-v quiet -print_format json -show_streams -select_streams a \"{mediaPath}\"";
+            var process = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = ffprobePath,
+                    Arguments = arguments,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                }
+            };
+
+            var outputBuilder = new StringBuilder();
+            process.OutputDataReceived += (_, e) => { if (e.Data != null) outputBuilder.AppendLine(e.Data); };
+
+            process.Start();
+            process.BeginOutputReadLine();
+            await process.WaitForExitAsync(cancellationToken);
+
+            if (process.ExitCode != 0)
+            {
+                _logger.LogWarning("FFprobe exited with code {Code} for {Path}", process.ExitCode, mediaPath);
+                return new List<string>();
+            }
+
+            var languages = new List<string>();
+            try
+            {
+                using var doc = JsonDocument.Parse(outputBuilder.ToString());
+                if (doc.RootElement.TryGetProperty("streams", out var streams))
+                {
+                    foreach (var stream in streams.EnumerateArray())
+                    {
+                        if (stream.TryGetProperty("tags", out var tags) &&
+                            tags.TryGetProperty("language", out var langProp))
+                        {
+                            var lang = langProp.GetString();
+                            if (!string.IsNullOrEmpty(lang) && lang != "und")
+                            {
+                                // Normalize 3-letter codes to 2-letter where possible
+                                var normalized = NormalizeLanguageCode(lang);
+                                if (!languages.Contains(normalized))
+                                {
+                                    languages.Add(normalized);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch (JsonException ex)
+            {
+                _logger.LogWarning(ex, "Failed to parse FFprobe output for {Path}", mediaPath);
+            }
+
+            _logger.LogInformation("Detected audio languages for {Path}: [{Languages}]", mediaPath, string.Join(", ", languages));
+            return languages;
         }
 
         private async Task ExtractAudioAsync(string videoPath, string outputAudioPath, CancellationToken cancellationToken)
         {
-            // Try to find ffmpeg in common locations
             var ffmpegPath = FindFfmpegExecutable();
             if (ffmpegPath == null)
             {
                 throw new InvalidOperationException(
-                    "FFmpeg not found. Please ensure ffmpeg is installed and available in PATH or at /usr/lib/jellyfin-ffmpeg/ffmpeg");
+                    "FFmpeg not found. Ensure ffmpeg is installed and available in PATH or at /usr/lib/jellyfin-ffmpeg/ffmpeg");
             }
 
-            // Extract audio: convert to WAV, mono, 16kHz (good for Whisper)
             var arguments = $"-i \"{videoPath}\" -vn -acodec pcm_s16le -ac 1 -ar 16000 -y \"{outputAudioPath}\"";
-
-            _logger.LogInformation("Running FFmpeg: {FfmpegPath} {Arguments}", ffmpegPath, arguments);
+            _logger.LogInformation("Running FFmpeg: {Path} {Arguments}", ffmpegPath, arguments);
 
             var process = new Process
             {
@@ -108,47 +201,55 @@ namespace JellySubtitles.Controller
             };
 
             var errorBuilder = new StringBuilder();
-
-            process.ErrorDataReceived += (sender, e) =>
+            process.ErrorDataReceived += (_, e) =>
             {
                 if (!string.IsNullOrEmpty(e.Data))
                 {
                     errorBuilder.AppendLine(e.Data);
-                    // FFmpeg writes progress to stderr, so we log it as debug
                     _logger.LogDebug("FFmpeg: {Output}", e.Data);
                 }
             };
 
             process.Start();
             process.BeginErrorReadLine();
-
             await process.WaitForExitAsync(cancellationToken);
 
             if (process.ExitCode != 0)
             {
-                var error = errorBuilder.ToString();
                 throw new InvalidOperationException(
-                    $"FFmpeg process failed with exit code {process.ExitCode}. Error: {error}");
+                    $"FFmpeg failed with exit code {process.ExitCode}. Error: {errorBuilder}");
             }
 
             if (!File.Exists(outputAudioPath))
             {
-                throw new FileNotFoundException($"Audio extraction failed. Output file not found: {outputAudioPath}");
+                throw new FileNotFoundException($"Audio extraction failed. Output not found: {outputAudioPath}");
             }
 
-            _logger.LogInformation("Successfully extracted audio to {AudioPath}", outputAudioPath);
+            _logger.LogInformation("Extracted audio to {AudioPath}", outputAudioPath);
         }
 
         private string? FindFfmpegExecutable()
         {
-            // Try common FFmpeg locations
-            var candidates = new[]
+            return FindExecutable(new[]
             {
-                "/usr/lib/jellyfin-ffmpeg/ffmpeg", // Jellyfin's bundled FFmpeg
-                "ffmpeg", // System PATH
-                "/usr/bin/ffmpeg" // Common system location
-            };
+                "/usr/lib/jellyfin-ffmpeg/ffmpeg",
+                "ffmpeg",
+                "/usr/bin/ffmpeg"
+            });
+        }
 
+        private string? FindFfprobeExecutable()
+        {
+            return FindExecutable(new[]
+            {
+                "/usr/lib/jellyfin-ffmpeg/ffprobe",
+                "ffprobe",
+                "/usr/bin/ffprobe"
+            });
+        }
+
+        private string? FindExecutable(string[] candidates)
+        {
             foreach (var candidate in candidates)
             {
                 try
@@ -167,11 +268,10 @@ namespace JellySubtitles.Controller
                     };
 
                     process.Start();
-                    process.WaitForExit(1000); // Wait max 1 second
-                    
+                    process.WaitForExit(1000);
+
                     if (process.ExitCode == 0)
                     {
-                        _logger.LogInformation("Found FFmpeg executable: {Executable}", candidate);
                         return candidate;
                     }
                 }
@@ -182,6 +282,49 @@ namespace JellySubtitles.Controller
             }
 
             return null;
+        }
+
+        /// <summary>
+        /// Normalizes ISO 639-2/B or 639-2/T three-letter codes to ISO 639-1 two-letter codes
+        /// used by whisper.cpp. Falls through to the original code if no mapping exists.
+        /// </summary>
+        private static string NormalizeLanguageCode(string code)
+        {
+            return code.ToLowerInvariant() switch
+            {
+                "spa" => "es",
+                "eng" => "en",
+                "fra" or "fre" => "fr",
+                "deu" or "ger" => "de",
+                "ita" => "it",
+                "por" => "pt",
+                "rus" => "ru",
+                "jpn" => "ja",
+                "zho" or "chi" => "zh",
+                "kor" => "ko",
+                "ara" => "ar",
+                "hin" => "hi",
+                "pol" => "pl",
+                "nld" or "dut" => "nl",
+                "tur" => "tr",
+                "swe" => "sv",
+                "dan" => "da",
+                "fin" => "fi",
+                "nor" => "no",
+                "ces" or "cze" => "cs",
+                "ron" or "rum" => "ro",
+                "hun" => "hu",
+                "ell" or "gre" => "el",
+                "heb" => "he",
+                "tha" => "th",
+                "ukr" => "uk",
+                "vie" => "vi",
+                "ind" => "id",
+                "cat" => "ca",
+                "eus" or "baq" => "eu",
+                "glg" => "gl",
+                _ => code.ToLowerInvariant()
+            };
         }
     }
 }
