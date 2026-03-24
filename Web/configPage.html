@@ -107,7 +107,7 @@
                 <div style="display: flex; gap: 1em; align-items: flex-end; flex-wrap: wrap;">
                     <div class="selectContainer" style="flex: 1; min-width: 200px;">
                         <label class="selectLabel" for="selectLibrary">Library</label>
-                        <select is="emby-select" id="selectLibrary">
+                        <select id="selectLibrary" class="emby-select-withcolor" style="width:100%;padding:0.4em;font-size:inherit;background:transparent;color:inherit;border:1px solid currentColor;border-radius:0.25em;">
                             <option value="">Select a Library...</option>
                         </select>
                     </div>
@@ -166,13 +166,27 @@
                     { value: 'sv', label: 'Swedish' }
                 ],
 
+                getAuthHeader: function () {
+                    // Extract token from multiple possible sources
+                    var token = '';
+                    try { token = ApiClient.accessToken(); } catch(e) {}
+                    if (!token) try { token = ApiClient._serverInfo && ApiClient._serverInfo.AccessToken; } catch(e) {}
+                    if (!token) try { token = window.ApiClient && ApiClient.serverInfo && ApiClient.serverInfo().AccessToken; } catch(e) {}
+                    return token ? { 'Authorization': 'MediaBrowser Token="' + token + '"' } : {};
+                },
+
                 ajaxGet: function (url) {
-                    return fetch(url, {
-                        headers: { 'Authorization': 'MediaBrowser Token="' + ApiClient.accessToken() + '"' }
-                    }).then(function (resp) {
-                        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-                        return resp.json();
-                    });
+                    console.log('JellySubtitles: fetching', url);
+                    return fetch(url, { headers: JellySubtitlesConfig.getAuthHeader() })
+                        .then(function (resp) {
+                            console.log('JellySubtitles: response status', resp.status);
+                            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                            return resp.json();
+                        })
+                        .then(function (data) {
+                            console.log('JellySubtitles: parsed data', data);
+                            return data;
+                        });
                 },
 
                 loadConfiguration: function (page) {
@@ -427,6 +441,8 @@
 
             document.querySelector('[data-role="page"]').addEventListener('pageshow', function () {
                 JellySubtitlesConfig.loadConfiguration(this);
+                // Also load libraries independently in case loadConfiguration fails
+                JellySubtitlesConfig.loadLibraries();
             });
 
             document.querySelector('.jellySubtitlesConfigurationForm').addEventListener('submit', function (e) {

@@ -126,9 +126,8 @@ namespace JellySubtitles.Api
 
         /// <summary>
         /// Generates subtitles for a specific item.
-        /// Manual requests are placed at the front of the queue, ahead of auto-generation.
-        /// Language defaults to the plugin's configured default (typically "auto").
-        /// "auto" detects the audio language from the file metadata.
+        /// If the scheduled task is running, this request is prioritised and processed next.
+        /// If no task is running, processes immediately.
         /// </summary>
         [HttpPost("Items/{itemId}/Generate")]
         public async Task<ActionResult> GenerateSubtitle(
@@ -151,23 +150,26 @@ namespace JellySubtitles.Api
 
                 var config = Plugin.Instance.Configuration;
                 var targetLanguage = language ?? config.DefaultLanguage;
-
-                // Enqueue as priority (ahead of auto-generation items)
                 var queue = SubtitleQueueService.Instance;
+
+                // Enqueue as priority — the scheduled task drains this between items
                 var completionTask = queue.EnqueuePriorityAsync(video, targetLanguage);
                 _logger.LogInformation("Queued priority subtitle generation for {ItemName} [{Language}]", item.Name, targetLanguage);
 
-                // Kick off queue processing if not already running
-                var loggerFactory = HttpContext.RequestServices.GetService(typeof(ILoggerFactory)) as ILoggerFactory;
-                if (loggerFactory != null)
+                // If no scheduled task is running, process immediately
+                var manager = GetSubtitleManager();
+                var provider = new WhisperProvider(
+                    _loggerFactory.CreateLogger<WhisperProvider>(),
+                    config.WhisperModelPath,
+                    config.WhisperBinaryPath);
+
+                _ = Task.Run(async () =>
                 {
-                    _ = Task.Run(() => queue.ProcessQueueAsync(
-                        _libraryManager, loggerFactory, null, cancellationToken), cancellationToken);
-                }
+                    try { await queue.DrainPriorityAsync(manager, provider, _logger, cancellationToken); }
+                    catch (Exception ex) { _logger.LogError(ex, "Error draining priority queue"); }
+                }, cancellationToken);
 
-                // Wait for this specific item to complete
                 await completionTask;
-
                 return Ok(new { message = "Subtitle generation complete", language = targetLanguage });
             }
             catch (Exception ex)

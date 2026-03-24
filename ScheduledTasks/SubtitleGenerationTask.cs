@@ -31,7 +31,7 @@ namespace JellySubtitles.ScheduledTasks
 
         public string Name => "Generate Subtitles";
         public string Key => "JellySubtitlesGenerator";
-        public string Description => "Scans enabled libraries and generates subtitles for items that lack them.";
+        public string Description => "Scans enabled libraries and generates subtitles for items that lack them. Resumes automatically after restart.";
         public string Category => "JellySubtitles";
 
         public IEnumerable<TaskTriggerInfo> GetDefaultTriggers()
@@ -41,7 +41,7 @@ namespace JellySubtitles.ScheduledTasks
                 new TaskTriggerInfo
                 {
                     Type = TaskTriggerInfoType.DailyTrigger,
-                    TimeOfDayTicks = TimeSpan.FromHours(2).Ticks // Daily at 2 AM
+                    TimeOfDayTicks = TimeSpan.FromHours(2).Ticks
                 },
                 new TaskTriggerInfo
                 {
@@ -67,9 +67,15 @@ namespace JellySubtitles.ScheduledTasks
                 return;
             }
 
+            var manager = new SubtitleManager(_libraryManager, _loggerFactory.CreateLogger<SubtitleManager>());
+            var provider = new WhisperProvider(
+                _loggerFactory.CreateLogger<WhisperProvider>(),
+                config.WhisperModelPath,
+                config.WhisperBinaryPath);
             var language = config.DefaultLanguage;
+            var queue = SubtitleQueueService.Instance;
 
-            // Collect all video items from enabled libraries
+            // Collect items — the query is fast (DB lookup), no bulk in-memory storage needed
             var enabledLibraryIds = config.EnabledLibraries
                 .Where(id => !string.IsNullOrEmpty(id))
                 .Select(id => Guid.Parse(id))
@@ -85,7 +91,6 @@ namespace JellySubtitles.ScheduledTasks
             }
 
             var allItems = new List<Video>();
-
             foreach (var libraryId in enabledLibraryIds)
             {
                 var items = _libraryManager.GetItemList(new InternalItemsQuery
@@ -109,19 +114,59 @@ namespace JellySubtitles.ScheduledTasks
                 return;
             }
 
-            // Enqueue all items into the normal (low-priority) queue
-            var queue = SubtitleQueueService.Instance;
-            foreach (var item in allItems)
+            var completed = 0;
+            var failed = 0;
+
+            for (int i = 0; i < allItems.Count; i++)
             {
-                queue.EnqueueNormal(item, language);
+                cancellationToken.ThrowIfCancellationRequested();
+
+                // Drain any priority (manual) requests first
+                if (queue.PriorityCount > 0)
+                {
+                    _logger.LogInformation("Pausing auto-generation to process {Count} priority request(s)", queue.PriorityCount);
+                    await queue.DrainPriorityAsync(manager, provider, _logger, cancellationToken);
+                }
+
+                var item = allItems[i];
+
+                // Skip if subtitle was already generated (e.g. from a previous run before restart)
+                var mediaPath = item.Path;
+                if (!string.IsNullOrEmpty(mediaPath))
+                {
+                    var baseName = System.IO.Path.GetFileNameWithoutExtension(mediaPath);
+                    var dir = System.IO.Path.GetDirectoryName(mediaPath);
+                    if (dir != null && System.IO.Directory.GetFiles(dir, baseName + ".*.generated.srt").Length > 0)
+                    {
+                        completed++;
+                        progress.Report((double)completed / allItems.Count * 100);
+                        continue;
+                    }
+                }
+
+                try
+                {
+                    _logger.LogInformation("[{Current}/{Total}] Processing {ItemName}",
+                        completed + 1, allItems.Count, item.Name);
+
+                    await manager.GenerateSubtitleAsync(item, provider, language, cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    failed++;
+                    _logger.LogError(ex, "Failed to generate subtitle for {ItemName}", item.Name);
+                }
+
+                completed++;
+                progress.Report((double)completed / allItems.Count * 100);
             }
 
-            _logger.LogInformation("Enqueued {Count} items for subtitle generation", allItems.Count);
-
-            // Process the queue (manual/priority items will be interleaved first)
-            await queue.ProcessQueueAsync(_libraryManager, _loggerFactory, progress, cancellationToken);
-
-            _logger.LogInformation("Subtitle generation task complete");
+            _logger.LogInformation("Subtitle generation task complete. Processed: {Processed}, Failed: {Failed}",
+                completed, failed);
         }
     }
 }
