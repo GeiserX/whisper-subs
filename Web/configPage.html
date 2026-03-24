@@ -29,7 +29,15 @@
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="txtWhisperModelPath">Whisper Model Path</label>
                         <input type="text" id="txtWhisperModelPath" name="WhisperModelPath" class="emby-input" />
-                        <div class="fieldDescription">Absolute path to the Whisper model file (e.g., /opt/whisper/models/ggml-large-v3-turbo.bin).</div>
+                        <div class="fieldDescription">Absolute path to the Whisper model file. You can type a path or select from detected models below.</div>
+                    </div>
+
+                    <div class="selectContainer" id="modelPickerContainer" style="display:none;">
+                        <label class="selectLabel" for="selectModel">Detected Models</label>
+                        <select is="emby-select" id="selectModel">
+                            <option value="">Loading models...</option>
+                        </select>
+                        <div class="fieldDescription">Models found in the same directory as the configured model path. Selecting one updates the path above.</div>
                     </div>
 
                     <div class="selectContainer">
@@ -172,6 +180,7 @@
                             page.querySelector('#selectDefaultLanguage').value = config.DefaultLanguage || 'auto';
                             page.querySelector('#chkEnableAutoGeneration').checked = config.EnableAutoGeneration || false;
                         }
+                        JellySubtitlesConfig.loadModels();
                         JellySubtitlesConfig.loadLibraries();
                     });
                 },
@@ -185,7 +194,49 @@
                         config.EnableAutoGeneration = page.querySelector('#chkEnableAutoGeneration').checked;
                         ApiClient.updatePluginConfiguration(JellySubtitlesConfig.pluginId, config).then(function (result) {
                             Dashboard.processPluginConfigurationUpdateResult(result);
+                            // Refresh model list in case path changed
+                            JellySubtitlesConfig.loadModels();
                         });
+                    });
+                },
+
+                loadModels: function () {
+                    JellySubtitlesConfig.ajaxGet(
+                        ApiClient.getUrl('Plugins/JellySubtitles/Models')
+                    ).then(function (models) {
+                        var container = document.querySelector('#modelPickerContainer');
+                        var select = document.querySelector('#selectModel');
+                        var currentPath = document.querySelector('#txtWhisperModelPath').value;
+
+                        if (!models || !Array.isArray(models) || models.length === 0) {
+                            container.style.display = 'none';
+                            return;
+                        }
+
+                        container.style.display = '';
+                        select.innerHTML = '';
+
+                        models.forEach(function (model) {
+                            var opt = document.createElement('option');
+                            opt.value = model.Path;
+                            var sizeMB = Math.round(model.SizeMB);
+                            var sizeLabel = sizeMB >= 1024
+                                ? (sizeMB / 1024).toFixed(1) + ' GB'
+                                : sizeMB + ' MB';
+                            opt.textContent = model.Name + ' (' + sizeLabel + ')';
+                            if (model.IsActive) {
+                                opt.textContent += ' \u2713';
+                            }
+                            select.appendChild(opt);
+                        });
+
+                        // Select the current model
+                        if (currentPath) {
+                            select.value = currentPath;
+                        }
+                    }).catch(function (error) {
+                        console.error('JellySubtitles: error loading models', error);
+                        document.querySelector('#modelPickerContainer').style.display = 'none';
                     });
                 },
 
@@ -348,6 +399,12 @@
                 e.preventDefault();
                 JellySubtitlesConfig.saveConfiguration(this.closest('[data-role="page"]'));
                 return false;
+            });
+
+            document.querySelector('#selectModel').addEventListener('change', function (e) {
+                if (e.target.value) {
+                    document.querySelector('#txtWhisperModelPath').value = e.target.value;
+                }
             });
 
             document.querySelector('#selectLibrary').addEventListener('change', function (e) {

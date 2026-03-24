@@ -251,6 +251,45 @@ namespace JellySubtitles.Api
             }
         }
 
+        /// <summary>
+        /// Lists available whisper model files.
+        /// Scans the directory of the currently configured model path for .bin files.
+        /// </summary>
+        [HttpGet("Models")]
+        public ActionResult<IEnumerable<ModelInfo>> GetAvailableModels()
+        {
+            try
+            {
+                var config = Plugin.Instance.Configuration;
+                var modelsDir = !string.IsNullOrEmpty(config.WhisperModelPath)
+                    ? System.IO.Path.GetDirectoryName(config.WhisperModelPath)
+                    : null;
+
+                if (string.IsNullOrEmpty(modelsDir) || !System.IO.Directory.Exists(modelsDir))
+                {
+                    return Ok(Array.Empty<ModelInfo>());
+                }
+
+                var models = System.IO.Directory.GetFiles(modelsDir, "*.bin")
+                    .Select(path => new ModelInfo
+                    {
+                        Path = path,
+                        Name = System.IO.Path.GetFileNameWithoutExtension(path),
+                        SizeMB = new System.IO.FileInfo(path).Length / (1024.0 * 1024.0),
+                        IsActive = string.Equals(path, config.WhisperModelPath, StringComparison.OrdinalIgnoreCase)
+                    })
+                    .OrderBy(m => m.SizeMB)
+                    .ToList();
+
+                return Ok(models);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error listing models");
+                return StatusCode(500, new { error = ex.Message });
+            }
+        }
+
         private BaseItemKind[] GetBaseItemKinds(string input)
         {
             if (string.IsNullOrWhiteSpace(input))
@@ -295,6 +334,14 @@ namespace JellySubtitles.Api
         public string ItemId { get; set; } = string.Empty;
         public bool HasGeneratedSubtitle { get; set; }
         public string? SubtitlePath { get; set; }
+    }
+
+    public class ModelInfo
+    {
+        public string Path { get; set; } = string.Empty;
+        public string Name { get; set; } = string.Empty;
+        public double SizeMB { get; set; }
+        public bool IsActive { get; set; }
     }
 }
 
