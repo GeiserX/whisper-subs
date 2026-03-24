@@ -270,6 +270,7 @@ docker inspect jellyfin --format '{{range .Mounts}}{{.Source}} -> {{.Destination
 
 ### Gotchas
 
+- **NEVER restart Jellyfin without asking the user first.** Jellyfin restarts interrupt active playback and kill the in-memory transcription queue. Always confirm before running `docker restart jellyfin`.
 - **Unraid tmpfs**: Do NOT store whisper binaries or models in `/opt` on Unraid — it's a RAM disk that wipes on reboot. Use `/mnt/user/appdata/whisper` and bind-mount into the container.
 - **Static linking is mandatory**: Always build whisper.cpp with `-DBUILD_SHARED_LIBS=OFF`. Dynamic builds fail with `libwhisper.so.1: cannot open shared object file` inside the Jellyfin container.
 - **Orphaned docker-proxy**: If Jellyfin crashes, the docker-proxy process may hold port 8096. On Unraid, run `rc.docker restart` to clean up. On other systems, restart the Docker daemon.
