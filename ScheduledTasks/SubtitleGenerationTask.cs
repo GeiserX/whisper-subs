@@ -75,6 +75,14 @@ namespace JellySubtitles.ScheduledTasks
             var language = config.DefaultLanguage;
             var queue = SubtitleQueueService.Instance;
 
+            // Restore persisted queue from disk (survives restarts)
+            var restored = queue.RestoreQueue(_libraryManager, _logger);
+            if (restored > 0)
+            {
+                _logger.LogInformation("Draining {Count} restored priority items before auto-generation", restored);
+                await queue.DrainPriorityAsync(manager, provider, _logger, cancellationToken);
+            }
+
             // Collect items — the query is fast (DB lookup), no bulk in-memory storage needed
             var enabledLibraryIds = config.EnabledLibraries
                 .Where(id => !string.IsNullOrEmpty(id))

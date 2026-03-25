@@ -1,8 +1,11 @@
 using System.Collections.Concurrent;
+using System.IO;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using JellySubtitles.Providers;
 using MediaBrowser.Controller.Entities;
+using MediaBrowser.Controller.Library;
 using Microsoft.Extensions.Logging;
 
 namespace JellySubtitles.Controller
@@ -14,6 +17,12 @@ namespace JellySubtitles.Controller
         public TaskCompletionSource<bool>? Completion { get; init; }
     }
 
+    public class QueueEntry
+    {
+        public string ItemId { get; set; } = "";
+        public string Language { get; set; } = "";
+    }
+
     public class SubtitleQueueService
     {
         private static SubtitleQueueService? _instance;
@@ -23,11 +32,23 @@ namespace JellySubtitles.Controller
         private int _isDraining;
         private string? _currentItemName;
         private int _processedCount;
+        private static readonly object _fileLock = new();
 
         public int PriorityCount => _priorityQueue.Count;
         public string? CurrentItemName => _currentItemName;
         public bool IsDraining => _isDraining == 1;
         public int ProcessedCount => _processedCount;
+
+        private static string QueueFilePath
+        {
+            get
+            {
+                var pluginDir = Plugin.Instance?.DataFolderPath;
+                if (string.IsNullOrEmpty(pluginDir)) return "";
+                Directory.CreateDirectory(pluginDir);
+                return Path.Combine(pluginDir, "queue.json");
+            }
+        }
 
         public void Enqueue(BaseItem item, string language)
         {
@@ -37,6 +58,7 @@ namespace JellySubtitles.Controller
                 Language = language,
                 Completion = null
             });
+            PersistQueue();
         }
 
         public Task EnqueuePriorityAsync(BaseItem item, string language)
@@ -48,12 +70,80 @@ namespace JellySubtitles.Controller
                 Language = language,
                 Completion = tcs
             });
+            PersistQueue();
             return tcs.Task;
         }
 
         public bool TryDequeuePriority(out SubtitleWorkItem? item)
         {
-            return _priorityQueue.TryDequeue(out item);
+            var result = _priorityQueue.TryDequeue(out item);
+            if (result) PersistQueue();
+            return result;
+        }
+
+        /// <summary>
+        /// Restores queue from disk on startup. Call after Jellyfin library is available.
+        /// </summary>
+        public int RestoreQueue(ILibraryManager libraryManager, ILogger logger)
+        {
+            var path = QueueFilePath;
+            if (string.IsNullOrEmpty(path) || !File.Exists(path)) return 0;
+
+            try
+            {
+                var json = File.ReadAllText(path);
+                var entries = JsonSerializer.Deserialize<List<QueueEntry>>(json);
+                if (entries == null || entries.Count == 0) return 0;
+
+                int restored = 0;
+                foreach (var entry in entries)
+                {
+                    if (!Guid.TryParse(entry.ItemId, out var guid)) continue;
+                    var item = libraryManager.GetItemById(guid);
+                    if (item == null) continue;
+
+                    _priorityQueue.Enqueue(new SubtitleWorkItem
+                    {
+                        Item = item,
+                        Language = entry.Language,
+                        Completion = null
+                    });
+                    restored++;
+                }
+
+                logger.LogInformation("[Queue] Restored {Count} items from disk (of {Total} saved)", restored, entries.Count);
+                return restored;
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "[Queue] Failed to restore queue from {Path}", path);
+                return 0;
+            }
+        }
+
+        private void PersistQueue()
+        {
+            var path = QueueFilePath;
+            if (string.IsNullOrEmpty(path)) return;
+
+            try
+            {
+                var entries = _priorityQueue.Select(item => new QueueEntry
+                {
+                    ItemId = item.Item.Id.ToString("N"),
+                    Language = item.Language
+                }).ToList();
+
+                var json = JsonSerializer.Serialize(entries);
+                lock (_fileLock)
+                {
+                    File.WriteAllText(path, json);
+                }
+            }
+            catch
+            {
+                // Non-critical — best effort persistence
+            }
         }
 
         /// <summary>
