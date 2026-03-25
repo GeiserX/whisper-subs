@@ -157,7 +157,15 @@ namespace JellySubtitles.ScheduledTasks
                     _logger.LogInformation("[{Current}/{Total}] Processing {ItemName}",
                         completed + 1, allItems.Count, item.Name);
 
-                    await manager.GenerateSubtitleAsync(item, provider, language, cancellationToken);
+                    await SubtitleQueueService.TranscriptionLock.WaitAsync(cancellationToken);
+                    try
+                    {
+                        await manager.GenerateSubtitleAsync(item, provider, language, cancellationToken);
+                    }
+                    finally
+                    {
+                        SubtitleQueueService.TranscriptionLock.Release();
+                    }
                 }
                 catch (OperationCanceledException)
                 {

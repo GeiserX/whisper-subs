@@ -34,6 +34,12 @@ namespace JellySubtitles.Controller
         private int _processedCount;
         private static readonly object _fileLock = new();
 
+        /// <summary>
+        /// Global lock — only one whisper transcription at a time.
+        /// Must be acquired by both the drain loop and the scheduled task.
+        /// </summary>
+        public static readonly SemaphoreSlim TranscriptionLock = new(1, 1);
+
         public int PriorityCount => _priorityQueue.Count;
         public string? CurrentItemName => _currentItemName;
         public bool IsDraining => _isDraining == 1;
@@ -191,14 +197,23 @@ namespace JellySubtitles.Controller
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                // SubtitleManager handles skip/resume logic (checks completeness via duration comparison)
                 try
                 {
                     _currentItemName = workItem.Item.Name;
                     logger.LogInformation("[Queue] Processing {ItemName} ({Remaining} remaining)",
                         workItem.Item.Name, _priorityQueue.Count);
-                    await manager.GenerateSubtitleAsync(
-                        workItem.Item, provider, workItem.Language, cancellationToken);
+
+                    await TranscriptionLock.WaitAsync(cancellationToken);
+                    try
+                    {
+                        await manager.GenerateSubtitleAsync(
+                            workItem.Item, provider, workItem.Language, cancellationToken);
+                    }
+                    finally
+                    {
+                        TranscriptionLock.Release();
+                    }
+
                     Interlocked.Increment(ref _processedCount);
                     workItem.Completion?.TrySetResult(true);
                 }
@@ -233,8 +248,18 @@ namespace JellySubtitles.Controller
                 {
                     _currentItemName = workItem.Item.Name;
                     logger.LogInformation("[Priority] Processing {ItemName}", workItem.Item.Name);
-                    await manager.GenerateSubtitleAsync(
-                        workItem.Item, provider, workItem.Language, cancellationToken);
+
+                    await TranscriptionLock.WaitAsync(cancellationToken);
+                    try
+                    {
+                        await manager.GenerateSubtitleAsync(
+                            workItem.Item, provider, workItem.Language, cancellationToken);
+                    }
+                    finally
+                    {
+                        TranscriptionLock.Release();
+                    }
+
                     workItem.Completion?.TrySetResult(true);
                 }
                 catch (OperationCanceledException)
