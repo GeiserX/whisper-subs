@@ -1,10 +1,10 @@
-# AGENTS.md — JellySubtitles
+# AGENTS.md — WhisperSubs
 
 ## Project Overview
 
-JellySubtitles is a Jellyfin plugin that generates subtitles for media libraries using local AI speech-to-text models. All processing happens on the server — no cloud APIs. The primary backend is [whisper.cpp](https://github.com/ggml-org/whisper.cpp) with Vulkan/CUDA GPU acceleration support.
+WhisperSubs is a Jellyfin plugin that generates subtitles for media libraries using local AI speech-to-text models. All processing happens on the server — no cloud APIs. The primary backend is [whisper.cpp](https://github.com/ggml-org/whisper.cpp) with Vulkan/CUDA GPU acceleration support.
 
-- **Repo:** [GeiserX/jelly-subtitles](https://github.com/GeiserX/jelly-subtitles)
+- **Repo:** [GeiserX/whisper-subs](https://github.com/GeiserX/whisper-subs)
 - **Plugin GUID:** `97124bd9-c8cd-4a53-a213-e593aa3fef52`
 - **Target:** Jellyfin 10.11+ / .NET 9.0
 - **License:** GPL-3.0
@@ -16,7 +16,7 @@ Plugin.cs                          Entry point, IHasWebPages (embeds config UI)
 ├── Configuration/
 │   └── PluginConfiguration.cs     User-editable settings (model path, binary path, language, etc.)
 ├── Api/
-│   └── SubtitleController.cs      REST API endpoints under /Plugins/JellySubtitles/*
+│   └── SubtitleController.cs      REST API endpoints under /Plugins/WhisperSubs/*
 ├── Controller/
 │   ├── SubtitleManager.cs         Orchestrator: language detection → audio extraction → transcription → save
 │   └── SubtitleQueueService.cs    Thread-safe in-memory queue with single-worker drain loop
@@ -61,14 +61,14 @@ All require Jellyfin admin auth (`Authorization: MediaBrowser Token="<token>"`).
 
 | Method | Path | Returns | Notes |
 |--------|------|---------|-------|
-| `GET` | `/Plugins/JellySubtitles/Libraries` | `LibraryInfo[]` | All virtual folders |
-| `GET` | `/Plugins/JellySubtitles/Libraries/{id}/Items?startIndex=0&limit=50` | `PagedItemResult` | Movies/Episodes with subtitle status |
-| `POST` | `/Plugins/JellySubtitles/Items/{id}/Generate?language=auto` | 202 Accepted | Enqueues, returns immediately |
-| `GET` | `/Plugins/JellySubtitles/Items/{id}/Status?language=auto` | `SubtitleStatus` | Checks for `.generated.srt` on disk |
-| `GET` | `/Plugins/JellySubtitles/Items/{id}/AudioLanguages` | `string[]` | FFprobe-detected languages |
-| `GET` | `/Plugins/JellySubtitles/Queue` | `{isProcessing, currentItem, remaining, processed}` | Live queue status |
-| `GET` | `/Plugins/JellySubtitles/Models` | `ModelInfo[]` | `.bin` files in the model directory |
-| `POST` | `/Plugins/JellySubtitles/RunTask` | 200 | Triggers the scheduled task |
+| `GET` | `/Plugins/WhisperSubs/Libraries` | `LibraryInfo[]` | All virtual folders |
+| `GET` | `/Plugins/WhisperSubs/Libraries/{id}/Items?startIndex=0&limit=50` | `PagedItemResult` | Movies/Episodes with subtitle status |
+| `POST` | `/Plugins/WhisperSubs/Items/{id}/Generate?language=auto` | 202 Accepted | Enqueues, returns immediately |
+| `GET` | `/Plugins/WhisperSubs/Items/{id}/Status?language=auto` | `SubtitleStatus` | Checks for `.generated.srt` on disk |
+| `GET` | `/Plugins/WhisperSubs/Items/{id}/AudioLanguages` | `string[]` | FFprobe-detected languages |
+| `GET` | `/Plugins/WhisperSubs/Queue` | `{isProcessing, currentItem, remaining, processed}` | Live queue status |
+| `GET` | `/Plugins/WhisperSubs/Models` | `ModelInfo[]` | `.bin` files in the model directory |
+| `POST` | `/Plugins/WhisperSubs/RunTask` | 200 | Triggers the scheduled task |
 
 ## Build & Deploy
 
@@ -76,7 +76,7 @@ All require Jellyfin admin auth (`Authorization: MediaBrowser Token="<token>"`).
 
 ```bash
 dotnet build --configuration Release
-# Output: bin/Release/net9.0/JellySubtitles.dll
+# Output: bin/Release/net9.0/WhisperSubs.dll
 ```
 
 ### Deploy (manual)
@@ -84,8 +84,8 @@ dotnet build --configuration Release
 Copy the DLL to the Jellyfin plugin directory and restart:
 
 ```bash
-cp bin/Release/net9.0/JellySubtitles.dll \
-  /path/to/jellyfin/config/plugins/JellySubtitles_<version>/JellySubtitles.dll
+cp bin/Release/net9.0/WhisperSubs.dll \
+  /path/to/jellyfin/config/plugins/WhisperSubs_<version>/WhisperSubs.dll
 # Restart Jellyfin
 ```
 
@@ -99,7 +99,7 @@ The GitHub Actions workflow (`.github/workflows/build-release.yml`) triggers on 
 4. Updates `manifest.json` with the checksum
 5. Deploys to GitHub Pages (serves the plugin repository manifest)
 
-Version is read from `<Version>` in `JellySubtitles.csproj`. Bump it there before pushing.
+Version is read from `<Version>` in `WhisperSubs.csproj`. Bump it there before pushing.
 
 ## Config Page (Web UI)
 
@@ -109,13 +109,13 @@ Version is read from `<Version>` in `JellySubtitles.csproj`. Bump it there befor
 
 - **Jellyfin custom elements** — Dropdowns with static options (Subtitle Provider, Default Language) use `is="emby-select"` for native Jellyfin styling. Dropdowns populated dynamically via JS (Detected Models, Library selector) also use `is="emby-select"` — the options are added after the `pageshow` event fires via API calls.
 - **`data-require`** — The page declares `data-require="emby-input,emby-button,emby-select,emby-checkbox"` to ensure Jellyfin loads these components before rendering.
-- **No framework** — Pure vanilla JS. The `JellySubtitlesConfig` object namespace holds all logic.
+- **No framework** — Pure vanilla JS. The `WhisperSubsConfig` object namespace holds all logic.
 - **Auth** — API calls use `ApiClient.accessToken()` via the `getAuthHeader()` helper.
 - **Config load/save** — Uses `ApiClient.getPluginConfiguration()` / `ApiClient.updatePluginConfiguration()` with the plugin GUID.
 
 ### Debugging the UI
 
-Open the browser console and look for lines prefixed with `JellySubtitles:`. All `ajaxGet` calls log the URL, response status, and parsed data.
+Open the browser console and look for lines prefixed with `WhisperSubs:`. All `ajaxGet` calls log the URL, response status, and parsed data.
 
 ## whisper.cpp Integration
 
@@ -235,7 +235,7 @@ If not using GPU acceleration, whisper.cpp uses all available CPU cores. Conside
 - Scheduling transcription during off-peak hours via the scheduled task settings
 
 ### emby-select dropdowns empty
-If dynamically populated dropdowns appear empty, check the browser console for `JellySubtitles:` log lines. The API calls may be failing due to auth issues. Hard-refresh the page (Ctrl+Shift+R).
+If dynamically populated dropdowns appear empty, check the browser console for `WhisperSubs:` log lines. The API calls may be failing due to auth issues. Hard-refresh the page (Ctrl+Shift+R).
 
 ## Partial SRT & Resume on Restart
 
@@ -258,8 +258,8 @@ Key helpers in `WhisperProvider`:
 
 ```bash
 dotnet build --configuration Release
-scp bin/Release/net9.0/JellySubtitles.dll \
-  <host>:/path/to/jellyfin/config/plugins/JellySubtitles_<version>/JellySubtitles.dll
+scp bin/Release/net9.0/WhisperSubs.dll \
+  <host>:/path/to/jellyfin/config/plugins/WhisperSubs_<version>/WhisperSubs.dll
 # Restart Jellyfin to load the new DLL
 ```
 
@@ -275,11 +275,11 @@ docker inspect jellyfin --format '{{range .Mounts}}{{.Source}} -> {{.Destination
 - **Static linking is mandatory**: Always build whisper.cpp with `-DBUILD_SHARED_LIBS=OFF`. Dynamic builds fail with `libwhisper.so.1: cannot open shared object file` inside the Jellyfin container.
 - **Orphaned docker-proxy**: If Jellyfin crashes, the docker-proxy process may hold port 8096. On Unraid, run `rc.docker restart` to clean up. On other systems, restart the Docker daemon.
 - **Memory limits**: Transcription (especially with large models) can consume 5-10 GB RAM. Set `mem_limit` in docker-compose to prevent OOM kills affecting other services.
-- **Plugin directory moves on version change**: Jellyfin may rename the plugin folder (e.g. `JellySubtitles_1.0.4.2` → `JellySubtitles`). Always check the actual path with `docker exec jellyfin find /config/plugins -name "JellySubtitles*" -type d` before deploying.
+- **Plugin directory moves on version change**: Jellyfin may rename the plugin folder (e.g. `WhisperSubs_1.0.4.2` → `WhisperSubs`). Always check the actual path with `docker exec jellyfin find /config/plugins -name "WhisperSubs*" -type d` before deploying.
 
 ## Queue Persistence & Concurrency
 
-- **Queue persists to disk** as `queue.json` in the plugin data folder (`/config/plugins/JellySubtitles/queue.json`). Updated on every enqueue/dequeue. On startup, `RestoreQueue()` reloads all entries and drains them before the library scan begins.
+- **Queue persists to disk** as `queue.json` in the plugin data folder (`/config/plugins/WhisperSubs/queue.json`). Updated on every enqueue/dequeue. On startup, `RestoreQueue()` reloads all entries and drains them before the library scan begins.
 - **Global `TranscriptionLock`** (`SemaphoreSlim(1,1)`) prevents concurrent whisper processes. Both the drain loop and the scheduled task must acquire it. Without this, two whisper processes run simultaneously and can OOM the container (11.4 GB / 12 GB observed).
 - **Per-language error isolation**: If whisper fails on one language (e.g. `en`), the error is caught and logged but does not abort remaining languages (e.g. `es` SRT is still saved). Only `OperationCanceledException` propagates up.
 - **whisper.cpp writes SRT only at completion** — not incrementally. Mid-process kills produce no partial file. The resume feature only helps when whisper finishes writing a file that covers part of the media (rare edge case).

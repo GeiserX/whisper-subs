@@ -7,7 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 
-namespace JellySubtitles.Providers
+namespace WhisperSubs.Providers
 {
     public class WhisperProvider : ISubtitleProvider
     {

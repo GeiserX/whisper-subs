@@ -7,9 +7,9 @@
     <Version>2.4.0.0</Version>
     <Authors>Sergio</Authors>
     <Company>Sergio</Company>
-    <Product>JellySubtitles</Product>
+    <Product>WhisperSubs</Product>
     <Description>Automated subtitle generation for Jellyfin using local AI models.</Description>
-    <PackageId>JellySubtitles</PackageId>
+    <PackageId>WhisperSubs</PackageId>
   </PropertyGroup>
 
   <ItemGroup>

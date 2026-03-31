@@ -4,9 +4,9 @@ using System.ComponentModel;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using JellySubtitles.Configuration;
-using JellySubtitles.Controller;
-using JellySubtitles.Providers;
+using WhisperSubs.Configuration;
+using WhisperSubs.Controller;
+using WhisperSubs.Providers;
 using Jellyfin.Data.Enums;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
@@ -16,10 +16,10 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
-namespace JellySubtitles.Api
+namespace WhisperSubs.Api
 {
     [ApiController]
-    [Route("Plugins/JellySubtitles")]
+    [Route("Plugins/WhisperSubs")]
     [Authorize]
     public class SubtitleController : ControllerBase
     {
@@ -331,7 +331,7 @@ namespace JellySubtitles.Api
         {
             try
             {
-                _taskManager.QueueScheduledTask<JellySubtitles.ScheduledTasks.SubtitleGenerationTask>();
+                _taskManager.QueueScheduledTask<WhisperSubs.ScheduledTasks.SubtitleGenerationTask>();
                 return Ok(new { message = "Subtitle generation task queued" });
             }
             catch (Exception ex)

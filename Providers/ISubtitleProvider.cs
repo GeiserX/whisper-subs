@@ -1,7 +1,7 @@
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace JellySubtitles.Providers
+namespace WhisperSubs.Providers
 {
     public interface ISubtitleProvider
     {
