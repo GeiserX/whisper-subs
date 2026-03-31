@@ -358,7 +358,7 @@ Temporary audio files are cleaned up automatically after processing.
 
 | Project | Description |
 |---------|-------------|
-| [jelly-covers](https://github.com/GeiserX/jelly-covers) | Fallback cover extraction from PDF, EPUB, and audiobook files |
+| [smart-covers](https://github.com/GeiserX/smart-covers) | Fallback cover extraction from PDF, EPUB, and audiobook files |
 | [jellyfin-encoder](https://github.com/GeiserX/jellyfin-encoder) | Automatic 720p HEVC/AV1 transcoding with hardware acceleration |
 | [jellyfin-telegram-channel-sync](https://github.com/GeiserX/jellyfin-telegram-channel-sync) | Sync user access with Telegram channel membership |
 
