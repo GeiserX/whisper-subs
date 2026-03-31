@@ -1,6 +1,6 @@
 using MediaBrowser.Model.Plugins;
 
-namespace JellySubtitles.Configuration
+namespace WhisperSubs.Configuration
 {
     public class PluginConfiguration : BasePluginConfiguration
     {

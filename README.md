@@ -1,17 +1,17 @@
 <p align="center">
-  <img src="docs/images/banner.svg" alt="JellySubtitles Banner" width="900"/>
+  <img src="docs/images/banner.svg" alt="WhisperSubs Banner" width="900"/>
 </p>
 
 <p align="center">
-  <a href="https://github.com/GeiserX/jelly-subtitles/releases"><img src="https://img.shields.io/github/v/release/GeiserX/jelly-subtitles?style=flat-square&logo=github&color=6B4C9A" alt="Release"></a>
-  <a href="https://github.com/GeiserX/jelly-subtitles/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square" alt="License"></a>
+  <a href="https://github.com/GeiserX/whisper-subs/releases"><img src="https://img.shields.io/github/v/release/GeiserX/whisper-subs?style=flat-square&logo=github&color=6B4C9A" alt="Release"></a>
+  <a href="https://github.com/GeiserX/whisper-subs/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square" alt="License"></a>
   <img src="https://img.shields.io/badge/.NET-9.0-512BD4?style=flat-square&logo=dotnet&logoColor=white" alt=".NET 9.0">
   <img src="https://img.shields.io/badge/Jellyfin-10.11%2B-6B4C9A?style=flat-square" alt="Jellyfin 10.11+">
 </p>
 
 ---
 
-**JellySubtitles** is a Jellyfin plugin that automatically generates subtitles for your media library using local AI models. All transcription runs entirely on your server -- no audio data ever leaves your network. Your media stays private.
+**WhisperSubs** is a Jellyfin plugin that automatically generates subtitles for your media library using local AI models. All transcription runs entirely on your server -- no audio data ever leaves your network. Your media stays private.
 
 ## Features
 
@@ -40,9 +40,9 @@
 1. In Jellyfin, go to **Dashboard** > **Plugins** > **Repositories**.
 2. Add a new repository with this URL:
    ```
-   https://geiserx.github.io/jelly-subtitles/manifest.json
+   https://geiserx.github.io/whisper-subs/manifest.json
    ```
-3. Go to **Catalog**, find **JellySubtitles**, and click **Install**.
+3. Go to **Catalog**, find **WhisperSubs**, and click **Install**.
 4. Restart Jellyfin.
 
 ### Manual Installation
@@ -51,9 +51,9 @@
    ```bash
    dotnet build --configuration Release
    ```
-2. Copy `JellySubtitles.dll` to your Jellyfin plugins directory:
+2. Copy `WhisperSubs.dll` to your Jellyfin plugins directory:
    ```
-   /var/lib/jellyfin/plugins/JellySubtitles/
+   /var/lib/jellyfin/plugins/WhisperSubs/
    ```
 3. Restart Jellyfin.
 
@@ -280,7 +280,7 @@ With GPU acceleration, `ggml-large-v3-turbo` offers the best quality-to-speed ra
 
 ## Configuration
 
-After installation, navigate to **Dashboard** > **Plugins** > **JellySubtitles** to configure:
+After installation, navigate to **Dashboard** > **Plugins** > **WhisperSubs** to configure:
 
 | Setting | Description |
 |---|---|
@@ -305,7 +305,7 @@ The plugin supports three language modes:
 
 ### Admin Dashboard
 
-The plugin adds a dedicated page to the Jellyfin admin dashboard (accessible from **Dashboard** > **Plugins** > **JellySubtitles**, or from the main sidebar menu). From there you can:
+The plugin adds a dedicated page to the Jellyfin admin dashboard (accessible from **Dashboard** > **Plugins** > **WhisperSubs**, or from the main sidebar menu). From there you can:
 
 - **Configure** the plugin settings (provider, model, binary path, default language).
 - **Browse** all libraries and their items.
@@ -319,17 +319,17 @@ All endpoints require Jellyfin admin authentication.
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/Plugins/JellySubtitles/Libraries` | List all media libraries |
-| `GET` | `/Plugins/JellySubtitles/Libraries/{libraryId}/Items` | List items in a library |
-| `POST` | `/Plugins/JellySubtitles/Items/{itemId}/Generate?language=auto` | Generate subtitles for a specific item |
-| `GET` | `/Plugins/JellySubtitles/Items/{itemId}/AudioLanguages` | Detect audio languages in a media file |
-| `GET` | `/Plugins/JellySubtitles/Items/{itemId}/Status` | Check subtitle generation status |
+| `GET` | `/Plugins/WhisperSubs/Libraries` | List all media libraries |
+| `GET` | `/Plugins/WhisperSubs/Libraries/{libraryId}/Items` | List items in a library |
+| `POST` | `/Plugins/WhisperSubs/Items/{itemId}/Generate?language=auto` | Generate subtitles for a specific item |
+| `GET` | `/Plugins/WhisperSubs/Items/{itemId}/AudioLanguages` | Detect audio languages in a media file |
+| `GET` | `/Plugins/WhisperSubs/Items/{itemId}/Status` | Check subtitle generation status |
 
 The `language` parameter accepts `auto` (default), or any ISO 639-1 code (`en`, `es`, `fr`, etc.).
 
 ### Scheduled Task
 
-A scheduled task named **Generate Subtitles** is registered under the **JellySubtitles** category. It can be configured in **Dashboard** > **Scheduled Tasks** with your preferred schedule or triggered manually. The task:
+A scheduled task named **Generate Subtitles** is registered under the **WhisperSubs** category. It can be configured in **Dashboard** > **Scheduled Tasks** with your preferred schedule or triggered manually. The task:
 
 1. Scans all enabled libraries (or all libraries if none are explicitly selected).
 2. Finds video items that lack subtitles.

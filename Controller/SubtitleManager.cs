@@ -7,13 +7,13 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
-using JellySubtitles.Configuration;
-using JellySubtitles.Providers;
+using WhisperSubs.Configuration;
+using WhisperSubs.Providers;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 using Microsoft.Extensions.Logging;
 
-namespace JellySubtitles.Controller
+namespace WhisperSubs.Controller
 {
     public class SubtitleManager
     {

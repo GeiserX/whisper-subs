@@ -1,15 +1,15 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>JellySubtitles Configuration</title>
+    <title>WhisperSubs Configuration</title>
 </head>
 <body>
-    <div data-role="page" class="page type-interior pluginConfigurationPage" data-name="jellySubtitlesConfigurationPage" data-require="emby-input,emby-button,emby-select,emby-checkbox">
+    <div data-role="page" class="page type-interior pluginConfigurationPage" data-name="whisperSubsConfigurationPage" data-require="emby-input,emby-button,emby-select,emby-checkbox">
         <div data-role="content">
             <div class="content-primary">
-                <h1>JellySubtitles</h1>
+                <h1>WhisperSubs</h1>
 
-                <form class="jellySubtitlesConfigurationForm">
+                <form class="whisperSubsConfigurationForm">
                     <div class="selectContainer">
                         <label class="selectLabel" for="selectProvider">Subtitle Provider</label>
                         <select is="emby-select" id="selectProvider" name="SelectedProvider">
@@ -141,7 +141,7 @@
             </div>
         </div>
         <script type="text/javascript">
-            var JellySubtitlesConfig = {
+            var WhisperSubsConfig = {
                 pluginId: '97124bd9-c8cd-4a53-a213-e593aa3fef52',
                 pageSize: 50,
                 currentStartIndex: 0,
@@ -177,21 +177,21 @@
                 },
 
                 ajaxGet: function (url) {
-                    console.log('JellySubtitles: fetching', url);
-                    return fetch(url, { headers: JellySubtitlesConfig.getAuthHeader() })
+                    console.log('WhisperSubs: fetching', url);
+                    return fetch(url, { headers: WhisperSubsConfig.getAuthHeader() })
                         .then(function (resp) {
-                            console.log('JellySubtitles: response status', resp.status);
+                            console.log('WhisperSubs: response status', resp.status);
                             if (!resp.ok) throw new Error('HTTP ' + resp.status);
                             return resp.json();
                         })
                         .then(function (data) {
-                            console.log('JellySubtitles: parsed data', data);
+                            console.log('WhisperSubs: parsed data', data);
                             return data;
                         });
                 },
 
                 loadConfiguration: function (page) {
-                    ApiClient.getPluginConfiguration(JellySubtitlesConfig.pluginId).then(function (config) {
+                    ApiClient.getPluginConfiguration(WhisperSubsConfig.pluginId).then(function (config) {
                         if (config) {
                             page.querySelector('#selectProvider').value = config.SelectedProvider || 'Whisper';
                             page.querySelector('#txtWhisperBinaryPath').value = config.WhisperBinaryPath || '';
@@ -199,27 +199,27 @@
                             page.querySelector('#selectDefaultLanguage').value = config.DefaultLanguage || 'auto';
                             page.querySelector('#chkEnableAutoGeneration').checked = config.EnableAutoGeneration || false;
                         }
-                        JellySubtitlesConfig.loadModels();
-                        JellySubtitlesConfig.loadLibraries();
+                        WhisperSubsConfig.loadModels();
+                        WhisperSubsConfig.loadLibraries();
                     });
                 },
 
                 saveConfiguration: function (page) {
-                    ApiClient.getPluginConfiguration(JellySubtitlesConfig.pluginId).then(function (config) {
+                    ApiClient.getPluginConfiguration(WhisperSubsConfig.pluginId).then(function (config) {
                         var wasAutoGenEnabled = config.EnableAutoGeneration;
                         config.SelectedProvider = page.querySelector('#selectProvider').value;
                         config.WhisperBinaryPath = page.querySelector('#txtWhisperBinaryPath').value;
                         config.WhisperModelPath = page.querySelector('#txtWhisperModelPath').value;
                         config.DefaultLanguage = page.querySelector('#selectDefaultLanguage').value;
                         config.EnableAutoGeneration = page.querySelector('#chkEnableAutoGeneration').checked;
-                        ApiClient.updatePluginConfiguration(JellySubtitlesConfig.pluginId, config).then(function (result) {
+                        ApiClient.updatePluginConfiguration(WhisperSubsConfig.pluginId, config).then(function (result) {
                             Dashboard.processPluginConfigurationUpdateResult(result);
-                            JellySubtitlesConfig.loadModels();
+                            WhisperSubsConfig.loadModels();
                             // If auto-generation was just enabled, trigger the task immediately
                             if (config.EnableAutoGeneration && !wasAutoGenEnabled) {
                                 ApiClient.ajax({
                                     type: 'POST',
-                                    url: ApiClient.getUrl('Plugins/JellySubtitles/RunTask')
+                                    url: ApiClient.getUrl('Plugins/WhisperSubs/RunTask')
                                 }).then(function () {
                                     Dashboard.alert('Subtitle generation task started.');
                                 }).catch(function () {
@@ -231,8 +231,8 @@
                 },
 
                 loadModels: function () {
-                    JellySubtitlesConfig.ajaxGet(
-                        ApiClient.getUrl('Plugins/JellySubtitles/Models')
+                    WhisperSubsConfig.ajaxGet(
+                        ApiClient.getUrl('Plugins/WhisperSubs/Models')
                     ).then(function (models) {
                         var container = document.querySelector('#modelPickerContainer');
                         var select = document.querySelector('#selectModel');
@@ -265,19 +265,19 @@
                             select.value = currentPath;
                         }
                     }).catch(function (error) {
-                        console.error('JellySubtitles: error loading models', error);
+                        console.error('WhisperSubs: error loading models', error);
                         document.querySelector('#modelPickerContainer').style.display = 'none';
                     });
                 },
 
                 loadLibraries: function () {
-                    JellySubtitlesConfig.ajaxGet(
-                        ApiClient.getUrl('Plugins/JellySubtitles/Libraries')
+                    WhisperSubsConfig.ajaxGet(
+                        ApiClient.getUrl('Plugins/WhisperSubs/Libraries')
                     ).then(function (libraries) {
                         var select = document.querySelector('#selectLibrary');
                         select.innerHTML = '<option value="">Select a Library...</option>';
                         if (!libraries || !Array.isArray(libraries)) {
-                            console.error('JellySubtitles: unexpected libraries response', libraries);
+                            console.error('WhisperSubs: unexpected libraries response', libraries);
                             return;
                         }
                         libraries.forEach(function (lib) {
@@ -287,7 +287,7 @@
                             select.appendChild(option);
                         });
                     }).catch(function (error) {
-                        console.error('JellySubtitles: error loading libraries', error);
+                        console.error('WhisperSubs: error loading libraries', error);
                     });
                 },
 
@@ -301,23 +301,23 @@
                         return;
                     }
 
-                    JellySubtitlesConfig.currentLibraryId = libraryId;
+                    WhisperSubsConfig.currentLibraryId = libraryId;
                     startIndex = startIndex || 0;
-                    JellySubtitlesConfig.currentStartIndex = startIndex;
+                    WhisperSubsConfig.currentStartIndex = startIndex;
 
                     tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:2em;">Loading...</td></tr>';
 
-                    JellySubtitlesConfig.ajaxGet(
-                        ApiClient.getUrl('Plugins/JellySubtitles/Libraries/' + libraryId + '/Items', {
+                    WhisperSubsConfig.ajaxGet(
+                        ApiClient.getUrl('Plugins/WhisperSubs/Libraries/' + libraryId + '/Items', {
                             startIndex: startIndex,
-                            limit: JellySubtitlesConfig.pageSize
+                            limit: WhisperSubsConfig.pageSize
                         })
                     ).then(function (result) {
                         tbody.innerHTML = '';
 
                         var items = result.Items || [];
                         var totalCount = result.TotalCount || 0;
-                        JellySubtitlesConfig.currentTotalCount = totalCount;
+                        WhisperSubsConfig.currentTotalCount = totalCount;
 
                         if (items.length === 0) {
                             tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:2em;opacity:0.7;">No items found in this library.</td></tr>';
@@ -351,7 +351,7 @@
                             langSelect.style.minWidth = '120px';
                             langSelect.style.margin = '0';
                             langSelect.id = 'lang_' + item.Id;
-                            JellySubtitlesConfig.languageOptions.forEach(function (opt) {
+                            WhisperSubsConfig.languageOptions.forEach(function (opt) {
                                 var o = document.createElement('option');
                                 o.value = opt.value;
                                 o.textContent = opt.label;
@@ -368,7 +368,7 @@
                             generateBtn.className = 'raised';
                             generateBtn.innerHTML = '<span>Generate</span>';
                             generateBtn.onclick = (function (id, name) {
-                                return function () { JellySubtitlesConfig.generateSubtitle(id, name); };
+                                return function () { WhisperSubsConfig.generateSubtitle(id, name); };
                             })(item.Id, item.Name);
                             actionsCell.appendChild(generateBtn);
 
@@ -381,20 +381,20 @@
                         });
 
                         // Update pagination controls
-                        var currentPage = Math.floor(startIndex / JellySubtitlesConfig.pageSize) + 1;
-                        var totalPages = Math.ceil(totalCount / JellySubtitlesConfig.pageSize);
+                        var currentPage = Math.floor(startIndex / WhisperSubsConfig.pageSize) + 1;
+                        var totalPages = Math.ceil(totalCount / WhisperSubsConfig.pageSize);
 
                         if (totalPages > 1) {
                             pagination.style.display = 'flex';
                             document.querySelector('#pageInfo').textContent =
                                 'Page ' + currentPage + ' of ' + totalPages + ' (' + totalCount + ' items)';
                             document.querySelector('#btnPrevPage').disabled = (startIndex <= 0);
-                            document.querySelector('#btnNextPage').disabled = (startIndex + JellySubtitlesConfig.pageSize >= totalCount);
+                            document.querySelector('#btnNextPage').disabled = (startIndex + WhisperSubsConfig.pageSize >= totalCount);
                         } else {
                             pagination.style.display = 'none';
                         }
                     }).catch(function (error) {
-                        console.error('JellySubtitles: error loading library items', error);
+                        console.error('WhisperSubs: error loading library items', error);
                         tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:2em;color:#CC7B19;">Error loading items. Check browser console.</td></tr>';
                         pagination.style.display = 'none';
                     });
@@ -417,7 +417,7 @@
 
                     ApiClient.ajax({
                         type: 'POST',
-                        url: ApiClient.getUrl('Plugins/JellySubtitles/Items/' + itemId + '/Generate', { language: lang })
+                        url: ApiClient.getUrl('Plugins/WhisperSubs/Items/' + itemId + '/Generate', { language: lang })
                     }).then(function () {
                         if (btn) {
                             btn.innerHTML = '<span>Queued &#10003;</span>';
@@ -432,19 +432,19 @@
                             btn.disabled = false;
                             btn.innerHTML = '<span>Generate</span>';
                         }
-                        console.error('JellySubtitles: error queuing subtitle', error);
+                        console.error('WhisperSubs: error queuing subtitle', error);
                         Dashboard.alert('Error queuing subtitle. Check the server log for details.');
                     });
                 }
             };
 
             document.querySelector('[data-role="page"]').addEventListener('pageshow', function () {
-                JellySubtitlesConfig.loadConfiguration(this);
+                WhisperSubsConfig.loadConfiguration(this);
             });
 
-            document.querySelector('.jellySubtitlesConfigurationForm').addEventListener('submit', function (e) {
+            document.querySelector('.whisperSubsConfigurationForm').addEventListener('submit', function (e) {
                 e.preventDefault();
-                JellySubtitlesConfig.saveConfiguration(this.closest('[data-role="page"]'));
+                WhisperSubsConfig.saveConfiguration(this.closest('[data-role="page"]'));
                 return false;
             });
 
@@ -455,20 +455,20 @@
             });
 
             document.querySelector('#selectLibrary').addEventListener('change', function (e) {
-                JellySubtitlesConfig.currentStartIndex = 0;
-                JellySubtitlesConfig.loadLibraryItems(e.target.value, 0);
+                WhisperSubsConfig.currentStartIndex = 0;
+                WhisperSubsConfig.loadLibraryItems(e.target.value, 0);
             });
 
             document.querySelector('#btnPrevPage').addEventListener('click', function () {
-                var newStart = JellySubtitlesConfig.currentStartIndex - JellySubtitlesConfig.pageSize;
+                var newStart = WhisperSubsConfig.currentStartIndex - WhisperSubsConfig.pageSize;
                 if (newStart < 0) newStart = 0;
-                JellySubtitlesConfig.loadLibraryItems(JellySubtitlesConfig.currentLibraryId, newStart);
+                WhisperSubsConfig.loadLibraryItems(WhisperSubsConfig.currentLibraryId, newStart);
             });
 
             document.querySelector('#btnNextPage').addEventListener('click', function () {
-                var newStart = JellySubtitlesConfig.currentStartIndex + JellySubtitlesConfig.pageSize;
-                if (newStart < JellySubtitlesConfig.currentTotalCount) {
-                    JellySubtitlesConfig.loadLibraryItems(JellySubtitlesConfig.currentLibraryId, newStart);
+                var newStart = WhisperSubsConfig.currentStartIndex + WhisperSubsConfig.pageSize;
+                if (newStart < WhisperSubsConfig.currentTotalCount) {
+                    WhisperSubsConfig.loadLibraryItems(WhisperSubsConfig.currentLibraryId, newStart);
                 }
             });
         </script>

@@ -30,20 +30,20 @@ jobs:
       - name: Get version from csproj
         id: version
         run: |
-          VERSION=$(grep -oP '(?<=<Version>)[^<]+' JellySubtitles.csproj)
+          VERSION=$(grep -oP '(?<=<Version>)[^<]+' WhisperSubs.csproj)
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Create plugin package
         run: |
           mkdir -p release
-          cp bin/Release/net9.0/JellySubtitles.dll release/
-          cp bin/Release/net9.0/JellySubtitles.pdb release/ 2>/dev/null || true
-          cd release && zip -r ../JellySubtitles_${{ steps.version.outputs.version }}.zip .
+          cp bin/Release/net9.0/WhisperSubs.dll release/
+          cp bin/Release/net9.0/WhisperSubs.pdb release/ 2>/dev/null || true
+          cd release && zip -r ../WhisperSubs_${{ steps.version.outputs.version }}.zip .
 
       - name: Calculate checksum
         id: checksum
         run: |
-          CHECKSUM=$(md5sum JellySubtitles_${{ steps.version.outputs.version }}.zip | cut -d ' ' -f 1)
+          CHECKSUM=$(md5sum WhisperSubs_${{ steps.version.outputs.version }}.zip | cut -d ' ' -f 1)
           echo "checksum=$CHECKSUM" >> $GITHUB_OUTPUT
 
       - name: Update manifest.json
@@ -56,7 +56,7 @@ jobs:
           [
             {
               "guid": "97124bd9-c8cd-4a53-a213-e593aa3fef52",
-              "name": "JellySubtitles",
+              "name": "WhisperSubs",
               "description": "Automated subtitle generation for Jellyfin using local AI models (Whisper, Parakeet, etc.)",
               "overview": "Generate subtitles for your media library using local speech-to-text AI models. Supports Whisper, Parakeet, and custom command providers. All processing happens locally on your server.",
               "owner": "GeiserX",
@@ -64,9 +64,9 @@ jobs:
               "versions": [
                 {
                   "version": "${VERSION}",
-                  "changelog": "See https://github.com/GeiserX/jelly-subtitles/releases",
+                  "changelog": "See https://github.com/GeiserX/whisper-subs/releases",
                   "targetAbi": "10.11.0.0",
-                  "sourceUrl": "https://github.com/GeiserX/jelly-subtitles/releases/download/v${VERSION}/JellySubtitles_${VERSION}.zip",
+                  "sourceUrl": "https://github.com/GeiserX/whisper-subs/releases/download/v${VERSION}/WhisperSubs_${VERSION}.zip",
                   "checksum": "${CHECKSUM}",
                   "timestamp": "${TIMESTAMP}"
                 }
@@ -79,8 +79,8 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           tag_name: v${{ steps.version.outputs.version }}
-          name: JellySubtitles v${{ steps.version.outputs.version }}
-          files: JellySubtitles_${{ steps.version.outputs.version }}.zip
+          name: WhisperSubs v${{ steps.version.outputs.version }}
+          files: WhisperSubs_${{ steps.version.outputs.version }}.zip
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -3,15 +3,15 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using JellySubtitles.Controller;
-using JellySubtitles.Providers;
+using WhisperSubs.Controller;
+using WhisperSubs.Providers;
 using Jellyfin.Data.Enums;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Tasks;
 using Microsoft.Extensions.Logging;
 
-namespace JellySubtitles.ScheduledTasks
+namespace WhisperSubs.ScheduledTasks
 {
     public class SubtitleGenerationTask : IScheduledTask
     {
@@ -30,9 +30,9 @@ namespace JellySubtitles.ScheduledTasks
         }
 
         public string Name => "Generate Subtitles";
-        public string Key => "JellySubtitlesGenerator";
+        public string Key => "WhisperSubsGenerator";
         public string Description => "Scans enabled libraries and generates subtitles for items that lack them. Resumes automatically after restart.";
-        public string Category => "JellySubtitles";
+        public string Category => "WhisperSubs";
 
         public IEnumerable<TaskTriggerInfo> GetDefaultTriggers()
         {

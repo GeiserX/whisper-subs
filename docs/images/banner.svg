@@ -68,7 +68,7 @@
 
   <!-- Title text — centered in remaining space -->
   <text x="580" y="88" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="48" font-weight="700" fill="#FFFFFF" text-anchor="middle" letter-spacing="-0.5">
-    JellySubtitles
+    WhisperSubs
   </text>
 
   <!-- Tagline -->
