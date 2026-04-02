@@ -354,13 +354,12 @@ Temporary audio files are cleaned up automatically after processing.
 - [ ] **Progress tracking** -- Real-time progress reporting in the admin UI during transcription.
 - [ ] **Batch operations** -- Generate subtitles for entire libraries or filtered sets from the dashboard.
 
-## Related Jellyfin Tools
+## Other Jellyfin Projects by GeiserX
 
-| Project | Description |
-|---------|-------------|
-| [smart-covers](https://github.com/GeiserX/smart-covers) | Fallback cover extraction from PDF, EPUB, and audiobook files |
-| [jellyfin-encoder](https://github.com/GeiserX/jellyfin-encoder) | Automatic 720p HEVC/AV1 transcoding with hardware acceleration |
-| [jellyfin-telegram-channel-sync](https://github.com/GeiserX/jellyfin-telegram-channel-sync) | Sync user access with Telegram channel membership |
+- [smart-covers](https://github.com/GeiserX/smart-covers) — Plugin for fallback cover extraction from PDF, EPUB, and audiobooks
+- [jellyfin-quality-gate](https://github.com/GeiserX/jellyfin-quality-gate) — Plugin to restrict users to specific media versions
+- [jellyfin-encoder](https://github.com/GeiserX/jellyfin-encoder) — Automatic 720p HEVC/AV1 transcoding service
+- [jellyfin-telegram-channel-sync](https://github.com/GeiserX/jellyfin-telegram-channel-sync) — Sync Jellyfin access with Telegram channel membership
 
 
 ## License
