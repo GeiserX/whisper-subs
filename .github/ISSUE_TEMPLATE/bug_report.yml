@@ -1,0 +1,123 @@
+name: Bug Report
+description: Report a problem with WhisperSubs
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please fill in as much detail as possible so we can help you quickly.
+
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Plugin version
+      description: Found in Jellyfin Dashboard > Plugins > WhisperSubs
+      placeholder: "e.g. 4.1.0"
+    validations:
+      required: true
+
+  - type: input
+    id: jellyfin-version
+    attributes:
+      label: Jellyfin version
+      placeholder: "e.g. 10.11.8"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: engine
+    attributes:
+      label: Transcription engine
+      options:
+        - Local whisper-cli (CPU)
+        - Local whisper-cli (CUDA / NVIDIA)
+        - Local whisper-cli (Vulkan)
+        - Local whisper-cli (ROCm / AMD)
+        - Remote API (faster-whisper-server, etc.)
+    validations:
+      required: true
+
+  - type: input
+    id: model
+    attributes:
+      label: Whisper model
+      description: Which GGML model are you using?
+      placeholder: "e.g. ggml-large-v3-turbo-q5_0.bin"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: Installation method
+      options:
+        - Docker (linuxserver/jellyfin)
+        - Docker (jellyfin/jellyfin)
+        - TrueNAS app / TrueCharts
+        - Unraid
+        - Bare metal (Linux)
+        - Bare metal (Windows)
+        - Other (describe below)
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the problem clearly. What did you expect vs what actually happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: setup-status
+    attributes:
+      label: Setup status endpoint
+      description: |
+        Go to your Jellyfin URL and open:
+        `{your-jellyfin-url}/Plugins/WhisperSubs/Setup/Status`
+
+        Paste the full JSON response below.
+      render: json
+    validations:
+      required: true
+
+  - type: textarea
+    id: queue-status
+    attributes:
+      label: Queue status
+      description: |
+        Open: `{your-jellyfin-url}/Plugins/WhisperSubs/Queue`
+
+        Paste the response here. This shows if transcription is running, stuck, or erroring.
+      render: json
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: |
+        Filter your Jellyfin logs for `WhisperSubs`. For Docker:
+        ```bash
+        docker logs jellyfin 2>&1 | grep -i "whisper"
+        ```
+        Include at least the last 50 lines related to WhisperSubs.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: docker-config
+    attributes:
+      label: Docker compose / run command
+      description: |
+        If using Docker, paste your compose file or `docker run` command.
+        Make sure GPU device passthrough and volume mounts are visible.
+        **Remove any API keys or passwords.**
+      render: yaml
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+      description: Anything else that might help (screenshots, file paths, special characters in filenames, read-only mounts, etc.)
