@@ -51,12 +51,12 @@ jobs:
           - os: [self-hosted, Linux, X64]
             variant: cuda12
             asset_name: whisper-cli-linux-x64-cuda12
-            cmake_flags: "-DGGML_CUDA=ON -DGGML_STATIC=ON -DCMAKE_CUDA_ARCHITECTURES=61;70;75;80;86;89;90 -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_BMI2=ON"
+            cmake_flags: "-DGGML_CUDA=ON -DGGML_STATIC=ON -DCMAKE_CUDA_ARCHITECTURES='61;70;75;80;86;89;90' -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_BMI2=ON"
             pre_install: "cuda"
           - os: [self-hosted, Linux, X64]
             variant: cuda12-noavx
             asset_name: whisper-cli-linux-x64-cuda12-noavx
-            cmake_flags: "-DGGML_CUDA=ON -DGGML_STATIC=ON -DCMAKE_CUDA_ARCHITECTURES=61;70;75;80;86;89;90 -DGGML_NATIVE=OFF -DGGML_AVX=OFF -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_BMI2=OFF -DGGML_SSE42=ON -DGGML_OPENMP=OFF"
+            cmake_flags: "-DGGML_CUDA=ON -DGGML_STATIC=ON -DCMAKE_CUDA_ARCHITECTURES='61;70;75;80;86;89;90' -DGGML_NATIVE=OFF -DGGML_AVX=OFF -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_BMI2=OFF -DGGML_SSE42=ON -DGGML_OPENMP=OFF"
             pre_install: "cuda"
           - os: [self-hosted, Linux, X64]
             variant: vulkan
