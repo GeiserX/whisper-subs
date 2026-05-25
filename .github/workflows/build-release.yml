@@ -87,15 +87,15 @@ jobs:
         with:
           cuda: '12.6.3'
           method: 'network'
-          sub-packages: '["nvcc", "cudart-dev", "cudart-static"]'
+          sub-packages: '["nvcc", "cudart-dev"]'
 
       - name: Install cuBLAS
         if: steps.cache-whisper.outputs.cache-hit != 'true' && matrix.pre_install == 'cuda'
-        run: sudo apt-get install -y libcublas-dev-12-6 libcublas-static-12-6
+        run: sudo apt-get install -y libcublas-dev-12-6
 
       - name: Install Vulkan SDK
         if: steps.cache-whisper.outputs.cache-hit != 'true' && matrix.pre_install == 'vulkan'
-        run: sudo apt-get install -y libvulkan-dev vulkan-headers shaderc
+        run: sudo apt-get install -y libvulkan-dev glslc
 
       - name: Install ARM64 cross-compilation toolchain
         if: steps.cache-whisper.outputs.cache-hit != 'true' && matrix.pre_install == 'arm64'
