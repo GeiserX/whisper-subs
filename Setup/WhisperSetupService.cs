@@ -442,6 +442,22 @@ namespace WhisperSubs.Setup
                 if (validationError != null)
                 {
                     _logger.LogWarning("Binary validation warning: {Error}", validationError);
+
+                    // Auto-fallback: if a GPU variant fails, try the CPU equivalent
+                    var fallbackVariant = GetCpuFallbackVariant(variant);
+                    if (fallbackVariant != null)
+                    {
+                        _logger.LogInformation("GPU binary failed validation — auto-downloading CPU fallback ({Fallback})", fallbackVariant);
+                        lock (_lock)
+                        {
+                            _progress = 50;
+                            _progressMessage = $"GPU binary failed ({validationError}). Downloading CPU fallback...";
+                            _error = null;
+                        }
+                        await DownloadBinaryAsync(fallbackVariant, cancellationToken);
+                        return;
+                    }
+
                     lock (_lock)
                     {
                         _progress = 100;
@@ -452,8 +468,6 @@ namespace WhisperSubs.Setup
 
                 if (validationError == null)
                 {
-                    // Only auto-apply to config when the binary actually works —
-                    // don't overwrite a working config with a known-bad binary.
                     var config = Plugin.Instance.Configuration;
                     config.WhisperBinaryPath = BinaryPath;
                     Plugin.Instance.SaveConfiguration();
@@ -546,6 +560,17 @@ namespace WhisperSubs.Setup
                 return null; // Can't probe — don't block the download
             }
         }
+
+        /// <summary>
+        /// Maps GPU variants to their CPU fallback for auto-recovery.
+        /// Returns null for CPU variants (no further fallback).
+        /// </summary>
+        private static string? GetCpuFallbackVariant(string variant) => variant switch
+        {
+            "cuda12" or "vulkan" => "cpu",
+            "cuda12-noavx" or "vulkan-noavx" or "rocm" => "noavx",
+            _ => null
+        };
 
         /// <summary>
         /// Returns an apt-install hint for a missing shared library.
