@@ -119,9 +119,44 @@ public class SetupServiceTests
     [InlineData("rocm", "noavx")]
     [InlineData("cpu", "noavx")]        // #70: OpenMP-linked cpu build falls back to self-contained noavx
     [InlineData("noavx", null)]         // already the most-compatible build — no further fallback
-    public void GetCpuFallbackVariant_MapsToExpectedFallback(string variant, string? expected)
+    [InlineData("foobar", null)]        // unknown variant — no fallback
+    [InlineData("", null)]              // empty string — no fallback
+    [InlineData("CPU", null)]           // switch is case-SENSITIVE — uppercase does NOT match
+    [InlineData("rocm-noavx", null)]    // not a real variant — no fallback
+    public void GetFallbackVariant_MapsToExpectedFallback(string variant, string? expected)
     {
-        Assert.Equal(expected, WhisperSetupService.GetCpuFallbackVariant(variant));
+        Assert.Equal(expected, WhisperSetupService.GetFallbackVariant(variant));
+    }
+
+    [Fact]
+    public void GetFallbackVariant_NullInput_ReturnsNull()
+    {
+        Assert.Null(WhisperSetupService.GetFallbackVariant(null!));
+    }
+
+    [Fact]
+    public void GetFallbackVariant_ChainTerminatesWithoutCycles()
+    {
+        var startingVariants = new[] { "cpu", "noavx", "cuda12", "cuda12-noavx", "vulkan", "vulkan-noavx", "rocm" };
+
+        foreach (var start in startingVariants)
+        {
+            var visited = new HashSet<string>();
+            var current = start;
+            var hops = 0;
+
+            while (current != null)
+            {
+                Assert.True(
+                    visited.Add(current),
+                    $"Fallback cycle detected starting from '{start}': revisited variant '{current}'");
+                hops++;
+                Assert.True(
+                    hops < 10,
+                    $"Fallback chain starting from '{start}' did not terminate within 10 hops");
+                current = WhisperSetupService.GetFallbackVariant(current);
+            }
+        }
     }
 
     [Fact]
