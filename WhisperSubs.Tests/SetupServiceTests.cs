@@ -111,6 +111,19 @@ public class SetupServiceTests
         Assert.Contains("apt install", result);
     }
 
+    [Theory]
+    [InlineData("cuda12", "cpu")]
+    [InlineData("vulkan", "cpu")]
+    [InlineData("cuda12-noavx", "noavx")]
+    [InlineData("vulkan-noavx", "noavx")]
+    [InlineData("rocm", "noavx")]
+    [InlineData("cpu", "noavx")]        // #70: OpenMP-linked cpu build falls back to self-contained noavx
+    [InlineData("noavx", null)]         // already the most-compatible build — no further fallback
+    public void GetCpuFallbackVariant_MapsToExpectedFallback(string variant, string? expected)
+    {
+        Assert.Equal(expected, WhisperSetupService.GetCpuFallbackVariant(variant));
+    }
+
     [Fact]
     public void DetectGpu_ReturnsValidInfo()
     {
