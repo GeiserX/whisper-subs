@@ -275,7 +275,8 @@ namespace WhisperSubs.Api
                     ? queue.PriorityCount + (queue.TaskTotal - queue.TaskProcessed)
                     : queue.PriorityCount,
                 processed = queue.ProcessedCount + queue.TaskProcessed,
-                failed = queue.TaskFailed,
+                failed = queue.TaskFailed + queue.FailedCount,
+                lastError = queue.LastError,
                 taskTotal = queue.IsTaskRunning ? queue.TaskTotal : 0,
                 fileProgress = queue.CurrentFileProgress,
                 phase = queue.CurrentPhase,

@@ -185,8 +185,22 @@ namespace WhisperSubs.Providers
 
                 if (process.ExitCode != 0)
                 {
+                    var stderr = errorBuilder.ToString();
+
+                    // Exit 127 = dynamic linker couldn't load a shared library. Surface a clear,
+                    // actionable message instead of a raw dump (the binary itself is missing a runtime dep).
+                    if (process.ExitCode == 127)
+                    {
+                        var match = Regex.Match(stderr, @"error while loading shared libraries:\s*(\S+?):");
+                        var lib = match.Success ? match.Groups[1].Value : "a shared library";
+                        throw new InvalidOperationException(
+                            $"whisper-cli could not start: missing {lib}. The binary requires a system library " +
+                            $"that isn't present in this container. Install it (e.g. 'apt install libgomp1' for " +
+                            $"libgomp.so.1) or switch to a binary variant that doesn't need it. Raw error: {stderr.Trim()}");
+                    }
+
                     throw new InvalidOperationException(
-                        $"Whisper process failed with exit code {process.ExitCode}. Error: {errorBuilder}");
+                        $"Whisper process failed with exit code {process.ExitCode}. Error: {stderr}");
                 }
 
                 if (File.Exists(tempSrtPath))
