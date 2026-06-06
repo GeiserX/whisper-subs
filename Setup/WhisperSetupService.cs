@@ -363,35 +363,131 @@ namespace WhisperSubs.Setup
         }
 
         /// <summary>
-        /// Downloads the whisper-cli binary from the whisper-subs GitHub release
-        /// matching the current plugin version. Caller must call TryAcquire("binary", ...) first.
+        /// Downloads the whisper-cli binary from the whisper-subs GitHub release matching the
+        /// current plugin version, validates it can launch, and on failure walks the
+        /// <see cref="GetFallbackVariant"/> chain to a more-compatible build. Caller must call
+        /// TryAcquire("binary", ...) first; this method owns releasing that lock.
         /// </summary>
-        /// <param name="variant">Binary variant: "cpu", "cuda12", "vulkan", or "rocm".</param>
+        /// <param name="variant">A binary variant id from <see cref="BinaryCatalog"/> (e.g. "cpu",
+        /// "noavx", "cuda12", "cuda12-noavx", "vulkan", "vulkan-noavx", "rocm").</param>
         [ExcludeFromCodeCoverage(Justification = "HTTP download + Plugin.Instance + process validation")]
         public async Task DownloadBinaryAsync(string variant, CancellationToken cancellationToken)
         {
             try
             {
-                Directory.CreateDirectory(WhisperDirectory);
+                var currentVariant = variant;
+                string? originalError = null;
 
-                var platform = GetPlatformIdentifier();
-                var version = typeof(Plugin).Assembly.GetName().Version?.ToString() ?? "3.3.0.0";
-                var assetName = BinaryCatalog.GetAssetName(platform, variant);
-                if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) assetName += ".exe";
+                // Iterative fallback walk (cuda12 -> cpu -> noavx, etc.). The chain is a finite DAG
+                // converging on a variant with no fallback, so this loop always terminates.
+                while (true)
+                {
+                    string? validationError;
+                    try
+                    {
+                        validationError = await DownloadAndValidateVariantAsync(currentVariant, cancellationToken);
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException && originalError != null)
+                    {
+                        // A *fallback* download itself failed (e.g. the asset 404s). Surface the
+                        // ORIGINAL validation reason so the user sees why the primary was rejected,
+                        // not just the secondary download error.
+                        _logger.LogError(ex, "Fallback download '{Variant}' failed; surfacing original validation error", currentVariant);
+                        lock (_lock)
+                        {
+                            _progress = 100;
+                            _error = originalError;
+                            _progressMessage = $"whisper-cli downloaded but may not work: {originalError} " +
+                                $"(fallback '{currentVariant}' also failed: {ex.Message})";
+                        }
+                        return;
+                    }
 
-                var url = $"https://github.com/GeiserX/whisper-subs/releases/download/v{version}/{assetName}";
+                    if (validationError == null)
+                    {
+                        var config = Plugin.Instance.Configuration;
+                        config.WhisperBinaryPath = BinaryPath;
+                        Plugin.Instance.SaveConfiguration();
 
-                _logger.LogInformation("Downloading whisper-cli from {Url} for platform {Platform}", url, platform);
+                        lock (_lock)
+                        {
+                            _progress = 100;
+                            _progressMessage = "whisper-cli downloaded successfully.";
+                        }
 
-                using var response = await SharedHttpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-                response.EnsureSuccessStatusCode();
+                        _logger.LogInformation("Binary downloaded to {Path} and config updated", BinaryPath);
+                        return;
+                    }
 
-                var totalBytes = response.Content.Headers.ContentLength ?? -1;
-                var tempPath = BinaryPath + ".downloading";
+                    _logger.LogWarning("Binary validation warning: {Error}", validationError);
+                    originalError ??= validationError;
 
-                await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-                await using var fileStream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None, 81920);
+                    var fallbackVariant = GetFallbackVariant(currentVariant);
+                    if (fallbackVariant == null)
+                    {
+                        lock (_lock)
+                        {
+                            _progress = 100;
+                            _progressMessage = $"whisper-cli downloaded but may not work: {validationError}";
+                            _error = validationError;
+                        }
+                        _logger.LogWarning("Binary downloaded to {Path} but NOT applied to config: {Error}", BinaryPath, validationError);
+                        return;
+                    }
 
+                    _logger.LogInformation("Binary '{Variant}' failed validation — auto-downloading fallback ({Fallback})", currentVariant, fallbackVariant);
+                    lock (_lock)
+                    {
+                        _progressMessage = $"'{currentVariant}' binary failed ({validationError}). Downloading {fallbackVariant} fallback...";
+                        _error = null;
+                    }
+                    currentVariant = fallbackVariant;
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                lock (_lock)
+                {
+                    _error = ex.Message;
+                    _progressMessage = $"Error downloading binary: {ex.Message}";
+                }
+                _logger.LogError(ex, "Error downloading whisper-cli binary");
+                throw;
+            }
+            finally
+            {
+                lock (_lock) { _isRunning = false; }
+            }
+        }
+
+        /// <summary>
+        /// Downloads and validates a single binary variant. Returns null if the binary launches
+        /// successfully, or a user-friendly error string if validation failed (e.g. missing
+        /// shared library). Does NOT touch the <c>_isRunning</c> lock — the caller owns it.
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "HTTP download + process validation")]
+        private async Task<string?> DownloadAndValidateVariantAsync(string variant, CancellationToken cancellationToken)
+        {
+            Directory.CreateDirectory(WhisperDirectory);
+
+            var platform = GetPlatformIdentifier();
+            var version = typeof(Plugin).Assembly.GetName().Version?.ToString() ?? "3.3.0.0";
+            var assetName = BinaryCatalog.GetAssetName(platform, variant);
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) assetName += ".exe";
+
+            var url = $"https://github.com/GeiserX/whisper-subs/releases/download/v{version}/{assetName}";
+
+            _logger.LogInformation("Downloading whisper-cli from {Url} for platform {Platform}", url, platform);
+
+            using var response = await SharedHttpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            response.EnsureSuccessStatusCode();
+
+            var totalBytes = response.Content.Headers.ContentLength ?? -1;
+            var tempPath = BinaryPath + ".downloading";
+
+            await using (var stream = await response.Content.ReadAsStreamAsync(cancellationToken))
+            await using (var fileStream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None, 81920))
+            {
                 var buffer = new byte[81920];
                 long downloaded = 0;
                 int bytesRead;
@@ -409,99 +505,37 @@ namespace WhisperSubs.Setup
                         lock (_lock)
                         {
                             _progress = pct;
-                            _progressMessage = $"Downloading whisper-cli: {dlMB:F1} / {totMB:F1} MB ({pct:F1}%)";
+                            _progressMessage = $"Downloading whisper-cli ({variant}): {dlMB:F1} / {totMB:F1} MB ({pct:F1}%)";
                         }
                     }
                 }
 
                 await fileStream.FlushAsync(cancellationToken);
-                fileStream.Close();
 
                 // Reject truncated downloads
                 if (totalBytes > 0 && downloaded != totalBytes)
                 {
-                    if (File.Exists(tempPath)) File.Delete(tempPath);
                     throw new InvalidOperationException(
                         $"Download incomplete: received {downloaded} of {totalBytes} bytes.");
                 }
-
-                if (File.Exists(BinaryPath)) File.Delete(BinaryPath);
-                File.Move(tempPath, BinaryPath);
-
-                // Make executable on Unix
-                if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-                {
-                    using var chmod = System.Diagnostics.Process.Start("chmod", new[] { "+x", BinaryPath });
-                    chmod?.WaitForExit(5000);
-                }
-
-                // Compute and log SHA256 for audit
-                var sha256 = ComputeSha256(BinaryPath);
-                _logger.LogInformation("Binary {Variant} SHA256: {Hash}", variant, sha256);
-
-                // Validate the binary can actually run (catches missing shared libraries)
-                var validationError = ValidateBinary(BinaryPath, variant);
-                if (validationError != null)
-                {
-                    _logger.LogWarning("Binary validation warning: {Error}", validationError);
-
-                    // Auto-fallback: a GPU variant falls back to CPU; the OpenMP-linked CPU
-                    // variant falls back to the self-contained noavx build.
-                    var fallbackVariant = GetCpuFallbackVariant(variant);
-                    if (fallbackVariant != null)
-                    {
-                        _logger.LogInformation("Binary '{Variant}' failed validation — auto-downloading fallback ({Fallback})", variant, fallbackVariant);
-                        lock (_lock)
-                        {
-                            _progress = 50;
-                            _progressMessage = $"'{variant}' binary failed ({validationError}). Downloading {fallbackVariant} fallback...";
-                            _error = null;
-                        }
-                        await DownloadBinaryAsync(fallbackVariant, cancellationToken);
-                        return;
-                    }
-
-                    lock (_lock)
-                    {
-                        _progress = 100;
-                        _progressMessage = $"whisper-cli downloaded but may not work: {validationError}";
-                        _error = validationError;
-                    }
-                }
-
-                if (validationError == null)
-                {
-                    var config = Plugin.Instance.Configuration;
-                    config.WhisperBinaryPath = BinaryPath;
-                    Plugin.Instance.SaveConfiguration();
-
-                    lock (_lock)
-                    {
-                        _progress = 100;
-                        _progressMessage = "whisper-cli downloaded successfully.";
-                    }
-
-                    _logger.LogInformation("Binary downloaded to {Path} and config updated", BinaryPath);
-                }
-                else
-                {
-                    _logger.LogWarning("Binary downloaded to {Path} but NOT applied to config: {Error}", BinaryPath, validationError);
-                }
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+
+            if (File.Exists(BinaryPath)) File.Delete(BinaryPath);
+            File.Move(tempPath, BinaryPath);
+
+            // Make executable on Unix
+            if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             {
-                lock (_lock)
-                {
-                    _error = ex.Message;
-                    _progressMessage = $"Error downloading binary: {ex.Message}";
-                }
-                _logger.LogError(ex, "Error downloading whisper-cli binary");
-                throw;
+                using var chmod = System.Diagnostics.Process.Start("chmod", new[] { "+x", BinaryPath });
+                chmod?.WaitForExit(5000);
             }
-            finally
-            {
-                lock (_lock) { _isRunning = false; }
-            }
+
+            // Compute and log SHA256 for audit
+            var sha256 = ComputeSha256(BinaryPath);
+            _logger.LogInformation("Binary {Variant} SHA256: {Hash}", variant, sha256);
+
+            // Validate the binary can actually run (catches missing shared libraries)
+            return ValidateBinary(BinaryPath, variant);
         }
 
         /// <summary>
@@ -565,10 +599,13 @@ namespace WhisperSubs.Setup
         }
 
         /// <summary>
-        /// Maps GPU variants to their CPU fallback for auto-recovery.
-        /// Returns null for CPU variants (no further fallback).
+        /// Maps a binary variant to the next more-compatible variant when the current one fails
+        /// to launch (missing GPU userspace lib or missing libgomp). GPU variants degrade to a
+        /// CPU build; the OpenMP-linked CPU build degrades to the self-contained "noavx" build.
+        /// Returns null when there is no further fallback ("noavx" is the terminal sink).
+        /// The chain is acyclic and converges on "noavx" -> null, so callers can walk it safely.
         /// </summary>
-        internal static string? GetCpuFallbackVariant(string variant) => variant switch
+        internal static string? GetFallbackVariant(string variant) => variant switch
         {
             "cuda12" or "vulkan" => "cpu",
             "cuda12-noavx" or "vulkan-noavx" or "rocm" => "noavx",

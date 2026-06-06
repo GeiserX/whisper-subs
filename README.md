@@ -130,14 +130,14 @@ The plugin's built-in binary downloader fetches pre-built whisper-cli binaries. 
 | Variant | Required packages | Install command |
 |---------|-------------------|-----------------|
 | **CPU** | `libgomp1` | `apt install libgomp1` |
-| **CPU (Compatibility / noavx)** | none (self-contained) | — |
+| **CPU (Compatibility)** | none (self-contained) | — |
 | **Vulkan** | `libgomp1`, `libvulkan1`, `mesa-vulkan-drivers` | `apt install libgomp1 libvulkan1 mesa-vulkan-drivers` |
 | **CUDA 12** | `libgomp1` + NVIDIA Container Toolkit on host | See [CUDA section](#cuda-nvidia) |
 | **ROCm** | `libgomp1` + ROCm runtime | See [ROCm docs](https://rocm.docs.amd.com/) |
 
-> **Minimal containers (TrueNAS Scale, slim Docker):** The default `cpu` build links `libgomp1` (OpenMP) for best performance. If that library is missing, **the plugin automatically falls back to the `noavx` build**, which is compiled with OpenMP off and has no such dependency — so transcription still works out of the box, just without the small OpenMP speed-up. Install `libgomp1` if you want the faster build.
+> **Minimal containers (TrueNAS Scale, slim Docker):** The default `cpu` build links `libgomp1` (OpenMP) for best performance. If that library is missing, **the plugin automatically falls back to the `noavx` build**, which is compiled with OpenMP off and has no such dependency — so transcription still works out of the box, just without the small OpenMP speed-up.
 
-To install `libgomp1` persistently, add to your container's entrypoint or Dockerfile:
+For the faster build, install `libgomp1` persistently via your container's entrypoint or Dockerfile:
 
 ```bash
 apt-get update -qq && apt-get install -y -qq --no-install-recommends libgomp1 && rm -rf /var/lib/apt/lists/*
