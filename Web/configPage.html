@@ -1071,26 +1071,42 @@
                             // ── Idle: hide or show "Finished" briefly ──
                             if (!q.isProcessing && q.remaining === 0) {
                                 if (banner.style.display !== 'none' && q.processed > 0) {
+                                    var hadFailure = q.failed > 0;
                                     spinner.style.animation = 'none';
                                     spinner.style.borderColor = 'transparent';
-                                    spinner.innerHTML = '\u2714';
                                     spinner.style.fontSize = '1.1em';
-                                    spinner.style.color = '#52B54B';
-                                    title.textContent = 'Finished';
                                     bar.style.width = '100%';
                                     pct.textContent = '';
-                                    current.textContent = '';
-                                    var finishParts = [q.processed.toLocaleString() + ' processed'];
-                                    if (q.failed > 0) finishParts.push(q.failed + ' failed');
-                                    stats.textContent = finishParts.join(' \u00b7 ');
+                                    if (hadFailure) {
+                                        // Failure state (red)
+                                        spinner.innerHTML = '\u2716';
+                                        spinner.style.color = '#cc3333';
+                                        bar.style.background = '#cc3333';
+                                        var succeeded = q.processed - q.failed;
+                                        title.textContent = succeeded > 0 ? 'Finished with errors' : 'Failed';
+                                        current.textContent = q.lastError
+                                            ? WhisperSubsConfig.truncate(q.lastError, 160) : '';
+                                        var failParts = [];
+                                        if (succeeded > 0) failParts.push(succeeded.toLocaleString() + ' succeeded');
+                                        failParts.push(q.failed + ' failed');
+                                        stats.textContent = failParts.join(' \u00b7 ');
+                                    } else {
+                                        // Success state (green)
+                                        spinner.innerHTML = '\u2714';
+                                        spinner.style.color = '#52B54B';
+                                        title.textContent = 'Finished';
+                                        current.textContent = '';
+                                        stats.textContent = q.processed.toLocaleString() + ' processed';
+                                    }
                                     if (WhisperSubsConfig._queueHideTimer) {
                                         clearTimeout(WhisperSubsConfig._queueHideTimer);
                                     }
+                                    // Keep failures visible longer so the user can read the error.
                                     WhisperSubsConfig._queueHideTimer = setTimeout(function () {
                                         banner.style.display = 'none';
                                         WhisperSubsConfig.resetQueueBanner();
                                         WhisperSubsConfig._queueHideTimer = null;
-                                    }, 8000);
+                                    }, hadFailure ? 20000 : 8000);
                                 } else {
                                     banner.style.display = 'none';
                                 }
@@ -1150,6 +1166,11 @@
                     return div.innerHTML;
                 },
 
+                truncate: function (str, max) {
+                    if (!str) return '';
+                    return str.length > max ? str.slice(0, max - 1) + '…' : str;
+                },
+
                 resetQueueBanner: function () {
                     var spinner = document.querySelector('#transcriptionSpinner');
                     spinner.innerHTML = '';
@@ -1161,7 +1182,9 @@
                     document.querySelector('#transcriptionTitle').textContent = 'Generating Subtitles';
                     document.querySelector('#transcriptionStats').textContent = '';
                     document.querySelector('#transcriptionCurrentItem').textContent = '';
-                    document.querySelector('#transcriptionProgressBar').style.width = '0%';
+                    var resetBar = document.querySelector('#transcriptionProgressBar');
+                    resetBar.style.width = '0%';
+                    resetBar.style.background = '#52B54B';
                     document.querySelector('#transcriptionProgressPct').textContent = '';
                 },
 
