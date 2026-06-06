@@ -31,7 +31,7 @@ jobs:
           - os: [self-hosted, Linux, X64]
             variant: cpu
             asset_name: whisper-cli-linux-x64
-            cmake_flags: "-DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_BMI2=ON"
+            cmake_flags: "-DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_BMI2=ON -DGGML_OPENMP=OFF"
             pre_install: ""
           - os: [self-hosted, Linux, X64]
             variant: cpu-noavx
@@ -41,7 +41,7 @@ jobs:
           - os: [self-hosted, Linux, X64]
             variant: cpu-arm64
             asset_name: whisper-cli-linux-arm64
-            cmake_flags: "-DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=aarch64 -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ -DGGML_NATIVE=OFF"
+            cmake_flags: "-DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=aarch64 -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF"
             pre_install: "arm64"
           - os: [self-hosted, Linux, X64]
             variant: cpu-arm64-noavx
@@ -51,7 +51,7 @@ jobs:
           - os: [self-hosted, Linux, X64]
             variant: cuda12
             asset_name: whisper-cli-linux-x64-cuda12
-            cmake_flags: "-DGGML_CUDA=ON -DGGML_STATIC=ON -DCMAKE_CUDA_ARCHITECTURES='61;70;75;80;86;89;90' -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_BMI2=ON"
+            cmake_flags: "-DGGML_CUDA=ON -DGGML_STATIC=ON -DCMAKE_CUDA_ARCHITECTURES='61;70;75;80;86;89;90' -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_BMI2=ON -DGGML_OPENMP=OFF"
             pre_install: "cuda"
           - os: [self-hosted, Linux, X64]
             variant: cuda12-noavx
@@ -61,7 +61,7 @@ jobs:
           - os: [self-hosted, Linux, X64]
             variant: vulkan
             asset_name: whisper-cli-linux-x64-vulkan
-            cmake_flags: "-DGGML_VULKAN=ON -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_BMI2=ON"
+            cmake_flags: "-DGGML_VULKAN=ON -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_BMI2=ON -DGGML_OPENMP=OFF"
             pre_install: "vulkan"
           - os: [self-hosted, Linux, X64]
             variant: vulkan-noavx
@@ -75,7 +75,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /tmp/whisper-${{ matrix.variant }}/build/bin/whisper-cli
-          key: whisper-1.8.4-${{ matrix.asset_name }}-v9
+          key: whisper-1.8.4-${{ matrix.asset_name }}-v10
 
       - name: Install build dependencies
         if: steps.cache-whisper.outputs.cache-hit != 'true'
@@ -138,7 +138,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/rocm-output/whisper-cli
-          key: whisper-1.8.4-rocm-6.1.2-v2
+          key: whisper-1.8.4-rocm-6.1.2-v3
 
       - name: Build whisper-cli with ROCm
         if: steps.cache-whisper-rocm.outputs.cache-hit != 'true'
@@ -156,6 +156,7 @@ jobs:
                 -DBUILD_SHARED_LIBS=OFF \
                 -DCMAKE_EXE_LINKER_FLAGS="-static-libgcc -static-libstdc++" \
                 -DGGML_HIP=ON \
+                -DGGML_OPENMP=OFF \
                 -DCMAKE_C_COMPILER=hipcc \
                 -DCMAKE_CXX_COMPILER=hipcc &&
               cmake --build build --config Release -j$(nproc) &&

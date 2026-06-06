@@ -33,6 +33,8 @@ namespace WhisperSubs.Controller
         private int _isDraining;
         private string? _currentItemName;
         private int _processedCount;
+        private int _failedCount;
+        private string? _lastError;
         private static readonly object _fileLock = new();
 
         /// <summary>
@@ -52,6 +54,12 @@ namespace WhisperSubs.Controller
         public string? CurrentItemName => _currentItemName ?? _taskCurrentItemName;
         public bool IsDraining => _isDraining == 1;
         public int ProcessedCount => _processedCount;
+
+        /// <summary>Number of manual-queue items that failed (whisper error, missing binary, etc.).</summary>
+        public int FailedCount => _failedCount;
+
+        /// <summary>Last error message from a failed manual-queue item, for surfacing in the UI.</summary>
+        public string? LastError => _lastError;
 
         // ── Per-file progress (updated by WhisperProvider stderr) ──
         private int _currentFileProgress;
@@ -306,11 +314,14 @@ namespace WhisperSubs.Controller
                 catch (Exception ex)
                 {
                     Interlocked.Increment(ref _processedCount);
+                    Interlocked.Increment(ref _failedCount);
+                    _lastError = $"{workItem.Item.Name}: {ex.Message}";
                     workItem.Completion?.TrySetException(ex);
                     logger.LogError(ex, "[Queue] Failed: {ItemName}", workItem.Item.Name);
                 }
             }
-            logger.LogInformation("[Queue] Drain complete. Processed {Count} items total.", _processedCount);
+            logger.LogInformation("[Queue] Drain complete. Processed {Count} items total ({Failed} failed).",
+                _processedCount, _failedCount);
         }
 
         /// <summary>
@@ -351,6 +362,8 @@ namespace WhisperSubs.Controller
                 }
                 catch (Exception ex)
                 {
+                    Interlocked.Increment(ref _failedCount);
+                    _lastError = $"{workItem.Item.Name}: {ex.Message}";
                     workItem.Completion?.TrySetException(ex);
                     logger.LogError(ex, "[Priority] Failed: {ItemName}", workItem.Item.Name);
                 }

@@ -46,18 +46,35 @@ namespace WhisperSubs.Controller
             var languages = await ResolveLanguagesAsync(mediaPath, language, cancellationToken);
             var subtitleMode = Plugin.Instance?.Configuration?.SubtitleMode ?? SubtitleMode.Full;
 
+            int attempted = 0;
+            int failed = 0;
+            Exception? firstError = null;
+
+            void Record(GenerationOutcome outcome, Exception? error)
+            {
+                if (outcome == GenerationOutcome.Skipped) return;
+                attempted++;
+                if (outcome == GenerationOutcome.Failed)
+                {
+                    failed++;
+                    firstError ??= error;
+                }
+            }
+
             if (subtitleMode != SubtitleMode.TranslationOnly)
             {
                 foreach (var lang in languages)
                 {
                     if (subtitleMode == SubtitleMode.Full || subtitleMode == SubtitleMode.FullAndForced)
                     {
-                        await GenerateFullSubtitleForLanguageAsync(item, provider, lang, mediaPath, cancellationToken);
+                        var (outcome, error) = await GenerateFullSubtitleForLanguageAsync(item, provider, lang, mediaPath, cancellationToken);
+                        Record(outcome, error);
                     }
 
                     if (subtitleMode == SubtitleMode.ForcedOnly || subtitleMode == SubtitleMode.FullAndForced)
                     {
-                        await GenerateForcedSubtitleAsync(item, provider, lang, mediaPath, cancellationToken);
+                        var (outcome, error) = await GenerateForcedSubtitleAsync(item, provider, lang, mediaPath, cancellationToken);
+                        Record(outcome, error);
                     }
                 }
             }
@@ -68,17 +85,38 @@ namespace WhisperSubs.Controller
                 || (config?.EnableTranslation == true
                     && (subtitleMode == SubtitleMode.Full || subtitleMode == SubtitleMode.FullAndForced)))
             {
-                await GenerateTranslatedSubtitleAsync(item, provider, mediaPath, languages, cancellationToken);
+                var (outcome, error) = await GenerateTranslatedSubtitleAsync(item, provider, mediaPath, languages, cancellationToken);
+                Record(outcome, error);
+            }
+
+            // If we attempted real work and every attempt failed, surface the failure
+            // so the queue/scheduled task report it instead of a false success.
+            if (attempted > 0 && failed == attempted)
+            {
+                throw new InvalidOperationException(
+                    $"Subtitle generation failed for \"{item.Name}\" — all {attempted} attempt(s) failed.",
+                    firstError);
             }
 
             await item.RefreshMetadata(cancellationToken);
+        }
+
+        /// <summary>Outcome of a single subtitle generation attempt.</summary>
+        private enum GenerationOutcome
+        {
+            /// <summary>Produced output (or partial output) successfully.</summary>
+            Succeeded,
+            /// <summary>Nothing to do (already exists, no foreign dialogue, English audio, etc.).</summary>
+            Skipped,
+            /// <summary>Attempted but failed with an error.</summary>
+            Failed
         }
 
         /// <summary>
         /// Generates a full (complete) subtitle file for a single language. Existing v2.5 behavior.
         /// </summary>
         [ExcludeFromCodeCoverage(Justification = "Orchestrates FFmpeg audio extraction and whisper transcription processes")]
-        private async Task GenerateFullSubtitleForLanguageAsync(
+        private async Task<(GenerationOutcome Outcome, Exception? Error)> GenerateFullSubtitleForLanguageAsync(
             BaseItem item, ISubtitleProvider provider, string lang,
             string mediaPath, CancellationToken cancellationToken)
         {
@@ -97,7 +135,7 @@ namespace WhisperSubs.Controller
                 {
                     _logger.LogInformation("Subtitle already complete for {ItemName} [{Language}] ({Last:F0}s / {Duration:F0}s), skipping",
                         item.Name, lang, lastTimestamp, mediaDuration);
-                    return;
+                    return (GenerationOutcome.Skipped, null);
                 }
 
                 if (lastTimestamp > 0)
@@ -110,7 +148,7 @@ namespace WhisperSubs.Controller
                 else if (mediaDuration <= 0)
                 {
                     _logger.LogInformation("Subtitle exists for {ItemName} [{Language}] (can't verify completeness), skipping", item.Name, lang);
-                    return;
+                    return (GenerationOutcome.Skipped, null);
                 }
             }
 
@@ -132,6 +170,7 @@ namespace WhisperSubs.Controller
 
                 await File.WriteAllTextAsync(srtPath, srtContent, CancellationToken.None);
                 _logger.LogInformation("Saved full subtitle to {SrtPath}", srtPath);
+                return (GenerationOutcome.Succeeded, null);
             }
             catch (OperationCanceledException)
             {
@@ -141,6 +180,7 @@ namespace WhisperSubs.Controller
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error generating full subtitle for {ItemName} [{Language}], continuing with next language", item.Name, lang);
+                return (GenerationOutcome.Failed, ex);
             }
             finally
             {
@@ -158,7 +198,7 @@ namespace WhisperSubs.Controller
         /// and (as fallback) no existing English subtitle files when FFprobe couldn't detect languages.
         /// </summary>
         [ExcludeFromCodeCoverage(Justification = "Orchestrates FFmpeg + whisper processes for translation")]
-        private async Task GenerateTranslatedSubtitleAsync(
+        private async Task<(GenerationOutcome Outcome, Exception? Error)> GenerateTranslatedSubtitleAsync(
             BaseItem item, ISubtitleProvider provider, string mediaPath,
             List<string> resolvedLanguages, CancellationToken cancellationToken)
         {
@@ -166,7 +206,7 @@ namespace WhisperSubs.Controller
             if (resolvedLanguages.Any(l => string.Equals(l, "en", StringComparison.OrdinalIgnoreCase)))
             {
                 _logger.LogInformation("Skipping translation for {ItemName}: English audio stream present", item.Name);
-                return;
+                return (GenerationOutcome.Skipped, null);
             }
 
             var translatedSrtPath = Path.ChangeExtension(mediaPath, ".en.translated.srt");
@@ -175,7 +215,7 @@ namespace WhisperSubs.Controller
             if (File.Exists(translatedSrtPath))
             {
                 _logger.LogInformation("Translated subtitle already exists for {ItemName}, skipping", item.Name);
-                return;
+                return (GenerationOutcome.Skipped, null);
             }
 
             // Determine source language and perform additional checks for "auto" mode
@@ -202,7 +242,7 @@ namespace WhisperSubs.Controller
                         _logger.LogInformation(
                             "Skipping translation for {ItemName}: English subtitles already exist (FFprobe language fallback)",
                             item.Name);
-                        return;
+                        return (GenerationOutcome.Skipped, null);
                     }
                 }
 
@@ -221,7 +261,7 @@ namespace WhisperSubs.Controller
                         _logger.LogInformation(
                             "Skipping translation for {ItemName}: whisper detected English audio (p={Probability:F3})",
                             item.Name, probability);
-                        return;
+                        return (GenerationOutcome.Skipped, null);
                     }
 
                     sourceLanguage = detectedLang;
@@ -260,6 +300,7 @@ namespace WhisperSubs.Controller
 
                 await File.WriteAllTextAsync(translatedSrtPath, srtContent, CancellationToken.None);
                 _logger.LogInformation("Saved translated subtitle to {SrtPath}", translatedSrtPath);
+                return (GenerationOutcome.Succeeded, null);
             }
             catch (OperationCanceledException)
             {
@@ -269,6 +310,7 @@ namespace WhisperSubs.Controller
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error generating translated subtitle for {ItemName}", item.Name);
+                return (GenerationOutcome.Failed, ex);
             }
             finally
             {
@@ -286,7 +328,7 @@ namespace WhisperSubs.Controller
         /// Output: Movie.{lang}.forced.generated.srt
         /// </summary>
         [ExcludeFromCodeCoverage(Justification = "Orchestrates FFmpeg VAD + whisper language detection processes")]
-        private async Task GenerateForcedSubtitleAsync(
+        private async Task<(GenerationOutcome Outcome, Exception? Error)> GenerateForcedSubtitleAsync(
             BaseItem item, ISubtitleProvider provider, string primaryLanguage,
             string mediaPath, CancellationToken cancellationToken)
         {
@@ -321,7 +363,7 @@ namespace WhisperSubs.Controller
                     {
                         _logger.LogWarning(ex, "Cannot determine primary language for forced subtitles of {ItemName} — " +
                             "tag your audio streams or set a specific language in config", item.Name);
-                        return;
+                        return (GenerationOutcome.Failed, ex);
                     }
                     finally
                     {
@@ -341,7 +383,7 @@ namespace WhisperSubs.Controller
                 {
                     _logger.LogInformation("Forced subtitle already exists for {ItemName} [{Language}], skipping",
                         item.Name, resolvedPrimary);
-                    return;
+                    return (GenerationOutcome.Skipped, null);
                 }
             }
 
@@ -350,7 +392,7 @@ namespace WhisperSubs.Controller
             {
                 _logger.LogInformation("No-foreign-language marker exists for {ItemName} [{Language}], skipping",
                     item.Name, resolvedPrimary);
-                return;
+                return (GenerationOutcome.Skipped, null);
             }
 
             var tempDir = Path.Combine(Path.GetTempPath(), $"whispersubs_{item.Id:N}_{Guid.NewGuid():N}");
@@ -374,7 +416,8 @@ namespace WhisperSubs.Controller
                 if (totalDuration <= 0)
                 {
                     _logger.LogWarning("Cannot determine duration for {ItemName}, aborting forced subtitle", item.Name);
-                    return;
+                    return (GenerationOutcome.Failed,
+                        new InvalidOperationException($"Cannot determine media duration for forced subtitles: {item.Name}"));
                 }
 
                 // Step 3: VAD-based speech segmentation via silencedetect
@@ -433,7 +476,8 @@ namespace WhisperSubs.Controller
                 {
                     _logger.LogWarning("All {Count} language detection attempts failed for {ItemName} — not writing marker (will retry next run)",
                         chunks.Count, item.Name);
-                    return;
+                    return (GenerationOutcome.Failed,
+                        new InvalidOperationException($"All language detection attempts failed for forced subtitles: {item.Name}"));
                 }
 
                 if (foreignChunks.Count == 0)
@@ -442,7 +486,7 @@ namespace WhisperSubs.Controller
                     await File.WriteAllTextAsync(noForeignMarkerPath, "", CancellationToken.None);
                     _logger.LogInformation("No foreign language segments found in {ItemName} ({Checked} chunks checked), wrote no-foreign marker",
                         item.Name, successfulDetections);
-                    return;
+                    return (GenerationOutcome.Skipped, null);
                 }
 
                 _logger.LogInformation("Found {Count} foreign language chunk(s) in {ItemName}, transcribing",
@@ -487,10 +531,14 @@ namespace WhisperSubs.Controller
                     await File.WriteAllTextAsync(forcedSrtPath, forcedSrt.ToString(), CancellationToken.None);
                     _logger.LogInformation("Saved forced subtitle to {Path} ({Entries} entries)",
                         forcedSrtPath, entryNum - 1);
+                    return (GenerationOutcome.Succeeded, null);
                 }
                 else
                 {
+                    // Foreign chunks were detected but every transcription attempt produced nothing.
                     _logger.LogInformation("Foreign segments detected but no content transcribed for {ItemName}", item.Name);
+                    return (GenerationOutcome.Failed,
+                        new InvalidOperationException($"Foreign segments were detected but produced no subtitle content: {item.Name}"));
                 }
             }
             catch (OperationCanceledException)
@@ -501,6 +549,7 @@ namespace WhisperSubs.Controller
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error generating forced subtitle for {ItemName}", item.Name);
+                return (GenerationOutcome.Failed, ex);
             }
             finally
             {
@@ -580,13 +629,19 @@ namespace WhisperSubs.Controller
             var languages = await ResolveLanguagesAsync(mediaPath, language, cancellationToken);
             var transcriptionLang = languages.FirstOrDefault() ?? "auto";
 
-            await GenerateLyricsForTrackAsync(item, provider, transcriptionLang, mediaPath, cancellationToken);
+            var (outcome, error) = await GenerateLyricsForTrackAsync(item, provider, transcriptionLang, mediaPath, cancellationToken);
+
+            if (outcome == GenerationOutcome.Failed)
+            {
+                throw new InvalidOperationException(
+                    $"Lyrics generation failed for \"{item.Name}\".", error);
+            }
 
             await item.RefreshMetadata(cancellationToken);
         }
 
         [ExcludeFromCodeCoverage(Justification = "Orchestrates FFmpeg + whisper processes for lyrics track")]
-        private async Task GenerateLyricsForTrackAsync(
+        private async Task<(GenerationOutcome Outcome, Exception? Error)> GenerateLyricsForTrackAsync(
             BaseItem item, ISubtitleProvider provider, string lang,
             string mediaPath, CancellationToken cancellationToken)
         {
@@ -598,7 +653,7 @@ namespace WhisperSubs.Controller
             if (File.Exists(lrcPath))
             {
                 _logger.LogInformation("Lyrics already exist for {ItemName}, skipping", item.Name);
-                return;
+                return (GenerationOutcome.Skipped, null);
             }
 
             var tempAudioPath = Path.Combine(Path.GetTempPath(), $"{item.Id}_{Guid.NewGuid()}.wav");
@@ -614,6 +669,7 @@ namespace WhisperSubs.Controller
 
                 await File.WriteAllTextAsync(lrcPath, lrcContent, CancellationToken.None);
                 _logger.LogInformation("Saved lyrics to {LrcPath}", lrcPath);
+                return (GenerationOutcome.Succeeded, null);
             }
             catch (OperationCanceledException)
             {
@@ -623,6 +679,7 @@ namespace WhisperSubs.Controller
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error generating lyrics for {ItemName} [{Language}]", item.Name, lang);
+                return (GenerationOutcome.Failed, ex);
             }
             finally
             {

@@ -107,6 +107,25 @@ public class SubtitleQueueServiceTests
         var queue = SubtitleQueueService.Instance;
         Assert.True(queue.PriorityCount >= 0);
     }
+
+    [Fact]
+    public void FailedCount_IsNonNegative()
+    {
+        // Manual-queue failure counter — exposed so the /Queue endpoint and UI
+        // can distinguish a failed transcription from a successful one (#70).
+        var queue = SubtitleQueueService.Instance;
+        Assert.True(queue.FailedCount >= 0);
+    }
+
+    [Fact]
+    public void LastError_IsExposed()
+    {
+        // Property must exist for the UI to surface a failure reason.
+        // It is null until a manual-queue item fails.
+        var queue = SubtitleQueueService.Instance;
+        _ = queue.LastError; // no throw; may be null or a prior error
+        Assert.True(true);
+    }
 }
 
 public class QueueEntryTests

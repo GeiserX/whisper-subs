@@ -339,7 +339,9 @@ namespace WhisperSubs.Setup
             };
             info.HasVulkanLibrary = Array.Exists(vulkanPaths, File.Exists);
 
-            // OpenMP runtime — required by ALL whisper.cpp variants (CPU, Vulkan, CUDA, ROCm)
+            // OpenMP runtime detection (informational only). As of v3.18.2.0 the distributed
+            // binaries are built with -DGGML_OPENMP=OFF and no longer link libgomp, so a missing
+            // libgomp.so.1 is NOT a blocker. Kept for diagnostics and older/self-built binaries.
             var openmpPaths = new[]
             {
                 "/lib/x86_64-linux-gnu/libgomp.so.1",
