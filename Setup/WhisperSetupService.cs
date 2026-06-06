@@ -339,9 +339,9 @@ namespace WhisperSubs.Setup
             };
             info.HasVulkanLibrary = Array.Exists(vulkanPaths, File.Exists);
 
-            // OpenMP runtime detection (informational only). As of v3.18.2.0 the distributed
-            // binaries are built with -DGGML_OPENMP=OFF and no longer link libgomp, so a missing
-            // libgomp.so.1 is NOT a blocker. Kept for diagnostics and older/self-built binaries.
+            // OpenMP runtime detection. The cpu/cuda12/vulkan/rocm binaries link libgomp for
+            // performance; if it's missing the plugin auto-falls back to the self-contained
+            // noavx build (compiled with -DGGML_OPENMP=OFF), so this is informational, not a blocker.
             var openmpPaths = new[]
             {
                 "/lib/x86_64-linux-gnu/libgomp.so.1",
@@ -445,15 +445,16 @@ namespace WhisperSubs.Setup
                 {
                     _logger.LogWarning("Binary validation warning: {Error}", validationError);
 
-                    // Auto-fallback: if a GPU variant fails, try the CPU equivalent
+                    // Auto-fallback: a GPU variant falls back to CPU; the OpenMP-linked CPU
+                    // variant falls back to the self-contained noavx build.
                     var fallbackVariant = GetCpuFallbackVariant(variant);
                     if (fallbackVariant != null)
                     {
-                        _logger.LogInformation("GPU binary failed validation — auto-downloading CPU fallback ({Fallback})", fallbackVariant);
+                        _logger.LogInformation("Binary '{Variant}' failed validation — auto-downloading fallback ({Fallback})", variant, fallbackVariant);
                         lock (_lock)
                         {
                             _progress = 50;
-                            _progressMessage = $"GPU binary failed ({validationError}). Downloading CPU fallback...";
+                            _progressMessage = $"'{variant}' binary failed ({validationError}). Downloading {fallbackVariant} fallback...";
                             _error = null;
                         }
                         await DownloadBinaryAsync(fallbackVariant, cancellationToken);
@@ -567,10 +568,15 @@ namespace WhisperSubs.Setup
         /// Maps GPU variants to their CPU fallback for auto-recovery.
         /// Returns null for CPU variants (no further fallback).
         /// </summary>
-        private static string? GetCpuFallbackVariant(string variant) => variant switch
+        internal static string? GetCpuFallbackVariant(string variant) => variant switch
         {
             "cuda12" or "vulkan" => "cpu",
             "cuda12-noavx" or "vulkan-noavx" or "rocm" => "noavx",
+            // The cpu build (x64 and arm64) links libgomp (OpenMP) for performance. If that
+            // library is missing (minimal containers), fall back to the self-contained noavx
+            // build, compiled with -DGGML_OPENMP=OFF, which has no such dependency. The arm64
+            // asset is resolved by platform, so "noavx" covers both architectures.
+            "cpu" => "noavx",
             _ => null
         };
 
