@@ -125,14 +125,23 @@ Then configure the plugin with:
 
 #### <a id="container-setup"></a>Container Library Requirements
 
-The plugin's built-in binary downloader fetches pre-built whisper-cli binaries. As of **v3.18.2.0** the CPU binary is fully self-contained (OpenMP is compiled out, so `libgomp1` is no longer required). GPU variants still need their respective userspace driver libraries, which are **not included** in the default Jellyfin Docker image:
+The plugin's built-in binary downloader fetches pre-built whisper-cli binaries. These require runtime libraries that are **not included** in the default Jellyfin Docker image:
 
 | Variant | Required packages | Install command |
 |---------|-------------------|-----------------|
-| **CPU** | none (self-contained) | — |
-| **Vulkan** | `libvulkan1`, `mesa-vulkan-drivers` | `apt install libvulkan1 mesa-vulkan-drivers` |
-| **CUDA 12** | NVIDIA Container Toolkit on host | See [CUDA section](#cuda-nvidia) |
-| **ROCm** | ROCm runtime | See [ROCm docs](https://rocm.docs.amd.com/) |
+| **CPU** | `libgomp1` | `apt install libgomp1` |
+| **CPU (Compatibility / noavx)** | none (self-contained) | — |
+| **Vulkan** | `libgomp1`, `libvulkan1`, `mesa-vulkan-drivers` | `apt install libgomp1 libvulkan1 mesa-vulkan-drivers` |
+| **CUDA 12** | `libgomp1` + NVIDIA Container Toolkit on host | See [CUDA section](#cuda-nvidia) |
+| **ROCm** | `libgomp1` + ROCm runtime | See [ROCm docs](https://rocm.docs.amd.com/) |
+
+> **Minimal containers (TrueNAS Scale, slim Docker):** The default `cpu` build links `libgomp1` (OpenMP) for best performance. If that library is missing, **the plugin automatically falls back to the `noavx` build**, which is compiled with OpenMP off and has no such dependency — so transcription still works out of the box, just without the small OpenMP speed-up. Install `libgomp1` if you want the faster build.
+
+To install `libgomp1` persistently, add to your container's entrypoint or Dockerfile:
+
+```bash
+apt-get update -qq && apt-get install -y -qq --no-install-recommends libgomp1 && rm -rf /var/lib/apt/lists/*
+```
 
 The plugin's setup page will detect missing libraries and warn you before downloading.
 
@@ -187,9 +196,10 @@ The Vulkan binary requires these libraries at runtime:
 |---|---|
 | `libvulkan1` | Vulkan loader |
 | `mesa-vulkan-drivers` | Intel (ANV) and AMD (RADV) Vulkan ICDs |
+| `libgomp1` | OpenMP threading |
 
 ```bash
-apt-get install -y libvulkan1 mesa-vulkan-drivers
+apt-get install -y libvulkan1 mesa-vulkan-drivers libgomp1
 ```
 
 #### Docker: GPU Passthrough for Vulkan
@@ -216,7 +226,7 @@ The container also needs the Vulkan runtime libraries. If using the official Jel
         dpkg -s libvulkan1 > /dev/null 2>&1 || \
           (apt-get update -qq && \
            apt-get install -y -qq --no-install-recommends \
-             libvulkan1 mesa-vulkan-drivers > /dev/null 2>&1 && \
+             libvulkan1 mesa-vulkan-drivers libgomp1 > /dev/null 2>&1 && \
            rm -rf /var/lib/apt/lists/*)
         exec /jellyfin/jellyfin
 ```
