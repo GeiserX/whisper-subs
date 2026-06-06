@@ -416,7 +416,8 @@ namespace WhisperSubs.Controller
                 if (totalDuration <= 0)
                 {
                     _logger.LogWarning("Cannot determine duration for {ItemName}, aborting forced subtitle", item.Name);
-                    return (GenerationOutcome.Failed, null);
+                    return (GenerationOutcome.Failed,
+                        new InvalidOperationException($"Cannot determine media duration for forced subtitles: {item.Name}"));
                 }
 
                 // Step 3: VAD-based speech segmentation via silencedetect
@@ -475,7 +476,8 @@ namespace WhisperSubs.Controller
                 {
                     _logger.LogWarning("All {Count} language detection attempts failed for {ItemName} — not writing marker (will retry next run)",
                         chunks.Count, item.Name);
-                    return (GenerationOutcome.Failed, null);
+                    return (GenerationOutcome.Failed,
+                        new InvalidOperationException($"All language detection attempts failed for forced subtitles: {item.Name}"));
                 }
 
                 if (foreignChunks.Count == 0)
@@ -535,7 +537,8 @@ namespace WhisperSubs.Controller
                 {
                     // Foreign chunks were detected but every transcription attempt produced nothing.
                     _logger.LogInformation("Foreign segments detected but no content transcribed for {ItemName}", item.Name);
-                    return (GenerationOutcome.Failed, null);
+                    return (GenerationOutcome.Failed,
+                        new InvalidOperationException($"Foreign segments were detected but produced no subtitle content: {item.Name}"));
                 }
             }
             catch (OperationCanceledException)
