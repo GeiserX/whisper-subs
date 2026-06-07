@@ -353,11 +353,20 @@ namespace WhisperSubs.Setup
             };
             info.HasOpenMP = Array.Exists(openmpPaths, File.Exists);
 
-            // Recommend variant based on detection — require both device AND userspace library
-            if (info.HasNvidia && info.HasCudaLibrary) info.RecommendedVariant = "cuda12";
+            // CPU AVX support. Our x64 cpu/cuda12/vulkan binaries are compiled with AVX/AVX2;
+            // on a CPU that lacks those instructions they crash with SIGILL (illegal instruction,
+            // exit 132). Only the *-noavx builds (SSE4.2) are safe there. ARM has no AVX concept,
+            // and its binaries are built without it, so treat ARM as "AVX not required" (HasAvx=true
+            // semantically means "the AVX-requiring builds are safe to run").
+            info.HasAvx = RuntimeInformation.OSArchitecture == Architecture.Arm64
+                || DetectCpuHasAvx();
+
+            // Recommend variant based on detection — require both device AND userspace library.
+            // GPU binaries are also AVX-compiled, so a CPU without AVX must use a *-noavx variant.
+            if (info.HasNvidia && info.HasCudaLibrary) info.RecommendedVariant = info.HasAvx ? "cuda12" : "cuda12-noavx";
             else if (info.HasAmdGpu && info.HasRocmLibrary) info.RecommendedVariant = "rocm";
-            else if (info.HasRenderDevice && info.HasVulkanLibrary) info.RecommendedVariant = "vulkan";
-            else info.RecommendedVariant = "cpu";
+            else if (info.HasRenderDevice && info.HasVulkanLibrary) info.RecommendedVariant = info.HasAvx ? "vulkan" : "vulkan-noavx";
+            else info.RecommendedVariant = info.HasAvx ? "cpu" : "noavx";
 
             return info;
         }
@@ -546,6 +555,19 @@ namespace WhisperSubs.Setup
         [ExcludeFromCodeCoverage(Justification = "Spawns binary process for validation")]
         private string? ValidateBinary(string binaryPath, string variant)
         {
+            // AVX gate: `--help` exits before any AVX instruction executes, so an AVX-compiled
+            // binary on a non-AVX CPU would *pass* the probe and only crash later during real
+            // transcription (SIGILL / exit 132). Catch it here so the cpu->noavx fallback fires
+            // at download time. ARM hosts have no AVX concept and their binaries don't use it.
+            if (VariantRequiresAvx(variant)
+                && RuntimeInformation.OSArchitecture != Architecture.Arm64
+                && !DetectCpuHasAvx())
+            {
+                _logger.LogWarning("Variant '{Variant}' requires AVX but this CPU lacks it — will fall back", variant);
+                return "This CPU does not support AVX instructions, which this binary requires. "
+                     + "Falling back to the compatibility (noavx) build.";
+            }
+
             try
             {
                 using var process = new System.Diagnostics.Process
@@ -589,6 +611,16 @@ namespace WhisperSubs.Setup
                     return $"Missing {lib}. {suggestion}";
                 }
 
+                // 128+N = killed by signal N. 132 = SIGILL (illegal instruction) — the binary used
+                // a CPU instruction (e.g. AVX) this CPU doesn't support. 134 = SIGABRT, 135 = SIGBUS.
+                // Treat these as a validation failure so the fallback chain steps to a safer build.
+                if (process.ExitCode == 132 || process.ExitCode == 134 || process.ExitCode == 135)
+                {
+                    return "The binary crashed on launch (illegal instruction) — this CPU likely "
+                         + "lacks an instruction set (e.g. AVX) the build requires. "
+                         + "Falling back to the compatibility (noavx) build.";
+                }
+
                 return null; // Any other exit code is fine (--help may return non-zero on some builds)
             }
             catch (Exception ex)
@@ -616,6 +648,60 @@ namespace WhisperSubs.Setup
             "cpu" => "noavx",
             _ => null
         };
+
+        /// <summary>
+        /// Whether the given variant's prebuilt binary was compiled with AVX/AVX2 instructions.
+        /// These crash with SIGILL (exit 132) on CPUs that lack AVX. The "*-noavx" builds use
+        /// only SSE4.2 and are safe everywhere. ARM builds have no AVX and are always safe.
+        /// </summary>
+        internal static bool VariantRequiresAvx(string variant) => variant switch
+        {
+            "cpu" or "cuda12" or "vulkan" => true,
+            _ => false   // noavx, cuda12-noavx, vulkan-noavx, rocm, unknown
+        };
+
+        /// <summary>
+        /// Parses Linux /proc/cpuinfo content and returns true if the CPU advertises AVX.
+        /// Pure/testable — the file read happens in <see cref="DetectCpuHasAvx"/>.
+        /// </summary>
+        internal static bool CpuInfoHasAvx(string cpuInfoContent)
+        {
+            if (string.IsNullOrEmpty(cpuInfoContent)) return false;
+
+            foreach (var line in cpuInfoContent.Split('\n'))
+            {
+                if (!line.StartsWith("flags", StringComparison.OrdinalIgnoreCase)) continue;
+
+                // flags are space-separated; match "avx" as a whole token (avoid matching "avx512..."
+                // substrings only — though those imply avx too, an exact-token check is clearest).
+                var tokens = line.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                foreach (var token in tokens)
+                {
+                    if (string.Equals(token, "avx", StringComparison.OrdinalIgnoreCase)) return true;
+                }
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Reads /proc/cpuinfo and reports whether the host CPU supports AVX. Returns true on any
+        /// non-Linux platform or read failure (fail-open: don't wrongly steer users away from the
+        /// faster build when we can't tell — the download-time validation still catches a real crash).
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Reads host /proc/cpuinfo")]
+        private static bool DetectCpuHasAvx()
+        {
+            try
+            {
+                if (!RuntimeInformation.IsOSPlatform(OSPlatform.Linux)) return true;
+                if (!File.Exists("/proc/cpuinfo")) return true;
+                return CpuInfoHasAvx(File.ReadAllText("/proc/cpuinfo"));
+            }
+            catch
+            {
+                return true; // can't determine — don't block the default recommendation
+            }
+        }
 
         /// <summary>
         /// Returns an apt-install hint for a missing shared library.
@@ -694,6 +780,9 @@ namespace WhisperSubs.Setup
         public bool HasRenderDevice { get; set; }
         public bool HasVulkanLibrary { get; set; }
         public bool HasOpenMP { get; set; }
+        /// <summary>True if the CPU supports AVX (or is ARM, where AVX is N/A). When false, only
+        /// the "*-noavx" binary variants will run — the others crash with SIGILL.</summary>
+        public bool HasAvx { get; set; } = true;
         public string RecommendedVariant { get; set; } = "cpu";
     }
 

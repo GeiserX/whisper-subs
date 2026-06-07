@@ -726,11 +726,19 @@
                             hint.style.color = '#CC7B19';
                         }
                     } else if (variant === 'noavx') {
-                        hint.textContent = 'Compatibility variant \u2014 no AVX or OpenMP required. Recommended for containers (TrueNAS Scale, minimal Docker).';
-                        hint.style.color = '';
+                        if (gpuInfo.HasAvx === false) {
+                            hint.textContent = 'Compatibility variant \u2014 required: this CPU does not support AVX. No AVX or OpenMP needed.';
+                            hint.style.color = '#52B54B';
+                        } else {
+                            hint.textContent = 'Compatibility variant \u2014 no AVX or OpenMP required. Recommended for containers (TrueNAS Scale, minimal Docker).';
+                            hint.style.color = '';
+                        }
                     } else {
                         // CPU
-                        if (gpuInfo.HasNvidia || gpuInfo.HasAmdGpu || gpuInfo.HasRenderDevice) {
+                        if (gpuInfo.HasAvx === false) {
+                            hint.textContent = 'This CPU does not support AVX \u2014 the CPU variant will crash. Choose "CPU (Compatibility)" (noavx) instead.';
+                            hint.style.color = '#CC3333';
+                        } else if (gpuInfo.HasNvidia || gpuInfo.HasAmdGpu || gpuInfo.HasRenderDevice) {
                             hint.textContent = 'GPU detected \u2014 consider a GPU variant for faster transcription.';
                             hint.style.color = '#CC7B19';
                         } else {

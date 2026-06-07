@@ -165,9 +165,57 @@ public class SetupServiceTests
         var gpu = WhisperSetupService.DetectGpu();
         Assert.NotNull(gpu);
         Assert.False(string.IsNullOrEmpty(gpu.RecommendedVariant));
-        // On macOS (test environment), no GPU devices expected
-        var validVariants = new[] { "cpu", "cuda12", "vulkan", "rocm" };
+        // Recommendation must be a real catalog variant. Includes *-noavx because a host
+        // without AVX (or our detection) is steered to the compatibility builds.
+        var validVariants = new[] { "cpu", "noavx", "cuda12", "cuda12-noavx", "vulkan", "vulkan-noavx", "rocm" };
         Assert.Contains(gpu.RecommendedVariant, validVariants);
+    }
+
+    [Theory]
+    [InlineData("cpu", true)]
+    [InlineData("cuda12", true)]
+    [InlineData("vulkan", true)]
+    [InlineData("noavx", false)]
+    [InlineData("cuda12-noavx", false)]
+    [InlineData("vulkan-noavx", false)]
+    [InlineData("rocm", false)]
+    [InlineData("unknown", false)]
+    public void VariantRequiresAvx_OnlyNonNoavxBuilds(string variant, bool requiresAvx)
+    {
+        Assert.Equal(requiresAvx, WhisperSetupService.VariantRequiresAvx(variant));
+    }
+
+    [Fact]
+    public void CpuInfoHasAvx_DetectsAvxFlag()
+    {
+        // Real /proc/cpuinfo "flags" line containing avx
+        var withAvx = "processor\t: 0\nflags\t\t: fpu vme de pse tsc msr pae mce cx8 sse sse2 avx avx2 fma\n";
+        Assert.True(WhisperSetupService.CpuInfoHasAvx(withAvx));
+    }
+
+    [Fact]
+    public void CpuInfoHasAvx_NoAvxFlag_ReturnsFalse()
+    {
+        // A CPU that lacks AVX (e.g. older Atom/Celeron common in NAS boxes)
+        var noAvx = "processor\t: 0\nflags\t\t: fpu vme de pse tsc msr pae mce cx8 sse sse2 sse4_1 sse4_2\n";
+        Assert.False(WhisperSetupService.CpuInfoHasAvx(noAvx));
+    }
+
+    [Fact]
+    public void CpuInfoHasAvx_DoesNotMatchAvxSubstrings()
+    {
+        // Must match the whole "avx" token, not "avx512vl" alone implying nothing about plain avx.
+        // A line with only avx512 tokens (no bare "avx") should NOT report avx.
+        var only512 = "flags\t\t: fpu sse2 avx512f avx512dq avx512bw\n";
+        Assert.False(WhisperSetupService.CpuInfoHasAvx(only512));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("processor : 0\nmodel name : Some CPU\n")]  // no flags line at all
+    public void CpuInfoHasAvx_EmptyOrNoFlags_ReturnsFalse(string content)
+    {
+        Assert.False(WhisperSetupService.CpuInfoHasAvx(content));
     }
 
     [Fact]
