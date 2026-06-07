@@ -199,6 +199,19 @@ namespace WhisperSubs.Providers
                             $"libgomp.so.1) or switch to a binary variant that doesn't need it. Raw error: {stderr.Trim()}");
                     }
 
+                    // Exit 132 = SIGILL (illegal instruction): the binary used a CPU instruction set
+                    // (e.g. AVX) this CPU doesn't support. The "noavx" (Compatibility) variant is built
+                    // for these CPUs. 134 = SIGABRT, 135 = SIGBUS are adjacent hardware/ABI crashes.
+                    if (process.ExitCode == 132 || process.ExitCode == 134 || process.ExitCode == 135)
+                    {
+                        throw new InvalidOperationException(
+                            "whisper-cli crashed on launch with an illegal-instruction error (exit " +
+                            $"{process.ExitCode}). This CPU likely lacks an instruction set (such as AVX) that " +
+                            "this binary was built for. Re-download the binary and choose the " +
+                            "\"CPU (Compatibility)\" / noavx variant on the plugin setup page, which is built " +
+                            $"for CPUs without AVX. Raw error: {stderr.Trim()}");
+                    }
+
                     throw new InvalidOperationException(
                         $"Whisper process failed with exit code {process.ExitCode}. Error: {stderr}");
                 }

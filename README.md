@@ -137,6 +137,8 @@ The plugin's built-in binary downloader fetches pre-built whisper-cli binaries. 
 
 > **Minimal containers (TrueNAS Scale, slim Docker):** The default `cpu` build links `libgomp1` (OpenMP) for best performance. If that library is missing, **the plugin automatically falls back to the `noavx` build**, which is compiled with OpenMP off and has no such dependency — so transcription still works out of the box, just without the small OpenMP speed-up.
 
+> **Older / low-power CPUs (no AVX):** The `cpu`, `vulkan` and `cuda12` builds are compiled with AVX/AVX2 instructions and will crash with an *illegal instruction* error (exit 132) on CPUs that lack them — common on budget NAS boxes, Atom/Celeron chips and some VMs. The plugin **detects missing AVX support and automatically uses the `noavx` (Compatibility) build** instead, both when recommending a variant and as a download-time fallback. You can also pick **"CPU (Compatibility)"** manually on the setup page.
+
 For the faster build, install `libgomp1` persistently via your container's entrypoint or Dockerfile:
 
 ```bash
