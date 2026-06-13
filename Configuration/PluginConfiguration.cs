@@ -78,6 +78,21 @@ namespace WhisperSubs.Configuration
         /// </summary>
         public string CustomWhisperArgs { get; set; } = "";
 
+        /// <summary>
+        /// When enabled, subtitle start times are snapped forward to detected speech onsets
+        /// so a subtitle no longer appears during the silence before its line is spoken.
+        /// whisper.cpp emits gapless segments (next.start == prev.end); this re-introduces
+        /// the natural gaps using FFmpeg silence detection. Local whisper-cli only.
+        /// </summary>
+        public bool AlignSubtitlesToSpeech { get; set; } = true;
+
+        /// <summary>
+        /// When enabled, compensates for a container audio start-time offset (the audio stream
+        /// not starting at 0:00) by shifting all subtitle timestamps forward by that offset,
+        /// keeping subtitles in sync with playback. Local whisper-cli only.
+        /// </summary>
+        public bool CompensateAudioOffset { get; set; } = true;
+
         public List<string> EnabledLibraries { get; set; } = new List<string>();
 
         public PluginConfiguration()

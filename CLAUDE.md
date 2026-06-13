@@ -51,8 +51,9 @@ Plugin.cs                          Entry point, IHasWebPages (embeds config UI)
 1. **Language detection** — `SubtitleManager.DetectAudioLanguagesAsync` calls FFprobe to read audio stream language tags. ISO 639-2/B codes are normalized to 639-1 (e.g., `spa` -> `es`).
 2. **Audio extraction** — FFmpeg extracts 16kHz mono PCM WAV from the media file to a temp path.
 3. **Transcription** — `WhisperProvider.TranscribeAsync` invokes `whisper-cli` as a child process with the model and audio file. Output is an SRT file.
-4. **Save** — The SRT content is written alongside the media as `<filename>.<lang>.generated.srt`.
-5. **Metadata refresh** — `item.RefreshMetadata()` tells Jellyfin to pick up the new subtitle file.
+4. **Timing corrections** — Before saving, `SubtitleManager.ApplyTimingCorrectionsAsync` applies (when the matching config toggle is on): `CompensateAudioOffset` shifts all timestamps by the audio stream's container `start_time`, then `WhisperProvider.AlignSrtToSpeech` snaps each subtitle's start forward to detected speech onset via FFmpeg `silencedetect` (fixes whisper.cpp's gapless segments). Both default on; local whisper-cli only (full + translated), not the remote API, not forced.
+5. **Save** — The SRT content is written alongside the media as `<filename>.<lang>.generated.srt`.
+6. **Metadata refresh** — `item.RefreshMetadata()` tells Jellyfin to pick up the new subtitle file.
 
 ### English Translation (v3.11.0.0+)
 
@@ -202,6 +203,7 @@ Version is read from `<Version>` in `WhisperSubs.csproj`. Bump there before push
 - **Language detection false positives**: At p>=0.3, concert/music audio can be misidentified as foreign language. Consider raising threshold for non-dialogue content.
 - **Hallucination signatures** (Spanish): "La Iglesia de Jesucristo de los Santos de los Ultimos Dias", "Suscribete al canal", "Subtitulos por".
 - **whisper.cpp writes SRT only at completion** — not incrementally. Mid-process kills produce no partial file.
+- **Subtitle timing**: whisper.cpp emits gapless segments, so a line can show during the pause before its speech. `AlignSubtitlesToSpeech` (default on) snaps starts to speech onset via `silencedetect`; `CompensateAudioOffset` (default on) shifts by audio `start_time`. See `WhisperProvider.AlignSrtToSpeech` + `SubtitleManager.ApplyTimingCorrectionsAsync`. Applies to full + translated, not forced/lyrics.
 
 ## Operational Gotchas
 

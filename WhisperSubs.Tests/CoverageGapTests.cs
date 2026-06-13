@@ -13,6 +13,7 @@ namespace WhisperSubs.Tests;
 /// <summary>
 /// Targeted tests to close remaining coverage gaps.
 /// </summary>
+[Collection("QueueSingleton")]
 public class CoverageGapTests
 {
     // ── SubtitleWorkItem properties (lines 16-18) ──
