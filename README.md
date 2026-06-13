@@ -361,6 +361,19 @@ The plugin supports three language modes:
 
 3. **Forced language** -- Set a specific language code (e.g., `es`) in the configuration or per-request via the API. This overrides detection and tells whisper to transcribe using that language model.
 
+### Subtitle Timing
+
+whisper.cpp emits subtitle segments back-to-back with no gaps, so the next line can appear on screen during the pause *before* it is actually spoken. Two timing corrections fix this, and **both are on by default**:
+
+| Setting | What it does |
+|---|---|
+| **Align subtitles to speech** | Snaps each subtitle's start to the detected speech onset, so subtitles no longer show during the silence before a line. Uses a quick FFmpeg silence-detection pass over the audio. |
+| **Compensate audio start offset** | Shifts all subtitle timestamps by the audio stream's container start time, keeping subtitles in sync when a file's audio doesn't begin exactly at 0:00. |
+
+> These corrections apply only to **locally-generated subtitles** (whisper-cli) -- both full and translated subtitles. They do not affect the remote Whisper API or forced subtitles.
+>
+> Alignment runs one extra FFmpeg silence-detection pass over the audio before saving the subtitle file.
+
 ## Usage
 
 ### Admin Dashboard
