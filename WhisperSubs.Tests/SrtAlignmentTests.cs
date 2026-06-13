@@ -271,4 +271,216 @@ public class SrtAlignmentTests
         Assert.Equal("00:00:05,000", timings[0].End);
         Assert.Contains("Real subtitle", result);
     }
+
+    // ── 11. Unsorted segments are ordered internally before onset lookup ──
+
+    [Fact]
+    public void UnsortedSegments_StillSnapsToCorrectOnset()
+    {
+        // Start at 5.0s sits in the silence gap (4-8s). Segments are passed OUT OF ORDER;
+        // the internal OrderBy(s => s.Start) must sort them so the onset scan finds 8.0, not 2.0.
+        var srt = "1\n00:00:05,000 --> 00:00:12,000\nUnsorted input\n";
+        var segments = new List<(double Start, double End)> { (8.0, 12.0), (2.0, 4.0) };
+
+        var result = WhisperProvider.AlignSrtToSpeech(srt, segments);
+
+        var timings = Timings(result);
+        Assert.Single(timings);
+        Assert.Equal("00:00:08,000", timings[0].Start); // snapped to the 8.0s onset, proving the sort
+        Assert.Equal("00:00:12,000", timings[0].End);
+    }
+
+    // ── 12. Leading silence before the first segment snaps to the first onset ──
+
+    [Fact]
+    public void LeadingSilenceBeforeFirstSegment_SnapsToFirstOnset()
+    {
+        // Audio opens with silence 0-2s; first speech is 2.0-5.0s. The subtitle starts at 0.0.
+        var srt = "1\n00:00:00,000 --> 00:00:10,000\nOpening line\n";
+        var segments = new List<(double Start, double End)> { (2.0, 5.0), (7.0, 9.0) };
+
+        var result = WhisperProvider.AlignSrtToSpeech(srt, segments);
+
+        var timings = Timings(result);
+        Assert.Single(timings);
+        Assert.Equal("00:00:02,000", timings[0].Start); // snapped to the first onset
+        Assert.Equal("00:00:10,000", timings[0].End);
+    }
+
+    // ── 13. Two consecutive silence entries snap to their own respective onsets ──
+
+    [Fact]
+    public void TwoConsecutiveSilenceEntries_SnapToTheirRespectiveOnsets()
+    {
+        // Speech: 2.0-4.0s and 8.0-12.0s. Both entries start in silence.
+        //  Entry 1 starts at 0.0s (gap before 2.0) -> snaps to 2.0.
+        //  Entry 2 starts at 5.0s (gap 4-8s)        -> snaps to 8.0.
+        // The onset lookup must restart per entry; no cursor state may leak across entries.
+        var srt = """
+            1
+            00:00:00,000 --> 00:00:10,000
+            First gap entry
+
+            2
+            00:00:05,000 --> 00:00:12,000
+            Second gap entry
+            """;
+        var segments = new List<(double Start, double End)> { (2.0, 4.0), (8.0, 12.0) };
+
+        var result = WhisperProvider.AlignSrtToSpeech(srt, segments);
+
+        var timings = Timings(result);
+        Assert.Equal(2, timings.Count);
+        Assert.Equal("00:00:02,000", timings[0].Start); // entry 1 -> first onset
+        Assert.Equal("00:00:08,000", timings[1].Start); // entry 2 -> second onset (no leak)
+    }
+
+    // ── 14. Start exactly at a segment's lower boundary is in-speech (unchanged) ──
+
+    [Fact]
+    public void StartExactlyAtSegmentStart_Unchanged()
+    {
+        // Start 2.0s equals the segment's Start. The in-speech test (Start - 0.001 <= origStart)
+        // holds at the lower boundary, so the start is left unchanged.
+        var srt = "1\n00:00:02,000 --> 00:00:09,000\nAt onset\n";
+        var segments = new List<(double Start, double End)> { (2.0, 9.0) };
+
+        var result = WhisperProvider.AlignSrtToSpeech(srt, segments);
+
+        var timings = Timings(result);
+        Assert.Single(timings);
+        Assert.Equal("00:00:02,000", timings[0].Start); // unchanged (inSpeech at lower boundary)
+        Assert.Equal("00:00:09,000", timings[0].End);
+    }
+
+    // ── 15. Start exactly at a segment's end is in-speech within tolerance (unchanged) ──
+
+    [Fact]
+    public void StartExactlyAtSegmentEnd_Unchanged()
+    {
+        // Start 6.0s equals the segment's End. The in-speech test (origStart <= End + 0.001)
+        // holds at the upper boundary, so the start is left unchanged.
+        var srt = "1\n00:00:06,000 --> 00:00:10,000\nAt segment end\n";
+        var segments = new List<(double Start, double End)> { (2.0, 6.0) };
+
+        var result = WhisperProvider.AlignSrtToSpeech(srt, segments);
+
+        var timings = Timings(result);
+        Assert.Single(timings);
+        Assert.Equal("00:00:06,000", timings[0].Start); // unchanged (within +0.001 of End)
+        Assert.Equal("00:00:10,000", timings[0].End);
+    }
+
+    // ── 16. Start just past the last segment's end, with no later onset, is unchanged ──
+
+    [Fact]
+    public void StartJustPastLastSegmentEnd_Unchanged()
+    {
+        // Start 6.002s is just outside the segment end (6.0 + 0.001 = 6.001), so not in-speech.
+        // No segment starts after 6.002s, so there is no onset to snap to -> unchanged.
+        var srt = "1\n00:00:06,002 --> 00:00:10,000\nJust past the end\n";
+        var segments = new List<(double Start, double End)> { (2.0, 6.0) };
+
+        var result = WhisperProvider.AlignSrtToSpeech(srt, segments);
+
+        var timings = Timings(result);
+        Assert.Single(timings);
+        Assert.Equal("00:00:06,002", timings[0].Start); // unchanged (not inSpeech, no later onset)
+        Assert.Equal("00:00:10,000", timings[0].End);
+    }
+
+    // ── 17. A trailing bare number at EOF does not throw (i >= lines.Length break) ──
+
+    [Fact]
+    public void TrailingBareNumberAtEof_DoesNotThrow()
+    {
+        // Truncated SRT: a valid entry, then a stray bare number "2" with no timing line after it.
+        // After reading the number the loop must break on i >= lines.Length without throwing.
+        var srt = "1\n00:00:00,000 --> 00:00:02,000\nText\n\n2";
+        var segments = new List<(double Start, double End)> { (0.5, 2.0) };
+
+        var result = WhisperProvider.AlignSrtToSpeech(srt, segments);
+
+        // Entry 1 survived; no exception was thrown reaching this assertion.
+        var timings = Timings(result);
+        Assert.Single(timings);
+        Assert.Equal("00:00:02,000", timings[0].End);
+        Assert.Contains("Text", result);
+    }
+
+    // ── 18. CRLF input snaps correctly and strips carriage returns ──
+
+    [Fact]
+    public void CrlfInput_SnapsCorrectlyAndStripsCarriageReturns()
+    {
+        // whisper.cpp SRT can use Windows CRLF line endings. Start at 0.0 is in silence and snaps
+        // to the 2.0s onset; carriage returns must not leak into the canonicalized LF output.
+        var srt = "1\r\n00:00:00,000 --> 00:00:05,000\r\nHello world\r\n";
+        var segments = new List<(double Start, double End)> { (2.0, 6.0) };
+
+        var result = WhisperProvider.AlignSrtToSpeech(srt, segments);
+
+        Assert.Contains("00:00:02,000 --> 00:00:05,000", result); // snapped, end preserved
+        Assert.Contains("Hello world", result);                   // text preserved
+        Assert.DoesNotContain("\r", result);                      // no carriage returns leak
+    }
+
+    // ── 19. CRLF multi-entry: numbers preserved; gap snaps, in-speech stays ──
+
+    [Fact]
+    public void CrlfMultiEntry_PreservesNumbersAndSnaps()
+    {
+        // Two CRLF entries. Speech: 2.0-4.0s and 8.0-12.0s.
+        //  Entry 1 starts at 2.5s (inside first speech) -> unchanged.
+        //  Entry 2 starts at 5.0s (silence gap)         -> snapped to 8.0.
+        var srt = "1\r\n00:00:02,500 --> 00:00:04,000\r\nIn speech\r\n\r\n"
+                + "2\r\n00:00:05,000 --> 00:00:12,000\r\nIn gap\r\n";
+        var segments = new List<(double Start, double End)> { (2.0, 4.0), (8.0, 12.0) };
+
+        var result = WhisperProvider.AlignSrtToSpeech(srt, segments);
+
+        // Both original numbers survive (each on its own line).
+        var numberLines = Regex.Matches(result, @"(?m)^(\d+)$").Select(m => int.Parse(m.Groups[1].Value)).ToList();
+        Assert.Equal(new[] { 1, 2 }, numberLines);
+
+        var timings = Timings(result);
+        Assert.Equal(2, timings.Count);
+        Assert.Equal("00:00:02,500", timings[0].Start); // in-speech entry unchanged
+        Assert.Equal("00:00:08,000", timings[1].Start); // gap entry snapped to onset
+        Assert.DoesNotContain("\r", result);
+    }
+
+    // ── 20. Every entry already inside speech: all timings untouched (round-trip) ──
+
+    [Fact]
+    public void FullyInSpeechMultiEntry_TimingsUnchanged()
+    {
+        // Speech: 2.0-4.0s and 8.0-12.0s. All three starts already sit inside a segment, so the
+        // pass must touch nothing: each original timing line should appear verbatim in the output.
+        var srt = """
+            1
+            00:00:02,500 --> 00:00:04,000
+            Already aligned one
+
+            2
+            00:00:09,000 --> 00:00:12,000
+            Already aligned two
+
+            3
+            00:00:10,000 --> 00:00:12,000
+            Already aligned three
+            """;
+        var segments = new List<(double Start, double End)> { (2.0, 4.0), (8.0, 12.0) };
+
+        var result = WhisperProvider.AlignSrtToSpeech(srt, segments);
+
+        // Original timing lines appear verbatim (nothing snapped).
+        Assert.Contains("00:00:02,500 --> 00:00:04,000", result);
+        Assert.Contains("00:00:09,000 --> 00:00:12,000", result);
+        Assert.Contains("00:00:10,000 --> 00:00:12,000", result);
+
+        // Numbers 1, 2, 3 preserved in order.
+        var numberLines = Regex.Matches(result, @"(?m)^(\d+)$").Select(m => int.Parse(m.Groups[1].Value)).ToList();
+        Assert.Equal(new[] { 1, 2, 3 }, numberLines);
+    }
 }

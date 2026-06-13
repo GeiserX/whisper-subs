@@ -661,7 +661,9 @@ namespace WhisperSubs.Providers
         {
             if (seconds < 0) seconds = 0;
 
-            var totalMs = (int)Math.Round(seconds * 1000);
+            // Truncate (not round) to match OffsetTimestamp, so the align and offset passes
+            // produce identical millisecond values for the same input.
+            var totalMs = (int)(seconds * 1000);
 
             var h = totalMs / 3600000;
             var m = (totalMs % 3600000) / 60000;
