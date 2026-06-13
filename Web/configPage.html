@@ -197,6 +197,35 @@
                         </div>
                     </div>
 
+                    <!-- ── Subtitle Timing ────────────────────────────── -->
+                    <h2>Subtitle Timing</h2>
+
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label>
+                            <input is="emby-checkbox" type="checkbox" id="chkAlignSubtitlesToSpeech" name="AlignSubtitlesToSpeech" />
+                            <span>Align subtitles to speech</span>
+                        </label>
+                        <div class="fieldDescription">
+                            Snaps each subtitle's start to when the line is actually spoken, so subtitles no longer appear
+                            during the silence before speech. <strong>Recommended.</strong>
+                            <br />
+                            Applies only to locally-generated subtitles (whisper-cli), not the remote API or forced subtitles.
+                            Runs a quick extra FFmpeg silence-detection pass over the audio.
+                        </div>
+                    </div>
+
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label>
+                            <input is="emby-checkbox" type="checkbox" id="chkCompensateAudioOffset" name="CompensateAudioOffset" />
+                            <span>Compensate audio start offset</span>
+                        </label>
+                        <div class="fieldDescription">
+                            Keeps subtitles in sync when a file's audio doesn't start exactly at 0:00. <strong>Recommended.</strong>
+                            <br />
+                            Applies only to locally-generated subtitles (whisper-cli), not the remote API or forced subtitles.
+                        </div>
+                    </div>
+
                     <!-- ── Advanced / Manual Install ──────────────────── -->
                     <details style="margin-top:1.5em;">
                         <summary style="cursor:pointer; font-size:1.2em; font-weight:bold; padding:0.5em 0;">Remote Whisper API (Optional)</summary>
@@ -852,6 +881,8 @@
                             page.querySelector('#chkEnableLyricsGeneration').checked = config.EnableLyricsGeneration || false;
                             page.querySelector('#chkEnableTranslation').checked = config.EnableTranslation || false;
                             page.querySelector('#chkPauseOnPlayback').checked = config.PauseOnPlayback || false;
+                            page.querySelector('#chkAlignSubtitlesToSpeech').checked = config.AlignSubtitlesToSpeech || false;
+                            page.querySelector('#chkCompensateAudioOffset').checked = config.CompensateAudioOffset || false;
                             updateTranslationVisibility();
                         }
                             WhisperSubsConfig.loadLibraries();
@@ -876,6 +907,8 @@
                         var subtitleMode = parseInt(page.querySelector('#selectSubtitleMode').value, 10) || 0;
                         config.EnableTranslation = subtitleMode !== 3 && page.querySelector('#chkEnableTranslation').checked;
                         config.PauseOnPlayback = page.querySelector('#chkPauseOnPlayback').checked;
+                        config.AlignSubtitlesToSpeech = page.querySelector('#chkAlignSubtitlesToSpeech').checked;
+                        config.CompensateAudioOffset = page.querySelector('#chkCompensateAudioOffset').checked;
 
                         // Collect enabled libraries from checkboxes
                         var libraryCheckboxes = page.querySelectorAll('.chkLibrary');

@@ -161,6 +161,7 @@ namespace WhisperSubs.Controller
                 await ExtractAudioAsync(mediaPath, tempAudioPath, lang, cancellationToken, resumeOffsetSeconds);
                 SubtitleQueueService.Instance.ReportPhase("Transcribing");
                 string srtContent = await provider.TranscribeAsync(tempAudioPath, lang, cancellationToken);
+                srtContent = await ApplyTimingCorrectionsAsync(srtContent, mediaPath, tempAudioPath, resumeOffsetSeconds > 0, cancellationToken);
 
                 if (resumeOffsetSeconds > 0 && !string.IsNullOrWhiteSpace(existingSrt))
                 {
@@ -297,6 +298,7 @@ namespace WhisperSubs.Controller
                 await ExtractAudioAsync(mediaPath, tempAudioPath, sourceLanguage, cancellationToken);
                 SubtitleQueueService.Instance.ReportPhase("Translating to English");
                 string srtContent = await provider.TranscribeAsync(tempAudioPath, sourceLanguage, cancellationToken, translate: true);
+                srtContent = await ApplyTimingCorrectionsAsync(srtContent, mediaPath, tempAudioPath, isResume: false, cancellationToken);
 
                 await File.WriteAllTextAsync(translatedSrtPath, srtContent, CancellationToken.None);
                 _logger.LogInformation("Saved translated subtitle to {SrtPath}", translatedSrtPath);
@@ -1338,6 +1340,143 @@ namespace WhisperSubs.Controller
             }
 
             return 0;
+        }
+
+        /// <summary>
+        /// Uses FFprobe to read the first audio stream's start_time (seconds).
+        /// Returns the value, or 0 on any failure / unparseable / negative.
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Spawns FFprobe process for audio start_time query")]
+        private async Task<double> GetAudioStartTimeAsync(string mediaPath, CancellationToken cancellationToken)
+        {
+            var ffprobePath = FindFfprobeExecutable();
+            if (ffprobePath == null) return 0;
+
+            var startTimeInfo = new ProcessStartInfo
+            {
+                FileName = ffprobePath,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            startTimeInfo.ArgumentList.Add("-v");
+            startTimeInfo.ArgumentList.Add("error");
+            startTimeInfo.ArgumentList.Add("-select_streams");
+            startTimeInfo.ArgumentList.Add("a:0");
+            startTimeInfo.ArgumentList.Add("-show_entries");
+            startTimeInfo.ArgumentList.Add("stream=start_time");
+            startTimeInfo.ArgumentList.Add("-of");
+            startTimeInfo.ArgumentList.Add("default=noprint_wrappers=1:nokey=1");
+            startTimeInfo.ArgumentList.Add(mediaPath);
+
+            using var process = new Process { StartInfo = startTimeInfo };
+
+            var outputBuilder = new StringBuilder();
+            process.OutputDataReceived += (_, e) => { if (e.Data != null) outputBuilder.AppendLine(e.Data); };
+            // Drain stderr too so a full pipe can never deadlock WaitForExitAsync (consistent with
+            // GetMediaDurationAsync / DetectSpeechSegmentsAsync). Content is unused (-v error).
+            process.ErrorDataReceived += (_, _) => { };
+
+            process.Start();
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+
+            try
+            {
+                await process.WaitForExitAsync(cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                try { process.Kill(entireProcessTree: true); } catch { }
+                throw;
+            }
+
+            process.WaitForExit();
+
+            if (process.ExitCode != 0) return 0;
+
+            if (double.TryParse(outputBuilder.ToString().Trim(), System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var startTime)
+                && startTime > 0)
+            {
+                return startTime;
+            }
+
+            return 0;
+        }
+
+        /// <summary>
+        /// Applies subtitle timing corrections to a FRESH whisper-cli transcription's SRT:
+        /// audio-start-offset compensation (Feature 3) followed by speech-onset alignment
+        /// (Feature 2). Order matters — the offset is applied first so the silence segments and
+        /// the SRT share the same timeline before alignment. A silencedetect failure never fails
+        /// the job (the SRT is returned as-is); cancellation propagates.
+        ///
+        /// Local whisper-cli only: skipped entirely when a remote API is configured (the remote
+        /// server returns its own, often already playback-aligned, timestamps).
+        /// </summary>
+        /// <param name="isResume">True when this is a resumed partial transcription. The audio was
+        /// extracted with <c>-ss</c> so it starts at ~0:00 and the caller re-anchors it via
+        /// <see cref="WhisperProvider.OffsetSrt"/>; applying the container start_time here too would
+        /// double-shift the appended tail, so offset compensation is skipped (alignment still runs
+        /// on the 0-based fresh SRT, which matches the 0-based silence segments).</param>
+        [ExcludeFromCodeCoverage(Justification = "Orchestrates FFprobe/FFmpeg processes for timing correction")]
+        private async Task<string> ApplyTimingCorrectionsAsync(
+            string srtContent, string mediaPath, string audioPath, bool isResume, CancellationToken ct)
+        {
+            if (string.IsNullOrWhiteSpace(srtContent)) return srtContent;
+
+            var config = Plugin.Instance?.Configuration;
+
+            // These corrections operate on locally-generated whisper-cli output only. A remote API
+            // server returns its own timestamps, so don't re-time them (and don't spend local CPU).
+            if (!string.IsNullOrWhiteSpace(config?.RemoteWhisperApiUrl)) return srtContent;
+
+            // Feature 3: compensate for a non-zero audio stream start_time. Skipped on resume
+            // (see isResume) — the existing SRT already carried it and the tail is re-anchored
+            // by the caller's OffsetSrt(resumeOffsetSeconds), so re-applying would double-shift.
+            if (config?.CompensateAudioOffset == true && !isResume)
+            {
+                var startTime = await GetAudioStartTimeAsync(mediaPath, ct);
+                // Ignore container-timestamp noise (< 50ms). Cap at 600s to reject absurd/corrupt
+                // metadata while still covering long broadcast/transport-stream pre-rolls.
+                if (startTime > 0.05 && startTime < 600)
+                {
+                    srtContent = WhisperProvider.OffsetSrt(srtContent, startTime, 1);
+                    _logger.LogInformation("Shifted subtitles by {Offset:F3}s to compensate audio start offset for {ItemName}",
+                        startTime, Path.GetFileName(mediaPath));
+                }
+                else if (startTime >= 600)
+                {
+                    _logger.LogWarning("Audio start offset {Offset:F1}s exceeds the 600s correction limit for {ItemName}; leaving timestamps unshifted",
+                        startTime, Path.GetFileName(mediaPath));
+                }
+            }
+
+            // Feature 2: snap subtitle starts forward to detected speech onsets.
+            if (config?.AlignSubtitlesToSpeech == true)
+            {
+                try
+                {
+                    var duration = await GetMediaDurationAsync(audioPath, ct);
+                    var segments = await DetectSpeechSegmentsAsync(audioPath, duration, ct);
+                    if (segments.Count > 0)
+                    {
+                        srtContent = WhisperProvider.AlignSrtToSpeech(srtContent, segments);
+                        _logger.LogInformation("Aligned subtitle starts to {Count} detected speech segments for {ItemName}",
+                            segments.Count, Path.GetFileName(mediaPath));
+                    }
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Speech alignment failed for {ItemName}, leaving subtitle timings unchanged",
+                        Path.GetFileName(mediaPath));
+                }
+            }
+
+            return srtContent;
         }
 
         private string? FindFfmpegExecutable()

@@ -3,6 +3,11 @@ using Xunit;
 
 namespace WhisperSubs.Tests;
 
+// Serializes test classes that mutate the SubtitleQueueService singleton to avoid a parallel-run race (xUnit runs distinct classes concurrently).
+[CollectionDefinition("QueueSingleton", DisableParallelization = true)]
+public class QueueSingletonCollection { }
+
+[Collection("QueueSingleton")]
 public class SubtitleQueueServiceTests
 {
     [Fact]

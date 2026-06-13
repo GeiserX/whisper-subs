@@ -526,6 +526,153 @@ namespace WhisperSubs.Providers
             return matches.Count;
         }
 
+        /// <summary>
+        /// Aligns subtitle START times to detected speech onsets. whisper.cpp chains segments
+        /// gaplessly (next.start == prev.end), so a subtitle for upcoming speech appears during the
+        /// preceding silence. For each entry whose start falls inside a silence gap, this snaps the
+        /// start FORWARD to the next speech onset — never backward, never past (end - 0.5s), so a
+        /// subtitle keeps at least ~0.5s on screen. End times, text, and ordering are untouched.
+        /// </summary>
+        /// <param name="srtContent">Raw SRT text.</param>
+        /// <param name="speechSegments">Detected speech regions (seconds), each (Start,End); the gaps
+        /// between them are silence. May be unsorted; treat defensively. Empty => return input unchanged.</param>
+        public static string AlignSrtToSpeech(string srtContent, IReadOnlyList<(double Start, double End)> speechSegments)
+        {
+            if (string.IsNullOrWhiteSpace(srtContent) || speechSegments == null || speechSegments.Count == 0)
+                return srtContent;
+
+            // Work on a sorted copy (by Start) so onset lookups scan in timeline order.
+            var segments = speechSegments.OrderBy(s => s.Start).ToList();
+
+            var result = new StringBuilder();
+
+            var lines = srtContent.Split('\n');
+            int i = 0;
+            while (i < lines.Length)
+            {
+                var line = lines[i].Trim();
+
+                // Skip empty lines
+                if (string.IsNullOrEmpty(line)) { i++; continue; }
+
+                // Preserve the original entry number exactly as found (do NOT renumber).
+                string number = "";
+                if (int.TryParse(line, out _))
+                {
+                    number = line;
+                    i++;
+                    if (i >= lines.Length) break;
+                    line = lines[i].Trim();
+                }
+
+                // Parse timestamp line
+                var match = Regex.Match(line, @"(\d{2}:\d{2}:\d{2},\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2},\d{3})");
+                if (!match.Success)
+                {
+                    // Malformed entry (no timing): pass through unchanged rather than dropping.
+                    if (!string.IsNullOrEmpty(number)) result.AppendLine(number);
+                    result.AppendLine(line);
+                    i++;
+                    while (i < lines.Length && !string.IsNullOrWhiteSpace(lines[i]))
+                    {
+                        result.AppendLine(lines[i].TrimEnd());
+                        i++;
+                    }
+                    result.AppendLine();
+                    continue;
+                }
+
+                var origStartTs = match.Groups[1].Value;
+                var origEndTs = match.Groups[2].Value;
+                var origStart = SrtTimeToSeconds(origStartTs);
+                var origEnd = SrtTimeToSeconds(origEndTs);
+
+                var newStart = origStart;
+
+                // "In speech" test: origStart sits inside some speech segment (with a tiny tolerance).
+                bool inSpeech = false;
+                foreach (var seg in segments)
+                {
+                    if (seg.Start - 0.001 <= origStart && origStart <= seg.End + 0.001)
+                    {
+                        inSpeech = true;
+                        break;
+                    }
+                }
+
+                if (!inSpeech)
+                {
+                    // In a silence gap: snap forward to the next speech onset, if any.
+                    double? onset = null;
+                    foreach (var seg in segments)
+                    {
+                        if (seg.Start > origStart)
+                        {
+                            onset = seg.Start;
+                            break;
+                        }
+                    }
+
+                    if (onset.HasValue)
+                    {
+                        newStart = onset.Value;
+
+                        // Keep at least ~0.5s on screen and never move backward.
+                        double maxStart = Math.Max(origStart, origEnd - 0.5);
+                        newStart = Math.Min(newStart, maxStart);
+                        newStart = Math.Max(newStart, origStart);
+
+                        // Avoid churn: ignore sub-50ms adjustments.
+                        if (newStart - origStart < 0.05)
+                            newStart = origStart;
+                    }
+                }
+
+                var startTs = newStart == origStart ? origStartTs : SecondsToSrtTime(newStart);
+
+                if (!string.IsNullOrEmpty(number)) result.AppendLine(number);
+                result.AppendLine($"{startTs} --> {origEndTs}");
+                i++;
+
+                // Collect subtitle text lines until empty line
+                while (i < lines.Length && !string.IsNullOrWhiteSpace(lines[i]))
+                {
+                    result.AppendLine(lines[i].TrimEnd());
+                    i++;
+                }
+                result.AppendLine();
+            }
+
+            return result.ToString();
+        }
+
+        private static double SrtTimeToSeconds(string timestamp)
+        {
+            var match = Regex.Match(timestamp, @"(\d{2}):(\d{2}):(\d{2}),(\d{3})");
+            if (!match.Success) return 0;
+
+            return int.Parse(match.Groups[1].Value) * 3600.0
+                 + int.Parse(match.Groups[2].Value) * 60.0
+                 + int.Parse(match.Groups[3].Value)
+                 + int.Parse(match.Groups[4].Value) / 1000.0;
+        }
+
+        private static string SecondsToSrtTime(double seconds)
+        {
+            if (seconds < 0) seconds = 0;
+
+            // Truncate (not round) to match OffsetTimestamp, so the align and offset passes
+            // produce identical millisecond values for the same input.
+            var totalMs = (int)(seconds * 1000);
+
+            var h = totalMs / 3600000;
+            var m = (totalMs % 3600000) / 60000;
+            var s = (totalMs % 60000) / 1000;
+            var ms = totalMs % 1000;
+
+            return $"{h:D2}:{m:D2}:{s:D2},{ms:D3}";
+        }
+
         internal void AppendCustomArgs(ProcessStartInfo startInfo)
         {
             if (string.IsNullOrWhiteSpace(_customArgs)) return;
