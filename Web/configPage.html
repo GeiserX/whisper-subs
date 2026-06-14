@@ -218,14 +218,14 @@
                     <div class="checkboxContainer checkboxContainer-withDescription">
                         <label>
                             <input is="emby-checkbox" type="checkbox" id="chkAlignSubtitlesToSpeech" name="AlignSubtitlesToSpeech" />
-                            <span>Align subtitles to speech</span>
+                            <span>Align subtitles to speech (fallback)</span>
                         </label>
                         <div class="fieldDescription">
-                            Snaps each subtitle's start to when the line is actually spoken, so subtitles no longer appear
-                            during the silence before speech. <strong>Recommended.</strong>
+                            Older energy-based timing fix that snaps each subtitle's start to when the line is spoken,
+                            using an extra FFmpeg silence-detection pass. <strong>Used only when "Use speech detection (VAD)"
+                            above is off</strong> — VAD does this more reliably. Leave on as a fallback.
                             <br />
                             Applies only to locally-generated subtitles (whisper-cli), not the remote API or forced subtitles.
-                            Runs a quick extra FFmpeg silence-detection pass over the audio.
                         </div>
                     </div>
 
@@ -897,8 +897,8 @@
                             page.querySelector('#chkEnableTranslation').checked = config.EnableTranslation || false;
                             page.querySelector('#chkPauseOnPlayback').checked = config.PauseOnPlayback || false;
                             page.querySelector('#chkEnableVad').checked = config.EnableVad !== false;
-                            page.querySelector('#chkAlignSubtitlesToSpeech').checked = config.AlignSubtitlesToSpeech || false;
-                            page.querySelector('#chkCompensateAudioOffset').checked = config.CompensateAudioOffset || false;
+                            page.querySelector('#chkAlignSubtitlesToSpeech').checked = config.AlignSubtitlesToSpeech !== false;
+                            page.querySelector('#chkCompensateAudioOffset').checked = config.CompensateAudioOffset !== false;
                             updateTranslationVisibility();
                         }
                             WhisperSubsConfig.loadLibraries();

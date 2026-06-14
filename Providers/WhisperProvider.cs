@@ -35,11 +35,21 @@ namespace WhisperSubs.Providers
             "--detect-language", "-dl", "--no-timestamps", "-nt",
             "--prompt", "--offset-n", "-on", "--offset-t", "-ot",
             "--duration", "-d",
-            // VAD is plugin-managed (model path + flag injected below); block manual override.
-            "--vad", "-v", "--vad-model", "-vm"
+            // VAD is plugin-managed (model path + flag + tuning injected below); block manual override.
+            "--vad", "-v", "--vad-model", "-vm",
+            "--vad-threshold", "-vt", "--vad-min-speech-duration-ms", "-vspd",
+            "--vad-min-silence-duration-ms", "-vsd", "--vad-max-speech-duration-s", "-vmsd",
+            "--vad-speech-pad-ms", "-vp", "--vad-samples-overlap", "-vo"
         };
 
         public string Name => "Whisper";
+
+        /// <summary>
+        /// True when a usable Silero VAD model is present, meaning whisper-cli will be invoked with
+        /// --vad and the emitted subtitles are already speech-aligned. Checked live so it reflects
+        /// a model that finished downloading after construction.
+        /// </summary>
+        public bool UsesVad => !string.IsNullOrEmpty(_vadModelPath) && File.Exists(_vadModelPath);
 
         public WhisperProvider(ILogger<WhisperProvider> logger, string modelPath, string binaryPath = "", int threadCount = 0, string customArgs = "", string vadModelPath = "")
         {

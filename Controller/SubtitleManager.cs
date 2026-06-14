@@ -161,7 +161,7 @@ namespace WhisperSubs.Controller
                 await ExtractAudioAsync(mediaPath, tempAudioPath, lang, cancellationToken, resumeOffsetSeconds);
                 SubtitleQueueService.Instance.ReportPhase("Transcribing");
                 string srtContent = await provider.TranscribeAsync(tempAudioPath, lang, cancellationToken);
-                srtContent = await ApplyTimingCorrectionsAsync(srtContent, mediaPath, tempAudioPath, resumeOffsetSeconds > 0, cancellationToken);
+                srtContent = await ApplyTimingCorrectionsAsync(srtContent, mediaPath, tempAudioPath, resumeOffsetSeconds > 0, provider.UsesVad, cancellationToken);
 
                 if (resumeOffsetSeconds > 0 && !string.IsNullOrWhiteSpace(existingSrt))
                 {
@@ -298,7 +298,7 @@ namespace WhisperSubs.Controller
                 await ExtractAudioAsync(mediaPath, tempAudioPath, sourceLanguage, cancellationToken);
                 SubtitleQueueService.Instance.ReportPhase("Translating to English");
                 string srtContent = await provider.TranscribeAsync(tempAudioPath, sourceLanguage, cancellationToken, translate: true);
-                srtContent = await ApplyTimingCorrectionsAsync(srtContent, mediaPath, tempAudioPath, isResume: false, cancellationToken);
+                srtContent = await ApplyTimingCorrectionsAsync(srtContent, mediaPath, tempAudioPath, isResume: false, providerUsesVad: provider.UsesVad, cancellationToken);
 
                 await File.WriteAllTextAsync(translatedSrtPath, srtContent, CancellationToken.None);
                 _logger.LogInformation("Saved translated subtitle to {SrtPath}", translatedSrtPath);
@@ -1423,7 +1423,7 @@ namespace WhisperSubs.Controller
         /// on the 0-based fresh SRT, which matches the 0-based silence segments).</param>
         [ExcludeFromCodeCoverage(Justification = "Orchestrates FFprobe/FFmpeg processes for timing correction")]
         private async Task<string> ApplyTimingCorrectionsAsync(
-            string srtContent, string mediaPath, string audioPath, bool isResume, CancellationToken ct)
+            string srtContent, string mediaPath, string audioPath, bool isResume, bool providerUsesVad, CancellationToken ct)
         {
             if (string.IsNullOrWhiteSpace(srtContent)) return srtContent;
 
@@ -1455,10 +1455,12 @@ namespace WhisperSubs.Controller
             }
 
             // Feature 2: snap subtitle starts forward to detected speech onsets.
-            // Skipped when native Silero VAD is active — whisper-cli already emitted
-            // speech-aligned, gapped timestamps, so this energy-based pass would be redundant
-            // (and risk double-correcting). It remains the fallback when VAD is off/unavailable.
-            if (config?.AlignSubtitlesToSpeech == true && !IsVadActive(config))
+            // Skipped when this run's provider already emitted speech-aligned output via native
+            // VAD (providerUsesVad) — re-running this energy-based pass would be redundant and risk
+            // double-correcting. It remains the fallback when VAD is off/unavailable. Using the
+            // provider's own flag (not a re-resolution) keeps a single source of truth and avoids
+            // the mid-download drift where the model lands between construction and this call.
+            if (config?.AlignSubtitlesToSpeech == true && !providerUsesVad)
             {
                 try
                 {
@@ -1480,26 +1482,6 @@ namespace WhisperSubs.Controller
             }
 
             return srtContent;
-        }
-
-        /// <summary>
-        /// True when native Silero VAD is enabled and its model is resolvable on disk — in which
-        /// case whisper-cli itself produces speech-aligned timestamps and the FFmpeg silencedetect
-        /// alignment pass is unnecessary.
-        /// </summary>
-        private bool IsVadActive(Configuration.PluginConfiguration? config)
-        {
-            if (config?.EnableVad != true) return false;
-            try
-            {
-                var setup = new WhisperSubs.Setup.WhisperSetupService(
-                    _logger, Plugin.Instance?.DataFolderPath ?? "");
-                return setup.ResolveVadModelPath(config.VadModelPath) != null;
-            }
-            catch
-            {
-                return false;
-            }
         }
 
         private string? FindFfmpegExecutable()

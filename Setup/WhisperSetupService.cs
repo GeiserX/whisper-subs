@@ -313,16 +313,25 @@ namespace WhisperSubs.Setup
                 if (File.Exists(destPath)) File.Delete(destPath);
                 File.Move(tempPath, destPath);
 
-                var config = Plugin.Instance.Configuration;
-                config.VadModelPath = destPath;
-                Plugin.Instance.SaveConfiguration();
+                var sha256 = ComputeSha256(destPath);
+                _logger.LogInformation("VAD model SHA256: {Hash}", sha256);
+
+                // Plugin.Instance can be transiently null during reload/teardown; the file is on
+                // disk regardless and ResolveVadModelPath finds it at the default location, so a
+                // missed config write self-recovers.
+                var plugin = Plugin.Instance;
+                if (plugin != null)
+                {
+                    plugin.Configuration.VadModelPath = destPath;
+                    plugin.SaveConfiguration();
+                }
 
                 lock (_lock)
                 {
                     _progress = 100;
                     _progressMessage = "Silero VAD model downloaded successfully.";
                 }
-                _logger.LogInformation("VAD model downloaded to {Path} and config updated", destPath);
+                _logger.LogInformation("VAD model downloaded to {Path}", destPath);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {

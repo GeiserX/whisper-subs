@@ -139,4 +139,57 @@ public class VadModelTests
         provider.AppendCustomArgs(si);
         Assert.Empty(si.ArgumentList);
     }
+
+    [Theory]
+    [InlineData("--vad-threshold 0.9")]
+    [InlineData("-vt 0.9")]
+    [InlineData("--vad-min-speech-duration-ms 250")]
+    [InlineData("-vspd 250")]
+    [InlineData("--vad-speech-pad-ms 30")]
+    [InlineData("-vp 30")]
+    [InlineData("--vad-samples-overlap 0.1")]
+    public void AppendCustomArgs_VadTuningFlags_Stripped(string customArgs)
+    {
+        // VAD is fully plugin-managed; tuning sub-flags must not pass through either.
+        var provider = CreateProvider(customArgs);
+        var si = CreateStartInfo();
+        provider.AppendCustomArgs(si);
+        Assert.Empty(si.ArgumentList);
+    }
+
+    // ── UsesVad: single source of truth for "VAD already applied" ──
+
+    [Fact]
+    public void WhisperProvider_UsesVad_FalseWhenNoModelPath()
+    {
+        var logger = NullLoggerFactory.Instance.CreateLogger<WhisperProvider>();
+        var provider = new WhisperProvider(logger, "/tmp/m.bin", "", 0, "", vadModelPath: "");
+        Assert.False(provider.UsesVad);
+    }
+
+    [Fact]
+    public void WhisperProvider_UsesVad_FalseWhenModelPathMissingOnDisk()
+    {
+        var logger = NullLoggerFactory.Instance.CreateLogger<WhisperProvider>();
+        var provider = new WhisperProvider(logger, "/tmp/m.bin", "", 0, "",
+            vadModelPath: Path.Combine(Path.GetTempPath(), "nonexistent-" + Guid.NewGuid().ToString("N") + ".bin"));
+        Assert.False(provider.UsesVad);
+    }
+
+    [Fact]
+    public void WhisperProvider_UsesVad_TrueWhenModelPathExists()
+    {
+        var modelPath = Path.Combine(Path.GetTempPath(), "vad-present-" + Guid.NewGuid().ToString("N") + ".bin");
+        File.WriteAllText(modelPath, "x");
+        try
+        {
+            var logger = NullLoggerFactory.Instance.CreateLogger<WhisperProvider>();
+            var provider = new WhisperProvider(logger, "/tmp/m.bin", "", 0, "", vadModelPath: modelPath);
+            Assert.True(provider.UsesVad);
+        }
+        finally
+        {
+            File.Delete(modelPath);
+        }
+    }
 }
