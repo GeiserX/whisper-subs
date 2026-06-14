@@ -21,6 +21,12 @@ namespace WhisperSubs.Setup
         };
 
         public const string HuggingFaceBaseUrl = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main";
+
+        // ── Silero VAD model (for whisper-cli --vad speech-onset alignment) ──
+        // Tiny (~865 KB) Silero VAD ggml from the official ggml-org/whisper-vad repo.
+        public const string VadModelFileName = "ggml-silero-v5.1.2.bin";
+        public const string VadModelUrl = "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin";
+        public const long VadModelSizeBytes = 885098;
     }
 
     public class ModelEntry

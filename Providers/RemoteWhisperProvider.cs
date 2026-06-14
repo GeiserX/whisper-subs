@@ -27,6 +27,9 @@ namespace WhisperSubs.Providers
 
         public string Name => "RemoteWhisper";
 
+        /// <summary>Remote API returns its own timestamps; no local VAD involvement.</summary>
+        public bool UsesVad => false;
+
         public RemoteWhisperProvider(ILogger logger, string apiUrl, string model, string apiKey = "")
         {
             _logger = logger;

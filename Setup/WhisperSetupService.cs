@@ -79,6 +79,11 @@ namespace WhisperSubs.Setup
         public string WhisperDirectory => Path.Combine(_dataPath, "whisper");
         public string ModelsDirectory => Path.Combine(_dataPath, "whisper", "models");
 
+        // Silero VAD model lives in its own subdir so it never collides with the
+        // transcription-model selection logic (which picks the largest .bin in ModelsDirectory).
+        public string VadDirectory => Path.Combine(_dataPath, "whisper", "vad");
+        public string VadModelPath => Path.Combine(VadDirectory, ModelCatalog.VadModelFileName);
+
         public string BinaryPath => Path.Combine(WhisperDirectory,
             RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "whisper-cli.exe" : "whisper-cli");
 
@@ -251,6 +256,108 @@ namespace WhisperSubs.Setup
             {
                 lock (_lock) { _isRunning = false; }
             }
+        }
+
+        /// <summary>
+        /// Downloads the Silero VAD ggml model used by whisper-cli's native --vad. Small (~865 KB).
+        /// Caller must call TryAcquire("vad", ...) first. Sets config.VadModelPath on success.
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "HTTP download + Plugin.Instance")]
+        public async Task DownloadVadModelAsync(CancellationToken cancellationToken)
+        {
+            try
+            {
+                Directory.CreateDirectory(VadDirectory);
+
+                var destPath = VadModelPath;
+                var tempPath = destPath + ".downloading";
+
+                _logger.LogInformation("Downloading Silero VAD model from {Url}", ModelCatalog.VadModelUrl);
+
+                using var response = await SharedHttpClient.GetAsync(ModelCatalog.VadModelUrl, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                response.EnsureSuccessStatusCode();
+
+                var totalBytes = response.Content.Headers.ContentLength ?? -1;
+
+                await using (var stream = await response.Content.ReadAsStreamAsync(cancellationToken))
+                await using (var fileStream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None, 81920))
+                {
+                    var buffer = new byte[81920];
+                    long downloaded = 0;
+                    int bytesRead;
+                    while ((bytesRead = await stream.ReadAsync(buffer, cancellationToken)) > 0)
+                    {
+                        await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken);
+                        downloaded += bytesRead;
+                        if (totalBytes > 0)
+                        {
+                            lock (_lock)
+                            {
+                                _progress = (double)downloaded / totalBytes * 100;
+                                _progressMessage = $"Downloading Silero VAD model: {downloaded / 1024.0:F0} / {totalBytes / 1024.0:F0} KB";
+                            }
+                        }
+                    }
+                    await fileStream.FlushAsync(cancellationToken);
+                }
+
+                // Reject truncated downloads (the model is ~865 KB; allow 10% slack).
+                var actualBytes = new FileInfo(tempPath).Length;
+                if (actualBytes < ModelCatalog.VadModelSizeBytes * 0.9)
+                {
+                    if (File.Exists(tempPath)) File.Delete(tempPath);
+                    throw new InvalidOperationException(
+                        $"Downloaded VAD model is {actualBytes} bytes but expected ~{ModelCatalog.VadModelSizeBytes}. File may be corrupted.");
+                }
+
+                if (File.Exists(destPath)) File.Delete(destPath);
+                File.Move(tempPath, destPath);
+
+                var sha256 = ComputeSha256(destPath);
+                _logger.LogInformation("VAD model SHA256: {Hash}", sha256);
+
+                // Plugin.Instance can be transiently null during reload/teardown; the file is on
+                // disk regardless and ResolveVadModelPath finds it at the default location, so a
+                // missed config write self-recovers.
+                var plugin = Plugin.Instance;
+                if (plugin != null)
+                {
+                    plugin.Configuration.VadModelPath = destPath;
+                    plugin.SaveConfiguration();
+                }
+
+                lock (_lock)
+                {
+                    _progress = 100;
+                    _progressMessage = "Silero VAD model downloaded successfully.";
+                }
+                _logger.LogInformation("VAD model downloaded to {Path}", destPath);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                lock (_lock)
+                {
+                    _error = ex.Message;
+                    _progressMessage = $"Error downloading VAD model: {ex.Message}";
+                }
+                _logger.LogError(ex, "Error downloading Silero VAD model");
+                throw;
+            }
+            finally
+            {
+                lock (_lock) { _isRunning = false; }
+            }
+        }
+
+        /// <summary>
+        /// Resolves the Silero VAD model path: the configured path if it exists, else the default
+        /// vad/ location if present, else null (not downloaded yet).
+        /// </summary>
+        public string? ResolveVadModelPath(string? configuredPath)
+        {
+            if (!string.IsNullOrWhiteSpace(configuredPath) && File.Exists(configuredPath))
+                return configuredPath;
+            return File.Exists(VadModelPath) ? VadModelPath : null;
         }
 
         /// <summary>
