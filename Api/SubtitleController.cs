@@ -532,6 +532,28 @@ namespace WhisperSubs.Api
         }
 
         /// <summary>
+        /// Downloads the Silero VAD model (for whisper-cli --vad speech-onset alignment).
+        /// Small (~865 KB). Returns 202 immediately.
+        /// </summary>
+        [HttpPost("Setup/DownloadVadModel")]
+        [Authorize(Policy = "RequiresElevation")]
+        public ActionResult DownloadVadModel()
+        {
+            if (!WhisperSetupService.TryAcquire("vad", "Starting Silero VAD model download..."))
+                return Conflict(new { error = "A download is already in progress." });
+
+            var service = GetSetupService();
+
+            _ = Task.Run(async () =>
+            {
+                try { await service.DownloadVadModelAsync(CancellationToken.None); }
+                catch (Exception ex) { _logger.LogError(ex, "Background VAD model download failed"); }
+            });
+
+            return Accepted(new { message = "Silero VAD model download started." });
+        }
+
+        /// <summary>
         /// Lists available binary variants (CPU, CUDA, Vulkan).
         /// </summary>
         [HttpGet("Setup/BinaryVariants")]

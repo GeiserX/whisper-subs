@@ -202,15 +202,30 @@
 
                     <div class="checkboxContainer checkboxContainer-withDescription">
                         <label>
-                            <input is="emby-checkbox" type="checkbox" id="chkAlignSubtitlesToSpeech" name="AlignSubtitlesToSpeech" />
-                            <span>Align subtitles to speech</span>
+                            <input is="emby-checkbox" type="checkbox" id="chkEnableVad" name="EnableVad" />
+                            <span>Use speech detection (VAD)</span>
                         </label>
                         <div class="fieldDescription">
-                            Snaps each subtitle's start to when the line is actually spoken, so subtitles no longer appear
-                            during the silence before speech. <strong>Recommended.</strong>
+                            Uses whisper.cpp's built-in Silero voice-activity detection so subtitles start when speech
+                            actually begins, instead of during the silence before a line. <strong>Recommended.</strong>
+                            <br />
+                            The small (~865 KB) VAD model is downloaded automatically on first use. Applies only to
+                            locally-generated subtitles (whisper-cli), not the remote API or forced subtitles. When enabled,
+                            it replaces the FFmpeg silence-detection pass below.
+                        </div>
+                    </div>
+
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label>
+                            <input is="emby-checkbox" type="checkbox" id="chkAlignSubtitlesToSpeech" name="AlignSubtitlesToSpeech" />
+                            <span>Align subtitles to speech (fallback)</span>
+                        </label>
+                        <div class="fieldDescription">
+                            Older energy-based timing fix that snaps each subtitle's start to when the line is spoken,
+                            using an extra FFmpeg silence-detection pass. <strong>Used only when "Use speech detection (VAD)"
+                            above is off</strong> — VAD does this more reliably. Leave on as a fallback.
                             <br />
                             Applies only to locally-generated subtitles (whisper-cli), not the remote API or forced subtitles.
-                            Runs a quick extra FFmpeg silence-detection pass over the audio.
                         </div>
                     </div>
 
@@ -881,8 +896,9 @@
                             page.querySelector('#chkEnableLyricsGeneration').checked = config.EnableLyricsGeneration || false;
                             page.querySelector('#chkEnableTranslation').checked = config.EnableTranslation || false;
                             page.querySelector('#chkPauseOnPlayback').checked = config.PauseOnPlayback || false;
-                            page.querySelector('#chkAlignSubtitlesToSpeech').checked = config.AlignSubtitlesToSpeech || false;
-                            page.querySelector('#chkCompensateAudioOffset').checked = config.CompensateAudioOffset || false;
+                            page.querySelector('#chkEnableVad').checked = config.EnableVad !== false;
+                            page.querySelector('#chkAlignSubtitlesToSpeech').checked = config.AlignSubtitlesToSpeech !== false;
+                            page.querySelector('#chkCompensateAudioOffset').checked = config.CompensateAudioOffset !== false;
                             updateTranslationVisibility();
                         }
                             WhisperSubsConfig.loadLibraries();
@@ -907,6 +923,7 @@
                         var subtitleMode = parseInt(page.querySelector('#selectSubtitleMode').value, 10) || 0;
                         config.EnableTranslation = subtitleMode !== 3 && page.querySelector('#chkEnableTranslation').checked;
                         config.PauseOnPlayback = page.querySelector('#chkPauseOnPlayback').checked;
+                        config.EnableVad = page.querySelector('#chkEnableVad').checked;
                         config.AlignSubtitlesToSpeech = page.querySelector('#chkAlignSubtitlesToSpeech').checked;
                         config.CompensateAudioOffset = page.querySelector('#chkCompensateAudioOffset').checked;
 
