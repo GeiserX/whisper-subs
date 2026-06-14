@@ -83,8 +83,28 @@ namespace WhisperSubs.Configuration
         /// so a subtitle no longer appears during the silence before its line is spoken.
         /// whisper.cpp emits gapless segments (next.start == prev.end); this re-introduces
         /// the natural gaps using FFmpeg silence detection. Local whisper-cli only.
+        ///
+        /// Note: this is the older energy-based fallback. When <see cref="EnableVad"/> is on
+        /// (the default), whisper.cpp's native Silero VAD handles speech-onset gaps far more
+        /// reliably and this FFmpeg pass is skipped.
         /// </summary>
         public bool AlignSubtitlesToSpeech { get; set; } = true;
+
+        /// <summary>
+        /// When enabled, whisper-cli runs with native Silero Voice Activity Detection
+        /// (<c>--vad</c>), which makes the emitted subtitles start at real speech onset instead
+        /// of during the preceding silence (whisper.cpp otherwise chains segments gaplessly).
+        /// Requires the Silero VAD model, which the plugin auto-downloads. Local whisper-cli only.
+        /// </summary>
+        public bool EnableVad { get; set; } = true;
+
+        /// <summary>
+        /// Filesystem path to the Silero VAD ggml model used by <see cref="EnableVad"/>.
+        /// Set automatically when the plugin downloads the VAD model; can be overridden to point
+        /// at a custom Silero VAD ggml file. When empty, the plugin looks in its default
+        /// vad/ data directory and downloads the model on first use if missing.
+        /// </summary>
+        public string VadModelPath { get; set; } = "";
 
         /// <summary>
         /// When enabled, compensates for a container audio start-time offset (the audio stream

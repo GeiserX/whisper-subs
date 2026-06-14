@@ -1455,7 +1455,10 @@ namespace WhisperSubs.Controller
             }
 
             // Feature 2: snap subtitle starts forward to detected speech onsets.
-            if (config?.AlignSubtitlesToSpeech == true)
+            // Skipped when native Silero VAD is active — whisper-cli already emitted
+            // speech-aligned, gapped timestamps, so this energy-based pass would be redundant
+            // (and risk double-correcting). It remains the fallback when VAD is off/unavailable.
+            if (config?.AlignSubtitlesToSpeech == true && !IsVadActive(config))
             {
                 try
                 {
@@ -1477,6 +1480,26 @@ namespace WhisperSubs.Controller
             }
 
             return srtContent;
+        }
+
+        /// <summary>
+        /// True when native Silero VAD is enabled and its model is resolvable on disk — in which
+        /// case whisper-cli itself produces speech-aligned timestamps and the FFmpeg silencedetect
+        /// alignment pass is unnecessary.
+        /// </summary>
+        private bool IsVadActive(Configuration.PluginConfiguration? config)
+        {
+            if (config?.EnableVad != true) return false;
+            try
+            {
+                var setup = new WhisperSubs.Setup.WhisperSetupService(
+                    _logger, Plugin.Instance?.DataFolderPath ?? "");
+                return setup.ResolveVadModelPath(config.VadModelPath) != null;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private string? FindFfmpegExecutable()

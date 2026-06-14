@@ -19,6 +19,7 @@ namespace WhisperSubs.Providers
         private readonly string _binaryPath;
         private readonly int _threadCount;
         private readonly string _customArgs;
+        private readonly string _vadModelPath;
         private string? _resolvedExecutable;
 
         private static readonly HashSet<string> DeniedArgs = new(StringComparer.OrdinalIgnoreCase)
@@ -33,18 +34,21 @@ namespace WhisperSubs.Providers
             "-of", "--output-file", "--translate", "-tr",
             "--detect-language", "-dl", "--no-timestamps", "-nt",
             "--prompt", "--offset-n", "-on", "--offset-t", "-ot",
-            "--duration", "-d"
+            "--duration", "-d",
+            // VAD is plugin-managed (model path + flag injected below); block manual override.
+            "--vad", "-v", "--vad-model", "-vm"
         };
 
         public string Name => "Whisper";
 
-        public WhisperProvider(ILogger<WhisperProvider> logger, string modelPath, string binaryPath = "", int threadCount = 0, string customArgs = "")
+        public WhisperProvider(ILogger<WhisperProvider> logger, string modelPath, string binaryPath = "", int threadCount = 0, string customArgs = "", string vadModelPath = "")
         {
             _logger = logger;
             _modelPath = modelPath;
             _binaryPath = binaryPath;
             _threadCount = threadCount;
             _customArgs = customArgs ?? "";
+            _vadModelPath = vadModelPath ?? "";
         }
 
         public async Task<string> TranscribeAsync(string audioPath, string language, CancellationToken cancellationToken, bool translate = false)
@@ -108,6 +112,15 @@ namespace WhisperSubs.Providers
                 if (translate)
                 {
                     startInfo.ArgumentList.Add("--translate");
+                }
+                // Native Silero VAD: makes whisper-cli emit subtitles that start at real speech
+                // onset instead of during the preceding silence (whisper.cpp otherwise chains
+                // segments gaplessly). Only when a VAD model is configured and present on disk.
+                if (!string.IsNullOrEmpty(_vadModelPath) && File.Exists(_vadModelPath))
+                {
+                    startInfo.ArgumentList.Add("--vad");
+                    startInfo.ArgumentList.Add("--vad-model");
+                    startInfo.ArgumentList.Add(_vadModelPath);
                 }
                 startInfo.ArgumentList.Add("-osrt");
                 startInfo.ArgumentList.Add("-of");
