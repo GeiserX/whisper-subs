@@ -14,7 +14,7 @@ namespace WhisperSubs.Controller
 
         /// <summary>True for external sidecar subtitle files; false for embedded streams.
         /// Informational: the current skip logic treats embedded and external equally; reserved
-        /// for the desired-languages profile (#83) which may offer count-embedded/external toggles.</summary>
+        /// in case a future toggle wants to count embedded vs external subtitle tracks differently.</summary>
         public bool IsExternal { get; init; }
 
         /// <summary>True for forced tracks (foreign-dialogue inserts only — not full dialogue).</summary>

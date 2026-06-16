@@ -171,21 +171,6 @@
                         </div>
                     </div>
 
-                    <div id="translationCheckboxContainer" class="checkboxContainer checkboxContainer-withDescription">
-                        <label>
-                            <input is="emby-checkbox" type="checkbox" id="chkEnableTranslation" name="EnableTranslation" />
-                            <span>Enable Translation (English)</span>
-                        </label>
-                        <div class="fieldDescription">
-                            When enabled, generates English subtitles via translation for media without an English audio track.
-                            Uses whisper's built-in <code>--translate</code> capability &mdash; no external services required.
-                            <br />
-                            <strong>Note:</strong> Only applies when Subtitle Mode includes Full subtitles (not Forced Only).
-                            Skipped automatically when English audio or English subtitles are already present.
-                            This option is implicit when using "Translation Only" mode.
-                        </div>
-                    </div>
-
                     <div class="checkboxContainer checkboxContainer-withDescription">
                         <label>
                             <input is="emby-checkbox" type="checkbox" id="chkPauseOnPlayback" name="PauseOnPlayback" />
@@ -217,28 +202,18 @@
                         </div>
                     </div>
 
-                    <h3 style="margin-bottom:0.25em;">Subtitle languages to generate</h3>
+                    <h3 style="margin-bottom:0.25em;">Subtitle generation</h3>
                     <div class="fieldDescription" style="margin-bottom:0.5em;">
-                        Whisper can only produce a subtitle in a title's <strong>original audio language</strong> or in <strong>English</strong> — these are the only options it supports. Choose which to generate. (A manual single-item "Generate" always produces both.)
+                        Whisper transcribes the speech it hears, so it can only write a subtitle in the title's <strong>own audio language</strong>. (Turning audio <em>into</em> English is a separate step — see Translation below.)
                     </div>
 
                     <div class="checkboxContainer checkboxContainer-withDescription">
                         <label>
                             <input is="emby-checkbox" type="checkbox" id="chkGenerateOriginalLanguageSubtitles" name="GenerateOriginalLanguageSubtitles" />
-                            <span>Original audio language</span>
+                            <span>Generate original-language subtitles</span>
                         </label>
                         <div class="fieldDescription">
-                            Transcribe each title in its own spoken language (e.g. a Korean film gets Korean subtitles). On by default.
-                        </div>
-                    </div>
-
-                    <div class="checkboxContainer checkboxContainer-withDescription">
-                        <label>
-                            <input is="emby-checkbox" type="checkbox" id="chkGenerateEnglishSubtitles" name="GenerateEnglishSubtitles" />
-                            <span>English</span>
-                        </label>
-                        <div class="fieldDescription">
-                            Produce English subtitles — by transcription when the audio is English, or by translation for non-English audio (requires "Enable English translation" above). English is the only language Whisper can translate to. On by default.
+                            Transcribe each title in its own spoken language — a Korean film gets Korean subtitles, an English film gets English. This is the main "generate subtitles" switch. <strong>On by default.</strong> (A manual single-item "Generate" always transcribes, regardless of this setting.)
                         </div>
                     </div>
 
@@ -249,6 +224,23 @@
                         </label>
                         <div class="fieldDescription">
                             When on, existing image-based subtitles (PGS/VOBSUB) count as already-subtitled and the plugin won't generate a text subtitle. Off by default, since image subs can't be searched or edited.
+                        </div>
+                    </div>
+
+                    <h3 style="margin-bottom:0.25em;">Translation to English</h3>
+                    <div class="fieldDescription" style="margin-bottom:0.5em;">
+                        English is the only language Whisper can translate <em>into</em>. Use this to give foreign-language titles an English subtitle.
+                    </div>
+
+                    <div id="translationCheckboxContainer" class="checkboxContainer checkboxContainer-withDescription">
+                        <label>
+                            <input is="emby-checkbox" type="checkbox" id="chkEnableTranslation" name="EnableTranslation" />
+                            <span>Also create an English subtitle when a title has none</span>
+                        </label>
+                        <div class="fieldDescription">
+                            For a title whose audio isn't English and that has no English subtitle, additionally translate it to English. Titles that already have English audio or an English subtitle are skipped automatically — so you only ever fill the gap, never duplicate. <strong>Off by default.</strong>
+                            <br />
+                            Applies only when Subtitle Mode includes Full subtitles (not Forced Only), and is implicit in "Translation Only" mode. Uses whisper's built-in <code>--translate</code> — no external services.
                         </div>
                     </div>
 
@@ -954,7 +946,6 @@
                             page.querySelector('#chkSkipIfSubtitleExists').checked = config.SkipIfSubtitleExists !== false;
                             page.querySelector('#chkIgnoreForcedSubtitles').checked = config.IgnoreForcedSubtitles !== false;
                             page.querySelector('#chkGenerateOriginalLanguageSubtitles').checked = config.GenerateOriginalLanguageSubtitles !== false;
-                            page.querySelector('#chkGenerateEnglishSubtitles').checked = config.GenerateEnglishSubtitles !== false;
                             page.querySelector('#chkCountImageSubtitlesAsPresent').checked = config.CountImageSubtitlesAsPresent === true;
                             page.querySelector('#chkEnableVad').checked = config.EnableVad !== false;
                             page.querySelector('#chkAlignSubtitlesToSpeech').checked = config.AlignSubtitlesToSpeech !== false;
@@ -986,7 +977,6 @@
                         config.SkipIfSubtitleExists = page.querySelector('#chkSkipIfSubtitleExists').checked;
                         config.IgnoreForcedSubtitles = page.querySelector('#chkIgnoreForcedSubtitles').checked;
                         config.GenerateOriginalLanguageSubtitles = page.querySelector('#chkGenerateOriginalLanguageSubtitles').checked;
-                        config.GenerateEnglishSubtitles = page.querySelector('#chkGenerateEnglishSubtitles').checked;
                         config.CountImageSubtitlesAsPresent = page.querySelector('#chkCountImageSubtitlesAsPresent').checked;
                         config.EnableVad = page.querySelector('#chkEnableVad').checked;
                         config.AlignSubtitlesToSpeech = page.querySelector('#chkAlignSubtitlesToSpeech').checked;

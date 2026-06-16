@@ -439,19 +439,19 @@ A scheduled task named **Generate Subtitles** is registered under the **WhisperS
 
 The auto-generation task skips media that already has a usable subtitle in the needed language, so an already-subtitled library is not needlessly re-processed. For the translation pass, an existing English subtitle track -- embedded **or** external -- counts as already translated and is skipped. Forced (foreign-dialogue-only) and image-based subtitle tracks do **not** count as satisfying the need, so full subtitles are still generated when only those are present.
 
-These settings control it. The skip toggles are **on by default**; both generation toggles are **on by default**; the image-subtitle toggle is **off by default**:
+These settings control it. The skip toggles and **Generate original-language subtitles** are **on by default**; **translation** and the image-subtitle toggle are **off by default**:
 
 | Setting | What it does |
 |---|---|
 | **Skip media that already has subtitles** | Skips media that already has a usable subtitle in the needed language, including an existing English subtitle when translating. |
 | **Ignore forced subtitles when skipping** | Forced subtitle tracks do not count as "already subtitled", so full subtitles are still generated when only forced tracks exist. |
-| **Original audio language** | Generate a subtitle in each title's own spoken language (transcription). On by default. |
-| **English** | Generate an English subtitle — by transcription when the audio is English, or by translation for non-English audio. On by default. |
+| **Generate original-language subtitles** | The main switch: transcribe each title in its own spoken language — a Korean film gets Korean, an English film gets English. On by default. |
 | **Count image-based subtitles as present** | When on, existing image-based subtitles (PGS/VOBSUB) count as "already subtitled" and no text subtitle is generated. Off by default, since image subs can't be searched or edited. |
+| **Also create an English subtitle when a title has none** | Translation to English. For a title whose audio isn't English and that has no English subtitle, additionally produce one. Skips titles that already have English audio or an English subtitle. Off by default. |
 
-> **Which languages can be generated:** Whisper can only produce a subtitle in a title's **original audio language** (transcription) or in **English** (translation — English is the only language Whisper can translate *to*). The two toggles above mirror exactly that, so there are no impossible choices. With both on (the default), a Korean film gets Korean **and** English subtitles; an English film gets English. Turn one off to generate only the other; if you turn off **both**, nothing is generated (the log warns).
+> **What Whisper can produce:** Whisper transcribes the speech it hears, so it writes a subtitle in the title's **own audio language** — that's the **Generate original-language subtitles** switch (an English film naturally gets English subtitles here). The one thing it can additionally do is **translate to English**: that's the separate **Translation** toggle, which only ever *adds* an English subtitle to a foreign-language title that doesn't already have one. There are no other targets — English is the only language Whisper translates *into*.
 >
-> **Scope:** the skip logic and these generation toggles apply to the **scheduled auto-generation task** and bulk "Generate all" actions. A **manual "Generate" on a single item always runs** (it bypasses the skip and the toggles), so you can force fresh subtitles for a file even when it already has some — e.g. to replace a poor embedded track.
+> **Scope:** the skip logic and these toggles apply to the **scheduled auto-generation task** and bulk "Generate all" actions. A **manual "Generate" on a single item always transcribes** (it bypasses the skip and the original-language toggle), so you can force fresh subtitles for a file even when it already has some — e.g. to replace a poor embedded track.
 >
 > **Note:** detection reads each item's subtitle streams from Jellyfin's library metadata, so a recent library scan keeps it accurate. If an item hasn't been scanned yet, the plugin errs toward generating rather than wrongly skipping.
 

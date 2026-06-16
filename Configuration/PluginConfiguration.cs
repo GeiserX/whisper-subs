@@ -129,21 +129,13 @@ namespace WhisperSubs.Configuration
         public bool IgnoreForcedSubtitles { get; set; } = true;
 
         /// <summary>
-        /// Whether the auto-generation task produces an original-audio-language subtitle
-        /// (whisper transcription of each audio track in its own language). Default true.
-        /// whisper can only ever produce a subtitle in the audio's own language (transcribe) or
-        /// in English (translate) — these two toggles mirror exactly that, so no impossible
-        /// language is ever offered. (Issue #83.) Does not apply to a manual single-item "Generate".
+        /// Whether the auto-generation task transcribes each title in its own spoken (audio)
+        /// language — e.g. a Korean film gets Korean subtitles, an English film gets English.
+        /// This is the primary "generate subtitles" switch. Default true. An English subtitle for
+        /// non-English audio is a separate concern handled by <see cref="EnableTranslation"/>.
+        /// (Issue #83.) A manual single-item "Generate" always transcribes regardless.
         /// </summary>
         public bool GenerateOriginalLanguageSubtitles { get; set; } = true;
-
-        /// <summary>
-        /// Whether the auto-generation task produces an English subtitle — by transcription when
-        /// the audio is English, or by whisper translation (the only language whisper can translate
-        /// TO) when it isn't. Default true; requires <see cref="EnableTranslation"/> for the
-        /// translate path on non-English audio. (Issue #83.)
-        /// </summary>
-        public bool GenerateEnglishSubtitles { get; set; } = true;
 
         /// <summary>
         /// When enabled, image-based subtitle tracks (PGS/VOBSUB/DVD) count as an existing usable
