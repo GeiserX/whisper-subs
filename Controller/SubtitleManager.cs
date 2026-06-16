@@ -125,6 +125,22 @@ namespace WhisperSubs.Controller
             double resumeOffsetSeconds = 0;
             int existingEntryCount = 0;
 
+            // Issue #82: if a usable subtitle in THIS language already exists (embedded or external,
+            // text, non-forced when configured) and we have NO partial .generated.srt to resume,
+            // skip generation. The resume path below (when srtPath exists) is preserved untouched.
+            if (!File.Exists(srtPath))
+            {
+                var skipConfig = Plugin.Instance?.Configuration;
+                if (skipConfig?.SkipIfSubtitleExists != false  // default-on
+                    && SubtitleInventory.HasUsableSubtitle(
+                        SubtitleStreamReader.GetSubtitleStreams(item), lang,
+                        ignoreForced: skipConfig?.IgnoreForcedSubtitles != false))
+                {
+                    _logger.LogInformation("Skipping full subtitle for {ItemName} [{Language}]: usable subtitle already present", item.Name, lang);
+                    return (GenerationOutcome.Skipped, null);
+                }
+            }
+
             if (File.Exists(srtPath))
             {
                 existingSrt = await File.ReadAllTextAsync(srtPath, cancellationToken);
@@ -216,6 +232,20 @@ namespace WhisperSubs.Controller
             if (File.Exists(translatedSrtPath))
             {
                 _logger.LogInformation("Translated subtitle already exists for {ItemName}, skipping", item.Name);
+                return (GenerationOutcome.Skipped, null);
+            }
+
+            // Issue #82: skip translation when the item already carries a usable English subtitle
+            // (embedded OR external) — for BOTH "auto" and tagged-foreign-audio paths. Without this,
+            // a movie with tagged foreign audio (e.g. Korean) re-translates even when English subs
+            // already exist. Stream-aware so a forced-only / image-only English track does not count.
+            var skipConfig = Plugin.Instance?.Configuration;
+            if (skipConfig?.SkipIfSubtitleExists != false  // default-on
+                && SubtitleInventory.HasUsableSubtitle(
+                    SubtitleStreamReader.GetSubtitleStreams(item), "en",
+                    ignoreForced: skipConfig?.IgnoreForcedSubtitles != false))
+            {
+                _logger.LogInformation("Skipping translation for {ItemName}: usable English subtitle already present", item.Name);
                 return (GenerationOutcome.Skipped, null);
             }
 

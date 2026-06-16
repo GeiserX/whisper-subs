@@ -435,6 +435,17 @@ A scheduled task named **Generate Subtitles** is registered under the **WhisperS
 3. Generates subtitles using the configured default language (auto-detect by default).
 4. Reports progress in the Jellyfin task UI.
 
+#### Skipping Already-Subtitled Media
+
+The auto-generation task skips media that already has a usable subtitle in the needed language, so an already-subtitled library is not needlessly re-processed. For the translation pass, an existing English subtitle track -- embedded **or** external -- counts as already translated and is skipped. Forced (foreign-dialogue-only) and image-based subtitle tracks do **not** count as satisfying the need, so full subtitles are still generated when only those are present.
+
+Two toggles in the plugin settings control this, and both are **on by default**:
+
+| Setting | What it does |
+|---|---|
+| **Skip media that already has subtitles** | Skips media that already has a usable subtitle in the needed language, including an existing English subtitle when translating. |
+| **Ignore forced subtitles when skipping** | Forced subtitle tracks do not count as "already subtitled", so full subtitles are still generated when only forced tracks exist. |
+
 ## How It Works
 
 1. **Language Detection** -- FFprobe reads the audio stream metadata to determine the spoken language(s).

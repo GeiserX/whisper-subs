@@ -237,7 +237,19 @@ namespace WhisperSubs.ScheduledTasks
                         // Check for embedded subtitle streams (MKV, MP4, etc.)
                         if (!hasFullSrt && item is Video embeddedCheck && embeddedCheck.HasSubtitles)
                         {
-                            hasFullSrt = true;
+                            // Issue #82: HasSubtitles is language- and type-blind, so a forced-only,
+                            // image-only, or wrong-type embedded track would wrongly satisfy the full
+                            // pass. When SkipIfSubtitleExists + IgnoreForcedSubtitles are on, prefer a
+                            // stream-aware check: only a usable (text, non-forced) track counts. Bias
+                            // toward generating — if no usable track is found, leave hasFullSrt false.
+                            if (config.SkipIfSubtitleExists && config.IgnoreForcedSubtitles)
+                            {
+                                hasFullSrt = HasUsableNonForcedTextSubtitle(item);
+                            }
+                            else
+                            {
+                                hasFullSrt = true;
+                            }
                         }
                         var hasForcedSrt = existingFiles.Any(f => System.IO.Path.GetFileName(f).Contains(".forced.")) || noForeignMarkers.Length > 0;
 
@@ -246,6 +258,17 @@ namespace WhisperSubs.ScheduledTasks
                         {
                             hasTranslatedSrt = System.IO.File.Exists(
                                 System.IO.Path.Combine(dir, baseName + ".en.translated.srt"));
+
+                            // Issue #82: an existing usable English subtitle stream (embedded OR
+                            // external) satisfies the translation need just as a .en.translated.srt
+                            // would — so a foreign-audio movie that already ships English subs is not
+                            // needlessly re-translated (~7h saved per item).
+                            if (!hasTranslatedSrt && config.SkipIfSubtitleExists)
+                            {
+                                hasTranslatedSrt = SubtitleInventory.HasUsableSubtitle(
+                                    SubtitleStreamReader.GetSubtitleStreams(item), "en",
+                                    ignoreForced: config.IgnoreForcedSubtitles);
+                            }
                         }
 
                         bool alreadyComplete = config.SubtitleMode switch
@@ -310,6 +333,24 @@ namespace WhisperSubs.ScheduledTasks
             queue.ReportTaskComplete();
             _logger.LogInformation("Subtitle generation task complete. Processed: {Processed}, Failed: {Failed}",
                 completed, failed);
+        }
+
+        /// <summary>
+        /// Issue #82: true if the item has at least one usable (text-based, non-forced) subtitle
+        /// stream in ANY language, excluding the plugin's own generated output. Used to refine the
+        /// language- and type-blind <c>Video.HasSubtitles</c> so a forced-only or image-only
+        /// embedded track no longer counts as a complete full subtitle. Language-agnostic on purpose
+        /// (the full pass targets the audio languages, which may be auto-detected): we only filter
+        /// out the forced/image false-positives here and let the per-language skip (SubtitleManager)
+        /// make the precise per-language decision.
+        /// </summary>
+        private static bool HasUsableNonForcedTextSubtitle(BaseItem item)
+        {
+            return SubtitleStreamReader.GetSubtitleStreams(item)
+                .Any(s => s != null
+                    && s.IsTextSubtitle
+                    && !s.IsForced
+                    && !SubtitleInventory.IsPluginGeneratedPath(s.Path));
         }
 
         internal async Task WaitForPlaybackIdleAsync(CancellationToken cancellationToken)
