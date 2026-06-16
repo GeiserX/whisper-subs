@@ -439,14 +439,18 @@ A scheduled task named **Generate Subtitles** is registered under the **WhisperS
 
 The auto-generation task skips media that already has a usable subtitle in the needed language, so an already-subtitled library is not needlessly re-processed. For the translation pass, an existing English subtitle track -- embedded **or** external -- counts as already translated and is skipped. Forced (foreign-dialogue-only) and image-based subtitle tracks do **not** count as satisfying the need, so full subtitles are still generated when only those are present.
 
-Two toggles in the plugin settings control this, and both are **on by default**:
+Four settings in the plugin control this. The two toggles are **on by default**; the language allow-list is empty by default and the image-subtitle toggle is off by default:
 
 | Setting | What it does |
 |---|---|
 | **Skip media that already has subtitles** | Skips media that already has a usable subtitle in the needed language, including an existing English subtitle when translating. |
 | **Ignore forced subtitles when skipping** | Forced subtitle tracks do not count as "already subtitled", so full subtitles are still generated when only forced tracks exist. |
+| **Desired subtitle languages** | Optional comma/space-separated allow-list (e.g. `en, es`) of languages to generate. When set, the auto-generation task produces only those languages. Empty (default) generates every audio language plus English when translation is enabled. |
+| **Count image-based subtitles as present** | When on, existing image-based subtitles (PGS/VOBSUB) count as "already subtitled" and no text subtitle is generated. Off by default, since image subs can't be searched or edited. |
 
-> **Scope:** this skipping applies to the **scheduled auto-generation task** and bulk "Generate all" actions. A **manual "Generate" on a single item always runs** (it bypasses the skip), so you can force fresh subtitles for a file even when it already has some — e.g. to replace a poor embedded track.
+> **Desired-languages allow-list:** whisper can only produce a subtitle in the audio's own language (full) or in English (translate), so this list **filters** what is generated — it can't add a language the source doesn't support. With `en, es`, a per-audio-language full subtitle is generated only when the audio is English or Spanish, and the English translation pass runs only because English is in the list. Leave it empty to keep the previous behavior.
+>
+> **Scope:** this skipping and the desired-languages allow-list apply to the **scheduled auto-generation task** and bulk "Generate all" actions. A **manual "Generate" on a single item always runs** (it bypasses the skip and ignores the allow-list), so you can force fresh subtitles for a file even when it already has some — e.g. to replace a poor embedded track.
 >
 > **Note:** detection reads each item's subtitle streams from Jellyfin's library metadata, so a recent library scan keeps it accurate. If an item hasn't been scanned yet, the plugin errs toward generating rather than wrongly skipping.
 

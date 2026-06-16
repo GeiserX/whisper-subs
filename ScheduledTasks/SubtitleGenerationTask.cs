@@ -244,7 +244,9 @@ namespace WhisperSubs.ScheduledTasks
                             // Bias toward generating — if no usable track is found, leave it false.
                             if (config.SkipIfSubtitleExists)
                             {
-                                hasFullSrt = HasUsableTextSubtitle(item, ignoreForced: config.IgnoreForcedSubtitles);
+                                hasFullSrt = HasUsableTextSubtitle(item,
+                                    ignoreForced: config.IgnoreForcedSubtitles,
+                                    requireText: !config.CountImageSubtitlesAsPresent);
                             }
                             else
                             {
@@ -267,7 +269,8 @@ namespace WhisperSubs.ScheduledTasks
                             {
                                 hasTranslatedSrt = SubtitleInventory.HasUsableSubtitle(
                                     SubtitleStreamReader.GetSubtitleStreams(item), "en",
-                                    ignoreForced: config.IgnoreForcedSubtitles);
+                                    ignoreForced: config.IgnoreForcedSubtitles,
+                                    requireText: !config.CountImageSubtitlesAsPresent);
                             }
                         }
 
@@ -348,12 +351,12 @@ namespace WhisperSubs.ScheduledTasks
         /// out the forced/image false-positives here and let the per-language skip (SubtitleManager)
         /// make the precise per-language decision.
         /// </summary>
-        private static bool HasUsableTextSubtitle(BaseItem item, bool ignoreForced)
+        private static bool HasUsableTextSubtitle(BaseItem item, bool ignoreForced, bool requireText = true)
         {
             // Reuse the shared usability predicate (text, non-forced, not our own output) so this
             // any-language pre-filter never drifts from SubtitleInventory.HasUsableSubtitle.
             return SubtitleStreamReader.GetSubtitleStreams(item)
-                .Any(s => SubtitleInventory.IsUsableStream(s, ignoreForced));
+                .Any(s => SubtitleInventory.IsUsableStream(s, ignoreForced, requireText));
         }
 
         internal async Task WaitForPlaybackIdleAsync(CancellationToken cancellationToken)

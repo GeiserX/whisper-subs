@@ -217,6 +217,22 @@
                         </div>
                     </div>
 
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="txtDesiredSubtitleLanguages">Desired subtitle languages (optional)</label>
+                        <input type="text" id="txtDesiredSubtitleLanguages" name="DesiredSubtitleLanguages" class="emby-input" placeholder="e.g. en, es" />
+                        <div class="fieldDescription">Comma-separated list of languages to generate, e.g. <code>en, es</code>. Leave empty to generate subtitles for every audio language (and English when translation is enabled). Whisper can only produce a subtitle in the audio's own language or English, so this filters what's generated — it can't add a language the source doesn't support. Manual single-item generation ignores this list.</div>
+                    </div>
+
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label>
+                            <input is="emby-checkbox" type="checkbox" id="chkCountImageSubtitlesAsPresent" name="CountImageSubtitlesAsPresent" />
+                            <span>Count image-based subtitles as present</span>
+                        </label>
+                        <div class="fieldDescription">
+                            When on, existing image-based subtitles (PGS/VOBSUB) count as already-subtitled and the plugin won't generate a text subtitle. Off by default, since image subs can't be searched or edited.
+                        </div>
+                    </div>
+
                     <!-- ── Subtitle Timing ────────────────────────────── -->
                     <h2>Subtitle Timing</h2>
 
@@ -918,6 +934,8 @@
                             page.querySelector('#chkPauseOnPlayback').checked = config.PauseOnPlayback || false;
                             page.querySelector('#chkSkipIfSubtitleExists').checked = config.SkipIfSubtitleExists !== false;
                             page.querySelector('#chkIgnoreForcedSubtitles').checked = config.IgnoreForcedSubtitles !== false;
+                            page.querySelector('#txtDesiredSubtitleLanguages').value = config.DesiredSubtitleLanguages || '';
+                            page.querySelector('#chkCountImageSubtitlesAsPresent').checked = config.CountImageSubtitlesAsPresent === true;
                             page.querySelector('#chkEnableVad').checked = config.EnableVad !== false;
                             page.querySelector('#chkAlignSubtitlesToSpeech').checked = config.AlignSubtitlesToSpeech !== false;
                             page.querySelector('#chkCompensateAudioOffset').checked = config.CompensateAudioOffset !== false;
@@ -947,6 +965,8 @@
                         config.PauseOnPlayback = page.querySelector('#chkPauseOnPlayback').checked;
                         config.SkipIfSubtitleExists = page.querySelector('#chkSkipIfSubtitleExists').checked;
                         config.IgnoreForcedSubtitles = page.querySelector('#chkIgnoreForcedSubtitles').checked;
+                        config.DesiredSubtitleLanguages = page.querySelector('#txtDesiredSubtitleLanguages').value || '';
+                        config.CountImageSubtitlesAsPresent = page.querySelector('#chkCountImageSubtitlesAsPresent').checked;
                         config.EnableVad = page.querySelector('#chkEnableVad').checked;
                         config.AlignSubtitlesToSpeech = page.querySelector('#chkAlignSubtitlesToSpeech').checked;
                         config.CompensateAudioOffset = page.querySelector('#chkCompensateAudioOffset').checked;

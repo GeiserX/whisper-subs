@@ -128,6 +128,27 @@ namespace WhisperSubs.Configuration
         /// </summary>
         public bool IgnoreForcedSubtitles { get; set; } = true;
 
+        /// <summary>
+        /// Optional allow-list of subtitle languages the user actually wants, as a comma/space/
+        /// semicolon-separated list of codes or names (e.g. "en, es" or "english spanish").
+        /// When set, the auto-generation task only produces subtitles for these languages:
+        /// a per-audio-language full subtitle is generated only if that audio language is desired,
+        /// and the English translation pass runs only if English is desired.
+        /// When EMPTY (the default), behavior is unchanged — every audio language is transcribed
+        /// and translation follows <see cref="EnableTranslation"/>. (Issue #83.)
+        /// Note: whisper can only produce a subtitle in the audio's own language (full) or English
+        /// (translate), so this list filters what is generated; it cannot conjure a language the
+        /// source doesn't support. Does not apply to a manual single-item "Generate".
+        /// </summary>
+        public string DesiredSubtitleLanguages { get; set; } = "";
+
+        /// <summary>
+        /// When enabled, image-based subtitle tracks (PGS/VOBSUB/DVD) count as an existing usable
+        /// subtitle for the skip decision. Default false: image subs are not text and can't be
+        /// searched/edited, so by default the plugin still generates a text subtitle. (Issue #83.)
+        /// </summary>
+        public bool CountImageSubtitlesAsPresent { get; set; } = false;
+
         public List<string> EnabledLibraries { get; set; } = new List<string>();
 
         public PluginConfiguration()
