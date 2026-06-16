@@ -446,6 +446,10 @@ Two toggles in the plugin settings control this, and both are **on by default**:
 | **Skip media that already has subtitles** | Skips media that already has a usable subtitle in the needed language, including an existing English subtitle when translating. |
 | **Ignore forced subtitles when skipping** | Forced subtitle tracks do not count as "already subtitled", so full subtitles are still generated when only forced tracks exist. |
 
+> **Scope:** this skipping applies to the **scheduled auto-generation task** and bulk "Generate all" actions. A **manual "Generate" on a single item always runs** (it bypasses the skip), so you can force fresh subtitles for a file even when it already has some — e.g. to replace a poor embedded track.
+>
+> **Note:** detection reads each item's subtitle streams from Jellyfin's library metadata, so a recent library scan keeps it accurate. If an item hasn't been scanned yet, the plugin errs toward generating rather than wrongly skipping.
+
 ## How It Works
 
 1. **Language Detection** -- FFprobe reads the audio stream metadata to determine the spoken language(s).

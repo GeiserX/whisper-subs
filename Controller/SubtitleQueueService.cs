@@ -16,6 +16,13 @@ namespace WhisperSubs.Controller
         public required BaseItem Item { get; init; }
         public required string Language { get; init; }
         public TaskCompletionSource<bool>? Completion { get; init; }
+
+        /// <summary>
+        /// True for explicit manual requests: bypasses the "skip if a usable subtitle already
+        /// exists" checks (#82) so the user always gets fresh generation. Restored-from-disk and
+        /// scheduled items are not forced.
+        /// </summary>
+        public bool Force { get; init; }
     }
 
     public class QueueEntry
@@ -139,13 +146,14 @@ namespace WhisperSubs.Controller
         }
 
         [ExcludeFromCodeCoverage(Justification = "Requires BaseItem + Plugin.Instance for persistence")]
-        public void Enqueue(BaseItem item, string language)
+        public void Enqueue(BaseItem item, string language, bool force = false)
         {
             _priorityQueue.Enqueue(new SubtitleWorkItem
             {
                 Item = item,
                 Language = language,
-                Completion = null
+                Completion = null,
+                Force = force
             });
             PersistQueue();
         }
@@ -296,7 +304,7 @@ namespace WhisperSubs.Controller
                     try
                     {
                         await manager.GenerateSubtitleAsync(
-                            workItem.Item, provider, workItem.Language, cancellationToken);
+                            workItem.Item, provider, workItem.Language, cancellationToken, workItem.Force);
                     }
                     finally
                     {
@@ -346,7 +354,7 @@ namespace WhisperSubs.Controller
                     try
                     {
                         await manager.GenerateSubtitleAsync(
-                            workItem.Item, provider, workItem.Language, cancellationToken);
+                            workItem.Item, provider, workItem.Language, cancellationToken, workItem.Force);
                     }
                     finally
                     {
