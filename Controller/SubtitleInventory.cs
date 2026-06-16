@@ -139,39 +139,5 @@ namespace WhisperSubs.Controller
                 _ => c
             };
         }
-
-        /// <summary>
-        /// Parses a user "desired subtitle languages" string (comma / space / semicolon separated
-        /// codes or names, e.g. "en, es" or "english; spanish") into a set of normalized ISO 639-1
-        /// codes. Unrecognized/placeholder tokens are dropped. Returns an empty set for null/blank
-        /// input — callers treat an empty set as "no filter / all languages desired" (issue #83).
-        /// </summary>
-        public static HashSet<string> ParseDesiredLanguages(string? raw)
-        {
-            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            if (string.IsNullOrWhiteSpace(raw)) return set;
-
-            foreach (var token in raw.Split(new[] { ',', ';', ' ', '\t', '\n', '\r', '|' },
-                         StringSplitOptions.RemoveEmptyEntries))
-            {
-                var norm = NormalizeLang(token);
-                if (norm != null) set.Add(norm);
-            }
-            return set;
-        }
-
-        /// <summary>
-        /// Whether <paramref name="language"/> is wanted given a desired-languages set. An EMPTY
-        /// set means "no allow-list configured" → every language is desired (preserves the
-        /// pre-#83 behavior). A language that doesn't normalize (e.g. "auto"/"und") is treated as
-        /// desired when a concrete allow-list can't classify it, so auto-detection still proceeds.
-        /// </summary>
-        public static bool IsLanguageDesired(string? language, HashSet<string> desired)
-        {
-            if (desired == null || desired.Count == 0) return true;   // no filter
-            var norm = NormalizeLang(language);
-            if (norm == null) return true;                            // can't classify → don't block
-            return desired.Contains(norm);
-        }
     }
 }

@@ -235,9 +235,9 @@ namespace WhisperSubs.Api
                 foreach (var child in children)
                 {
                     // Bulk "Generate all" deliberately does NOT force: it respects the
-                    // SkipIfSubtitleExists / DesiredSubtitleLanguages preferences so a library-wide
-                    // request fills only the gaps the user actually wants (unlike single-item
-                    // Generate, which forces a specific item). See #82/#83.
+                    // SkipIfSubtitleExists toggle and the original/English generation toggles so a
+                    // library-wide request fills only the gaps the user actually wants (unlike
+                    // single-item Generate, which forces a specific item). See #82/#83.
                     queue.Enqueue(child, targetLanguage);
                 }
 

@@ -129,18 +129,21 @@ namespace WhisperSubs.Configuration
         public bool IgnoreForcedSubtitles { get; set; } = true;
 
         /// <summary>
-        /// Optional allow-list of subtitle languages the user actually wants, as a comma/space/
-        /// semicolon-separated list of codes or names (e.g. "en, es" or "english spanish").
-        /// When set, the auto-generation task only produces subtitles for these languages:
-        /// a per-audio-language full subtitle is generated only if that audio language is desired,
-        /// and the English translation pass runs only if English is desired.
-        /// When EMPTY (the default), behavior is unchanged — every audio language is transcribed
-        /// and translation follows <see cref="EnableTranslation"/>. (Issue #83.)
-        /// Note: whisper can only produce a subtitle in the audio's own language (full) or English
-        /// (translate), so this list filters what is generated; it cannot conjure a language the
-        /// source doesn't support. Does not apply to a manual single-item "Generate".
+        /// Whether the auto-generation task produces an original-audio-language subtitle
+        /// (whisper transcription of each audio track in its own language). Default true.
+        /// whisper can only ever produce a subtitle in the audio's own language (transcribe) or
+        /// in English (translate) — these two toggles mirror exactly that, so no impossible
+        /// language is ever offered. (Issue #83.) Does not apply to a manual single-item "Generate".
         /// </summary>
-        public string DesiredSubtitleLanguages { get; set; } = "";
+        public bool GenerateOriginalLanguageSubtitles { get; set; } = true;
+
+        /// <summary>
+        /// Whether the auto-generation task produces an English subtitle — by transcription when
+        /// the audio is English, or by whisper translation (the only language whisper can translate
+        /// TO) when it isn't. Default true; requires <see cref="EnableTranslation"/> for the
+        /// translate path on non-English audio. (Issue #83.)
+        /// </summary>
+        public bool GenerateEnglishSubtitles { get; set; } = true;
 
         /// <summary>
         /// When enabled, image-based subtitle tracks (PGS/VOBSUB/DVD) count as an existing usable
