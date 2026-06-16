@@ -282,6 +282,10 @@ namespace WhisperSubs.ScheduledTasks
 
                         if (alreadyComplete)
                         {
+                            // Log WHY so users (esp. large libraries) can see skips aren't a no-op.
+                            _logger.LogInformation(
+                                "[{Current}/{Total}] Skipping {ItemName}: already satisfied (full={Full}, forced={Forced}, translated={Translated})",
+                                completed + 1, allItems.Count, item.Name, hasFullSrt, hasForcedSrt, hasTranslatedSrt);
                             completed++;
                             queue.ReportTaskProgress(null, completed, allItems.Count, failed);
                             progress.Report((double)completed / allItems.Count * 100);
@@ -346,11 +350,10 @@ namespace WhisperSubs.ScheduledTasks
         /// </summary>
         private static bool HasUsableTextSubtitle(BaseItem item, bool ignoreForced)
         {
+            // Reuse the shared usability predicate (text, non-forced, not our own output) so this
+            // any-language pre-filter never drifts from SubtitleInventory.HasUsableSubtitle.
             return SubtitleStreamReader.GetSubtitleStreams(item)
-                .Any(s => s != null
-                    && s.IsTextSubtitle
-                    && (!ignoreForced || !s.IsForced)
-                    && !SubtitleInventory.IsPluginGeneratedPath(s.Path));
+                .Any(s => SubtitleInventory.IsUsableStream(s, ignoreForced));
         }
 
         internal async Task WaitForPlaybackIdleAsync(CancellationToken cancellationToken)

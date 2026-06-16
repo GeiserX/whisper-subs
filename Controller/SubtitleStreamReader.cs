@@ -15,6 +15,11 @@ namespace WhisperSubs.Controller
     [ExcludeFromCodeCoverage(Justification = "Thin adapter over Jellyfin's MediaStream API")]
     public static class SubtitleStreamReader
     {
+        /// <summary>
+        /// Returns the item's subtitle streams (embedded + external) as <see cref="SubtitleStreamInfo"/>.
+        /// On a metadata-read failure it returns an EMPTY list (fail-safe: callers then bias toward
+        /// generating rather than wrongly skipping). Cancellation is not swallowed.
+        /// </summary>
         public static IReadOnlyList<SubtitleStreamInfo> GetSubtitleStreams(BaseItem item)
         {
             try
@@ -31,7 +36,7 @@ namespace WhisperSubs.Controller
                     })
                     .ToList();
             }
-            catch
+            catch (System.Exception ex) when (ex is not System.OperationCanceledException)
             {
                 // Never let a metadata read break the task; treat as "unknown / no streams".
                 return new List<SubtitleStreamInfo>();

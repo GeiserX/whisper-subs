@@ -1608,41 +1608,11 @@ namespace WhisperSubs.Controller
         /// </summary>
         private static string NormalizeLanguageCode(string code)
         {
-            return code.ToLowerInvariant() switch
-            {
-                "spa" => "es",
-                "eng" => "en",
-                "fra" or "fre" => "fr",
-                "deu" or "ger" => "de",
-                "ita" => "it",
-                "por" => "pt",
-                "rus" => "ru",
-                "jpn" => "ja",
-                "zho" or "chi" => "zh",
-                "kor" => "ko",
-                "ara" => "ar",
-                "hin" => "hi",
-                "pol" => "pl",
-                "nld" or "dut" => "nl",
-                "tur" => "tr",
-                "swe" => "sv",
-                "dan" => "da",
-                "fin" => "fi",
-                "nor" => "no",
-                "ces" or "cze" => "cs",
-                "ron" or "rum" => "ro",
-                "hun" => "hu",
-                "ell" or "gre" => "el",
-                "heb" => "he",
-                "tha" => "th",
-                "ukr" => "uk",
-                "vie" => "vi",
-                "ind" => "id",
-                "cat" => "ca",
-                "eus" or "baq" => "eu",
-                "glg" => "gl",
-                _ => code.ToLowerInvariant()
-            };
+            // Delegates to the single canonical table in SubtitleInventory.NormalizeLang (which also
+            // handles English word-forms and region tags like "pt-BR"). The `?? code.ToLowerInvariant()`
+            // preserves this method's non-null contract: callers expect a usable code back, and
+            // placeholder tags ("auto"/"und", which NormalizeLang maps to null) round-trip unchanged.
+            return SubtitleInventory.NormalizeLang(code) ?? (code ?? "").ToLowerInvariant();
         }
     }
 }

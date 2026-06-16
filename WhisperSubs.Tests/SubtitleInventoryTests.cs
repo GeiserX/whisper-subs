@@ -253,4 +253,249 @@ public class SubtitleInventoryTests
     {
         Assert.False(SubtitleInventory.IsPluginGeneratedPath(path));
     }
+
+    // -------------------------------------------------------------------------
+    // IsUsableStream — single source of truth for "is this a usable candidate?"
+    // (language-agnostic; callers add the language match)
+    // -------------------------------------------------------------------------
+
+    [Fact]
+    public void IsUsableStream_NullStream_ReturnsFalse()
+    {
+        // Case 12a: a null stream is never usable.
+        Assert.False(SubtitleInventory.IsUsableStream(null));
+    }
+
+    [Fact]
+    public void IsUsableStream_TextNonForcedNormalPath_ReturnsTrue()
+    {
+        // Case 12b: the happy path — text, non-forced, ordinary external path.
+        var s = new SubtitleStreamInfo
+        {
+            Language = "en",
+            IsForced = false,
+            IsTextSubtitle = true,
+            Path = "/m/Movie.en.srt"
+        };
+
+        Assert.True(SubtitleInventory.IsUsableStream(s));
+    }
+
+    [Fact]
+    public void IsUsableStream_ForcedText_IgnoreForcedTrue_ReturnsFalse()
+    {
+        // Case 12c: forced text track is excluded when ignoreForced is true (the default).
+        var s = new SubtitleStreamInfo { Language = "en", IsForced = true, IsTextSubtitle = true };
+
+        Assert.False(SubtitleInventory.IsUsableStream(s, ignoreForced: true));
+    }
+
+    [Fact]
+    public void IsUsableStream_ForcedText_IgnoreForcedFalse_ReturnsTrue()
+    {
+        // Case 12d: when forced subs are allowed, the forced text track is usable.
+        var s = new SubtitleStreamInfo { Language = "en", IsForced = true, IsTextSubtitle = true };
+
+        Assert.True(SubtitleInventory.IsUsableStream(s, ignoreForced: false));
+    }
+
+    [Fact]
+    public void IsUsableStream_ImageSub_RequireTextTrue_ReturnsFalse()
+    {
+        // Case 12e: image sub (PGS/VOBSUB) is excluded when text is required (the default).
+        var s = new SubtitleStreamInfo { Language = "en", IsTextSubtitle = false };
+
+        Assert.False(SubtitleInventory.IsUsableStream(s, requireText: true));
+    }
+
+    [Fact]
+    public void IsUsableStream_ImageSub_RequireTextFalse_ReturnsTrue()
+    {
+        // Case 12f: when text is not required, the image sub is usable.
+        var s = new SubtitleStreamInfo { Language = "en", IsTextSubtitle = false };
+
+        Assert.True(SubtitleInventory.IsUsableStream(s, requireText: false));
+    }
+
+    [Theory]
+    // Case 12g: the plugin's own generated/translated outputs are never usable candidates,
+    // even though they are text and non-forced.
+    [InlineData("/m/Movie.en.generated.srt")]
+    [InlineData("/m/Movie.en.translated.srt")]
+    public void IsUsableStream_PluginGeneratedPath_ReturnsFalse(string path)
+    {
+        var s = new SubtitleStreamInfo
+        {
+            Language = "en",
+            IsForced = false,
+            IsTextSubtitle = true,
+            Path = path
+        };
+
+        Assert.False(SubtitleInventory.IsUsableStream(s));
+    }
+
+    [Fact]
+    public void IsUsableStream_TextNonForcedNullPath_ReturnsTrue()
+    {
+        // Case 12h: a null path is not a generated path — embedded text tracks stay usable.
+        var s = new SubtitleStreamInfo
+        {
+            Language = "en",
+            IsForced = false,
+            IsTextSubtitle = true,
+            Path = null
+        };
+
+        Assert.True(SubtitleInventory.IsUsableStream(s));
+    }
+
+    // -------------------------------------------------------------------------
+    // NormalizeLang — "auto" placeholder
+    // -------------------------------------------------------------------------
+
+    [Fact]
+    public void NormalizeLang_Auto_ReturnsNull()
+    {
+        // Case 13: "auto" is whisper's detect-language placeholder, not a concrete language;
+        // it must normalize to null (and survive trim + case folding).
+        Assert.Null(SubtitleInventory.NormalizeLang("auto"));
+        Assert.Null(SubtitleInventory.NormalizeLang("AUTO"));
+        Assert.Null(SubtitleInventory.NormalizeLang(" auto "));
+    }
+
+    // -------------------------------------------------------------------------
+    // NormalizeLang — canonical-table parity guard
+    // (locks the table now that SubtitleManager delegates to it)
+    // -------------------------------------------------------------------------
+
+    [Theory]
+    // Case 14: every representative 639-2 code maps to its expected 2-letter result AND that
+    // result is idempotent (normalizing the result again is a no-op). Both /B and /T variants
+    // for French (fra/fre), German (deu/ger) and Chinese (zho/chi) collapse identically.
+    [InlineData("eng", "en")]
+    [InlineData("kor", "ko")]
+    [InlineData("spa", "es")]
+    [InlineData("fra", "fr")]
+    [InlineData("fre", "fr")]
+    [InlineData("deu", "de")]
+    [InlineData("ger", "de")]
+    [InlineData("por", "pt")]
+    [InlineData("zho", "zh")]
+    [InlineData("chi", "zh")]
+    public void NormalizeLang_CanonicalTable_RoundTripsConsistently(string code, string expected)
+    {
+        var once = SubtitleInventory.NormalizeLang(code);
+
+        Assert.Equal(expected, once);
+        // Idempotence: the 2-letter result normalizes to itself.
+        Assert.Equal(once, SubtitleInventory.NormalizeLang(once));
+    }
+
+    // -------------------------------------------------------------------------
+    // HasUsableSubtitle — still correct now that it delegates to IsUsableStream
+    // -------------------------------------------------------------------------
+
+    [Fact]
+    public void HasUsableSubtitle_MixedList_RealExternalWins_ReturnsTrue()
+    {
+        // Case 15a: forced + image + generated all fail IsUsableStream, but the genuine
+        // external en.srt is usable — desired "en" is satisfied.
+        var streams = new[]
+        {
+            new SubtitleStreamInfo { Language = "en", IsForced = true, IsTextSubtitle = true },
+            new SubtitleStreamInfo { Language = "en", IsTextSubtitle = false },
+            new SubtitleStreamInfo
+            {
+                Language = "en",
+                IsExternal = true,
+                IsTextSubtitle = true,
+                Path = "/m/Movie.en.generated.srt"
+            },
+            new SubtitleStreamInfo
+            {
+                Language = "en",
+                IsExternal = true,
+                IsTextSubtitle = true,
+                Path = "/m/Movie.en.srt"
+            }
+        };
+
+        Assert.True(SubtitleInventory.HasUsableSubtitle(streams, "en"));
+    }
+
+    [Fact]
+    public void HasUsableSubtitle_MixedListMinusRealExternal_ReturnsFalse()
+    {
+        // Case 15b: drop the genuine external sub from the Case 15a list — nothing usable remains.
+        var streams = new[]
+        {
+            new SubtitleStreamInfo { Language = "en", IsForced = true, IsTextSubtitle = true },
+            new SubtitleStreamInfo { Language = "en", IsTextSubtitle = false },
+            new SubtitleStreamInfo
+            {
+                Language = "en",
+                IsExternal = true,
+                IsTextSubtitle = true,
+                Path = "/m/Movie.en.generated.srt"
+            }
+        };
+
+        Assert.False(SubtitleInventory.HasUsableSubtitle(streams, "en"));
+    }
+
+    // -------------------------------------------------------------------------
+    // HasUsableSubtitle — polish gaps (default requireText, region round-trip, und handling)
+    // -------------------------------------------------------------------------
+
+    [Fact]
+    public void HasUsableSubtitle_TwoArgOverload_ImageOnly_ReturnsFalse()
+    {
+        // Case 16a: the 2-arg overload defaults requireText:true, so an image-only English
+        // track does not satisfy the need. Locks the default.
+        var streams = new[]
+        {
+            new SubtitleStreamInfo { Language = "en", IsTextSubtitle = false }
+        };
+
+        Assert.False(SubtitleInventory.HasUsableSubtitle(streams, "en"));
+    }
+
+    [Fact]
+    public void HasUsableSubtitle_StreamRegionTag_DesiredIso6392_ReturnsTrue()
+    {
+        // Case 16b: stream tagged "en-US" (region) vs desired "eng" (639-2) — both normalize
+        // to "en" end-to-end.
+        var streams = new[]
+        {
+            new SubtitleStreamInfo { Language = "en-US", IsTextSubtitle = true }
+        };
+
+        Assert.True(SubtitleInventory.HasUsableSubtitle(streams, "eng"));
+    }
+
+    [Fact]
+    public void HasUsableSubtitle_StreamUndetermined_DesiredEn_ReturnsFalse()
+    {
+        // Case 16c: an "und"-tagged text track never satisfies a concrete desired language.
+        var streams = new[]
+        {
+            new SubtitleStreamInfo { Language = "und", IsTextSubtitle = true }
+        };
+
+        Assert.False(SubtitleInventory.HasUsableSubtitle(streams, "en"));
+    }
+
+    [Fact]
+    public void HasUsableSubtitle_UndAndEnTextTracks_DesiredEn_ReturnsTrue()
+    {
+        // Case 16d: an "und" track is skipped but a real "en" track in the same list wins.
+        var streams = new[]
+        {
+            new SubtitleStreamInfo { Language = "und", IsTextSubtitle = true },
+            new SubtitleStreamInfo { Language = "en", IsTextSubtitle = true }
+        };
+
+        Assert.True(SubtitleInventory.HasUsableSubtitle(streams, "en"));
+    }
 }

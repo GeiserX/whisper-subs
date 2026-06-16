@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 
 namespace WhisperSubs.Controller
 {
@@ -13,7 +12,9 @@ namespace WhisperSubs.Controller
         /// <summary>Language tag as reported by the container/ffprobe (e.g. "eng", "en", "english"). May be null/empty.</summary>
         public string? Language { get; init; }
 
-        /// <summary>True for external sidecar subtitle files; false for embedded streams.</summary>
+        /// <summary>True for external sidecar subtitle files; false for embedded streams.
+        /// Informational: the current skip logic treats embedded and external equally; reserved
+        /// for the desired-languages profile (#83) which may offer count-embedded/external toggles.</summary>
         public bool IsExternal { get; init; }
 
         /// <summary>True for forced tracks (foreign-dialogue inserts only — not full dialogue).</summary>
@@ -54,13 +55,26 @@ namespace WhisperSubs.Controller
 
             foreach (var s in streams)
             {
-                if (s == null) continue;
-                if (ignoreForced && s.IsForced) continue;
-                if (requireText && !s.IsTextSubtitle) continue;
-                if (IsPluginGeneratedPath(s.Path)) continue;          // don't let our own output satisfy us
-                if (NormalizeLang(s.Language) == wanted) return true;
+                if (!IsUsableStream(s, ignoreForced, requireText)) continue;
+                if (NormalizeLang(s!.Language) == wanted) return true;
             }
             return false;
+        }
+
+        /// <summary>
+        /// Single source of truth for "is this subtitle stream a usable candidate?" — text-based
+        /// (when <paramref name="requireText"/>), not forced (when <paramref name="ignoreForced"/>),
+        /// and not the plugin's own generated output. Language-agnostic; callers add the language
+        /// match. Shared by <see cref="HasUsableSubtitle"/> and the scheduled task's any-language
+        /// pre-filter so the usability rule never drifts between them.
+        /// </summary>
+        public static bool IsUsableStream(SubtitleStreamInfo? s, bool ignoreForced = true, bool requireText = true)
+        {
+            if (s == null) return false;
+            if (ignoreForced && s.IsForced) return false;
+            if (requireText && !s.IsTextSubtitle) return false;
+            if (IsPluginGeneratedPath(s.Path)) return false;     // don't let our own output satisfy us
+            return true;
         }
 
         /// <summary>
@@ -85,7 +99,8 @@ namespace WhisperSubs.Controller
         {
             if (string.IsNullOrWhiteSpace(code)) return null;
             var c = code.Trim().ToLowerInvariant();
-            if (c == "und" || c == "unknown") return null;
+            // Undetermined / placeholder language tags never match a concrete desired language.
+            if (c == "und" || c == "unknown" || c == "auto") return null;
             return c switch
             {
                 "spa" or "spanish" or "es" => "es",

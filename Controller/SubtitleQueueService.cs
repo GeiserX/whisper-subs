@@ -19,8 +19,8 @@ namespace WhisperSubs.Controller
 
         /// <summary>
         /// True for explicit manual requests: bypasses the "skip if a usable subtitle already
-        /// exists" checks (#82) so the user always gets fresh generation. Restored-from-disk and
-        /// scheduled items are not forced.
+        /// exists" checks (#82) so the user always gets fresh generation. Persisted to disk, so a
+        /// forced request survives a restart; scheduled items default to false.
         /// </summary>
         public bool Force { get; init; }
     }
@@ -29,6 +29,10 @@ namespace WhisperSubs.Controller
     {
         public string ItemId { get; set; } = "";
         public string Language { get; set; } = "";
+
+        /// <summary>Whether this was a forced (manual) request — preserved across restarts so an
+        /// explicit "regenerate" survives a restore instead of silently respecting the skip checks.</summary>
+        public bool Force { get; set; }
     }
 
     public class SubtitleQueueService
@@ -206,7 +210,8 @@ namespace WhisperSubs.Controller
                     {
                         Item = item,
                         Language = entry.Language,
-                        Completion = null
+                        Completion = null,
+                        Force = entry.Force
                     });
                     restored++;
                 }
@@ -232,7 +237,8 @@ namespace WhisperSubs.Controller
                 var entries = _priorityQueue.Select(item => new QueueEntry
                 {
                     ItemId = item.Item.Id.ToString("N"),
-                    Language = item.Language
+                    Language = item.Language,
+                    Force = item.Force
                 }).ToList();
 
                 var json = JsonSerializer.Serialize(entries);
