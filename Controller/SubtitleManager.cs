@@ -48,14 +48,17 @@ namespace WhisperSubs.Controller
             if (mediaPath == null) return;
 
             var languages = await ResolveLanguagesAsync(mediaPath, language, cancellationToken);
-            var subtitleMode = Plugin.Instance?.Configuration?.SubtitleMode ?? SubtitleMode.Full;
 
-            // Issue #83: "Original audio language" is the primary generate switch — it transcribes
-            // each title in its spoken language (so English audio gets an English subtitle here, by
-            // transcription). Default true (= pre-#83 behavior). English-for-foreign-audio is the
-            // separate Translation pass below. A manual request (force) always transcribes.
+            // Snapshot config once so every gate in this run sees a consistent view, then resolve
+            // which passes apply via the pure helper (mode + toggles + force). The config-default
+            // idioms (`!= false` = default-on; `== true` = default-off) stay here at the impure edge.
             var config = Plugin.Instance?.Configuration;
-            var wantOriginal = force || config?.GenerateOriginalLanguageSubtitles != false;
+            var subtitleMode = config?.SubtitleMode ?? SubtitleMode.Full;
+            var plan = ResolveGenerationPlan(
+                subtitleMode,
+                generateOriginalLanguage: config?.GenerateOriginalLanguageSubtitles != false,
+                enableTranslation: config?.EnableTranslation == true,
+                force: force);
 
             int attempted = 0;
             int failed = 0;
@@ -72,32 +75,25 @@ namespace WhisperSubs.Controller
                 }
             }
 
-            // Whether each pass applies in the current mode. Hoisted so the mode test isn't duplicated.
-            var fullPassApplies = subtitleMode == SubtitleMode.Full || subtitleMode == SubtitleMode.FullAndForced;
-            var forcedPassApplies = subtitleMode == SubtitleMode.ForcedOnly || subtitleMode == SubtitleMode.FullAndForced;
-            var translationApplies = subtitleMode == SubtitleMode.TranslationOnly
-                || (config?.EnableTranslation == true && fullPassApplies);
+            // Log the original-language skip once per item (not once per audio language).
+            if (plan.FullPassApplies && !plan.OriginalPassApplies)
+            {
+                _logger.LogInformation("Skipping original-language subtitles for {ItemName}: original-language subtitles disabled", item.Name);
+            }
 
             if (subtitleMode != SubtitleMode.TranslationOnly)
             {
                 foreach (var lang in languages)
                 {
                     // Full (original-language transcription) pass.
-                    if (fullPassApplies)
+                    if (plan.OriginalPassApplies)
                     {
-                        if (wantOriginal)
-                        {
-                            var (outcome, error) = await GenerateFullSubtitleForLanguageAsync(item, provider, lang, mediaPath, force, cancellationToken);
-                            Record(outcome, error);
-                        }
-                        else
-                        {
-                            _logger.LogInformation("Skipping original-language subtitle for {ItemName} [{Language}]: original-language subtitles disabled", item.Name, lang);
-                        }
+                        var (outcome, error) = await GenerateFullSubtitleForLanguageAsync(item, provider, lang, mediaPath, force, cancellationToken);
+                        Record(outcome, error);
                     }
 
                     // Forced subs capture foreign-language inserts; governed by mode, not the toggle.
-                    if (forcedPassApplies)
+                    if (plan.ForcedPassApplies)
                     {
                         var (outcome, error) = await GenerateForcedSubtitleAsync(item, provider, lang, mediaPath, cancellationToken);
                         Record(outcome, error);
@@ -108,7 +104,7 @@ namespace WhisperSubs.Controller
             // Translation pass: produce an English subtitle ONLY when the title has no English
             // available. GenerateTranslatedSubtitleAsync already skips when English audio or an
             // existing English subtitle is present, so this naturally fills the gap, not duplicates.
-            if (translationApplies)
+            if (plan.TranslationApplies)
             {
                 var (outcome, error) = await GenerateTranslatedSubtitleAsync(item, provider, mediaPath, languages, force, cancellationToken);
                 Record(outcome, error);
@@ -135,6 +131,37 @@ namespace WhisperSubs.Controller
             Skipped,
             /// <summary>Attempted but failed with an error.</summary>
             Failed
+        }
+
+        /// <summary>Which generation passes apply for one run, derived from mode + toggles + force.</summary>
+        internal readonly record struct GenerationPlan(
+            bool FullPassApplies, bool ForcedPassApplies, bool OriginalPassApplies, bool TranslationApplies);
+
+        /// <summary>
+        /// Pure decision: given the subtitle mode and the (already-resolved) toggle values, which
+        /// passes run? Extracted so the gating truth table is unit-testable without Plugin.Instance.
+        /// Issue #83:
+        /// <list type="bullet">
+        /// <item>Original-language (full transcription) runs in Full/FullAndForced when the user wants
+        /// it — and <paramref name="force"/> (manual single-item Generate) always wants it.</item>
+        /// <item>Forced runs in ForcedOnly/FullAndForced, governed by mode only.</item>
+        /// <item>Translation runs in TranslationOnly (always), or in Full/FullAndForced when
+        /// <paramref name="enableTranslation"/> — never in ForcedOnly.</item>
+        /// </list>
+        /// </summary>
+        internal static GenerationPlan ResolveGenerationPlan(
+            SubtitleMode mode, bool generateOriginalLanguage, bool enableTranslation, bool force)
+        {
+            var fullPassApplies = mode == SubtitleMode.Full || mode == SubtitleMode.FullAndForced;
+            var forcedPassApplies = mode == SubtitleMode.ForcedOnly || mode == SubtitleMode.FullAndForced;
+            var wantOriginal = force || generateOriginalLanguage;
+            var translationApplies = mode == SubtitleMode.TranslationOnly
+                || (enableTranslation && fullPassApplies);
+            return new GenerationPlan(
+                FullPassApplies: fullPassApplies,
+                ForcedPassApplies: forcedPassApplies,
+                OriginalPassApplies: fullPassApplies && wantOriginal,
+                TranslationApplies: translationApplies);
         }
 
         /// <summary>
@@ -293,7 +320,11 @@ namespace WhisperSubs.Controller
                 var baseName = Path.GetFileNameWithoutExtension(mediaPath);
                 if (dir != null)
                 {
-                    var subtitleExts = new[] { ".srt", ".ass", ".ssa", ".sub", ".vtt" };
+                    // #83: honor CountImageSubtitlesAsPresent here too — an image .sub/.sup English
+                    // sidecar only counts as "already translated" when the user opted in. Shared
+                    // helper keeps this in lockstep with the scheduled task / stream predicate.
+                    var requireText = Plugin.Instance?.Configuration?.CountImageSubtitlesAsPresent != true;
+                    var subtitleExts = SubtitleInventory.UsableSubtitleExtensions(requireText);
                     var hasEnglishSubs = Directory.GetFiles(dir, baseName + ".*")
                         .Any(f =>
                         {

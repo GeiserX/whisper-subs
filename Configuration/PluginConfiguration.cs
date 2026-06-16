@@ -138,7 +138,7 @@ namespace WhisperSubs.Configuration
         public bool GenerateOriginalLanguageSubtitles { get; set; } = true;
 
         /// <summary>
-        /// When enabled, image-based subtitle tracks (PGS/VOBSUB/DVD) count as an existing usable
+        /// When enabled, image-based subtitle tracks (PGS/VOBSUB) count as an existing usable
         /// subtitle for the skip decision. Default false: image subs are not text and can't be
         /// searched/edited, so by default the plugin still generates a text subtitle. (Issue #83.)
         /// </summary>

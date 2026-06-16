@@ -220,14 +220,12 @@ namespace WhisperSubs.ScheduledTasks
                         var hasFullSrt = existingFiles.Any(f => !System.IO.Path.GetFileName(f).Contains(".forced."));
 
                         // Also check for user-provided external subtitle files (non-forced, non-generated).
-                        // Issue #83: ".sub" is image-based (VOBSUB sidecar), so it only counts as a
-                        // usable subtitle when CountImageSubtitlesAsPresent is on — otherwise a text
-                        // subtitle should still be generated. The other extensions are all text.
+                        // Issue #83: image sidecars (.sub/.sup) only count when CountImageSubtitlesAsPresent
+                        // is on — otherwise a text subtitle should still be generated. Shared helper keeps
+                        // this in lockstep with the translation "auto" fallback and the stream predicate.
                         if (!hasFullSrt)
                         {
-                            var subtitleExts = config.CountImageSubtitlesAsPresent
-                                ? new[] { ".srt", ".ass", ".ssa", ".sub", ".vtt" }
-                                : new[] { ".srt", ".ass", ".ssa", ".vtt" };
+                            var subtitleExts = SubtitleInventory.UsableSubtitleExtensions(!config.CountImageSubtitlesAsPresent);
                             hasFullSrt = System.IO.Directory.GetFiles(dir, baseName + ".*")
                                 .Any(f =>
                                 {
@@ -249,7 +247,7 @@ namespace WhisperSubs.ScheduledTasks
                             // Bias toward generating — if no usable track is found, leave it false.
                             if (config.SkipIfSubtitleExists)
                             {
-                                hasFullSrt = HasUsableTextSubtitle(item,
+                                hasFullSrt = HasUsableSubtitleStream(item,
                                     ignoreForced: config.IgnoreForcedSubtitles,
                                     requireText: !config.CountImageSubtitlesAsPresent);
                             }
@@ -348,18 +346,20 @@ namespace WhisperSubs.ScheduledTasks
         }
 
         /// <summary>
-        /// Issue #82: true if the item has at least one usable (text-based, non-forced) subtitle
-        /// stream in ANY language, excluding the plugin's own generated output. Used to refine the
-        /// language- and type-blind <c>Video.HasSubtitles</c> so a forced-only or image-only
-        /// embedded track no longer counts as a complete full subtitle. Language-agnostic on purpose
-        /// (the full pass targets the audio languages, which may be auto-detected): we only filter
-        /// out the forced/image false-positives here and let the per-language skip (SubtitleManager)
+        /// Issue #82: true if the item has at least one usable, non-forced subtitle stream in ANY
+        /// language, excluding the plugin's own generated output. Used to refine the language- and
+        /// type-blind <c>Video.HasSubtitles</c> so a forced-only (or, by default, image-only)
+        /// embedded track no longer counts as a complete full subtitle. When
+        /// <paramref name="requireText"/> is false (CountImageSubtitlesAsPresent on), image tracks
+        /// count too — hence "stream", not "text", in the name. Language-agnostic on purpose (the
+        /// full pass targets the audio languages, which may be auto-detected): we only filter out
+        /// the forced/image false-positives here and let the per-language skip (SubtitleManager)
         /// make the precise per-language decision.
         /// </summary>
-        private static bool HasUsableTextSubtitle(BaseItem item, bool ignoreForced, bool requireText = true)
+        private static bool HasUsableSubtitleStream(BaseItem item, bool ignoreForced, bool requireText = true)
         {
-            // Reuse the shared usability predicate (text, non-forced, not our own output) so this
-            // any-language pre-filter never drifts from SubtitleInventory.HasUsableSubtitle.
+            // Reuse the shared usability predicate (non-forced, not our own output, text unless the
+            // image toggle is on) so this any-language pre-filter never drifts from IsUsableStream.
             return SubtitleStreamReader.GetSubtitleStreams(item)
                 .Any(s => SubtitleInventory.IsUsableStream(s, ignoreForced, requireText));
         }

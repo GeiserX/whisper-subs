@@ -498,4 +498,50 @@ public class SubtitleInventoryTests
 
         Assert.True(SubtitleInventory.HasUsableSubtitle(streams, "en"));
     }
+
+    // -------------------------------------------------------------------------
+    // UsableSubtitleExtensions — the single source of truth for the filename-scan
+    // paths (scheduled task + translation "auto" fallback). Issue #83.
+    // -------------------------------------------------------------------------
+
+    [Fact]
+    public void UsableSubtitleExtensions_RequireText_OnlyTextFormats()
+    {
+        // Case 17a: requireText:true (default skip behavior) — text sidecars only, no image.
+        var exts = SubtitleInventory.UsableSubtitleExtensions(requireText: true);
+
+        Assert.Contains(".srt", exts);
+        Assert.Contains(".ass", exts);
+        Assert.Contains(".ssa", exts);
+        Assert.Contains(".vtt", exts);
+        // The whole point of the toggle being OFF: image sidecars do NOT count.
+        Assert.DoesNotContain(".sub", exts);
+        Assert.DoesNotContain(".sup", exts);
+    }
+
+    [Fact]
+    public void UsableSubtitleExtensions_AllowImage_IncludesImageSidecars()
+    {
+        // Case 17b: requireText:false (CountImageSubtitlesAsPresent on) — image sidecars count too.
+        var exts = SubtitleInventory.UsableSubtitleExtensions(requireText: false);
+
+        // Still includes every text format...
+        Assert.Contains(".srt", exts);
+        Assert.Contains(".ass", exts);
+        Assert.Contains(".ssa", exts);
+        Assert.Contains(".vtt", exts);
+        // ...plus the image sidecars (VOBSUB .sub, PGS .sup).
+        Assert.Contains(".sub", exts);
+        Assert.Contains(".sup", exts);
+    }
+
+    [Fact]
+    public void UsableSubtitleExtensions_ImageSidecar_GatedStrictlyByRequireText()
+    {
+        // Case 17c: the inversion guard. `.sub` (image) must count IFF requireText is false.
+        // If a caller ever drops the "!" on `!CountImageSubtitlesAsPresent`, this flips and fails —
+        // catching the silent feature-inversion the unit test for the config flag can't see.
+        Assert.DoesNotContain(".sub", SubtitleInventory.UsableSubtitleExtensions(requireText: true));
+        Assert.Contains(".sub", SubtitleInventory.UsableSubtitleExtensions(requireText: false));
+    }
 }

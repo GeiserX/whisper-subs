@@ -20,7 +20,7 @@ namespace WhisperSubs.Controller
         /// <summary>True for forced tracks (foreign-dialogue inserts only — not full dialogue).</summary>
         public bool IsForced { get; init; }
 
-        /// <summary>True for text-based subtitles (SRT/ASS/VTT). False for image subs (PGS/VOBSUB/DVD).</summary>
+        /// <summary>True for text-based subtitles (SRT/ASS/VTT). False for image subs (PGS/VOBSUB).</summary>
         public bool IsTextSubtitle { get; init; }
 
         /// <summary>Sidecar file path for external subs; null/empty for embedded.</summary>
@@ -75,6 +75,29 @@ namespace WhisperSubs.Controller
             if (requireText && !s.IsTextSubtitle) return false;
             if (IsPluginGeneratedPath(s.Path)) return false;     // don't let our own output satisfy us
             return true;
+        }
+
+        /// <summary>Text-based subtitle sidecar extensions (searchable / editable).</summary>
+        private static readonly string[] TextSubtitleExtensions = { ".srt", ".ass", ".ssa", ".vtt" };
+
+        /// <summary>Image-based subtitle sidecar extensions (VOBSUB <c>.sub</c>, PGS <c>.sup</c>).</summary>
+        private static readonly string[] ImageSubtitleExtensions = { ".sub", ".sup" };
+
+        /// <summary>
+        /// Single source of truth for which external sidecar extensions count as a subtitle, given
+        /// the <paramref name="requireText"/> rule. When <paramref name="requireText"/> is true
+        /// (the default), only text formats count; when false, image sidecars (<c>.sub</c>/<c>.sup</c>)
+        /// also count. Mirrors the stream-level <see cref="IsUsableStream"/> text/image distinction
+        /// so the filename-scan paths (scheduled task, translation "auto" fallback) can't drift from
+        /// it. (Issue #83.)
+        /// </summary>
+        public static IReadOnlyList<string> UsableSubtitleExtensions(bool requireText)
+        {
+            if (requireText) return TextSubtitleExtensions;
+            var all = new string[TextSubtitleExtensions.Length + ImageSubtitleExtensions.Length];
+            TextSubtitleExtensions.CopyTo(all, 0);
+            ImageSubtitleExtensions.CopyTo(all, TextSubtitleExtensions.Length);
+            return all;
         }
 
         /// <summary>
