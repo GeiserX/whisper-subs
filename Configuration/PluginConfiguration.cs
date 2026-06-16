@@ -113,6 +113,21 @@ namespace WhisperSubs.Configuration
         /// </summary>
         public bool CompensateAudioOffset { get; set; } = true;
 
+        /// <summary>
+        /// When enabled (default), the auto-generation task skips media that already has a usable
+        /// subtitle satisfying its need — for the translation pass, an existing English subtitle
+        /// track (embedded or external) counts as already-translated. Prevents needlessly
+        /// transcribing/translating media that is already subtitled. (Issue #82.)
+        /// </summary>
+        public bool SkipIfSubtitleExists { get; set; } = true;
+
+        /// <summary>
+        /// When enabled (default), FORCED subtitle tracks do NOT count as satisfying the
+        /// subtitle need (a forced track only covers foreign-dialogue inserts, not full dialogue).
+        /// Feeds the <see cref="SkipIfSubtitleExists"/> decision.
+        /// </summary>
+        public bool IgnoreForcedSubtitles { get; set; } = true;
+
         public List<string> EnabledLibraries { get; set; } = new List<string>();
 
         public PluginConfiguration()

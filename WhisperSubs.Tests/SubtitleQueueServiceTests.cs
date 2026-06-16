@@ -1,3 +1,5 @@
+using System.Text.Json;
+using MediaBrowser.Controller.Entities;
 using WhisperSubs.Controller;
 using Xunit;
 
@@ -153,5 +155,55 @@ public class QueueEntryTests
         };
         Assert.Equal("abc123", entry.ItemId);
         Assert.Equal("es", entry.Language);
+    }
+
+    // ── Force flag (#82 manual-request bypass; must persist across restart) ──
+
+    [Fact]
+    public void QueueEntry_Force_DefaultsFalse()
+    {
+        // Scheduled/restored items must not accidentally force.
+        var entry = new QueueEntry();
+        Assert.False(entry.Force);
+    }
+
+    [Fact]
+    public void QueueEntry_Force_CanBeSet()
+    {
+        var entry = new QueueEntry { Force = true };
+        Assert.True(entry.Force);
+    }
+
+    [Fact]
+    public void QueueEntry_Force_SerializationRoundTrip()
+    {
+        // Force must survive the queue.json persist/restore cycle (audit High bug).
+        var original = new QueueEntry { ItemId = "abc", Language = "en", Force = true };
+        var json = JsonSerializer.Serialize(original);
+        var restored = JsonSerializer.Deserialize<QueueEntry>(json);
+
+        Assert.NotNull(restored);
+        Assert.True(restored!.Force);
+        Assert.Equal("abc", restored.ItemId);
+        Assert.Equal("en", restored.Language);
+    }
+}
+
+// SubtitleWorkItem is a plain record-like type that does not touch the queue singleton,
+// so these tests don't need the QueueSingleton collection.
+public class SubtitleWorkItemForceTests
+{
+    [Fact]
+    public void SubtitleWorkItem_Force_DefaultsFalse()
+    {
+        var workItem = new SubtitleWorkItem { Item = new Video { Name = "T" }, Language = "en" };
+        Assert.False(workItem.Force);
+    }
+
+    [Fact]
+    public void SubtitleWorkItem_Force_CanBeSetTrue()
+    {
+        var workItem = new SubtitleWorkItem { Item = new Video { Name = "T" }, Language = "en", Force = true };
+        Assert.True(workItem.Force);
     }
 }

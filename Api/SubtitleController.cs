@@ -164,7 +164,9 @@ namespace WhisperSubs.Api
                 var targetLanguage = language ?? config.DefaultLanguage;
                 var queue = SubtitleQueueService.Instance;
 
-                queue.Enqueue(item, targetLanguage);
+                // Manual request → force: an explicit user action bypasses the "skip if a usable
+                // subtitle already exists" checks (#82) so the user always gets fresh generation.
+                queue.Enqueue(item, targetLanguage, force: true);
                 _logger.LogInformation("Queued {Action} generation for {ItemName} [{Language}]. Queue size: {Count}",
                     isAudio ? "lyrics" : "subtitle", item.Name, targetLanguage, queue.PriorityCount);
 

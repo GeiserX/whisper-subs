@@ -197,6 +197,26 @@
                         </div>
                     </div>
 
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label>
+                            <input is="emby-checkbox" type="checkbox" id="chkSkipIfSubtitleExists" name="SkipIfSubtitleExists" />
+                            <span>Skip media that already has subtitles</span>
+                        </label>
+                        <div class="fieldDescription">
+                            When on (recommended), the auto-generation task skips media that already has a usable subtitle in the needed language — including an existing English subtitle when translating. Prevents needlessly re-processing an already-subtitled library.
+                        </div>
+                    </div>
+
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label>
+                            <input is="emby-checkbox" type="checkbox" id="chkIgnoreForcedSubtitles" name="IgnoreForcedSubtitles" />
+                            <span>Ignore forced subtitles when skipping</span>
+                        </label>
+                        <div class="fieldDescription">
+                            When on (recommended), forced subtitle tracks (foreign-dialogue-only) do NOT count as 'already subtitled', so full subtitles are still generated.
+                        </div>
+                    </div>
+
                     <!-- ── Subtitle Timing ────────────────────────────── -->
                     <h2>Subtitle Timing</h2>
 
@@ -896,6 +916,8 @@
                             page.querySelector('#chkEnableLyricsGeneration').checked = config.EnableLyricsGeneration || false;
                             page.querySelector('#chkEnableTranslation').checked = config.EnableTranslation || false;
                             page.querySelector('#chkPauseOnPlayback').checked = config.PauseOnPlayback || false;
+                            page.querySelector('#chkSkipIfSubtitleExists').checked = config.SkipIfSubtitleExists !== false;
+                            page.querySelector('#chkIgnoreForcedSubtitles').checked = config.IgnoreForcedSubtitles !== false;
                             page.querySelector('#chkEnableVad').checked = config.EnableVad !== false;
                             page.querySelector('#chkAlignSubtitlesToSpeech').checked = config.AlignSubtitlesToSpeech !== false;
                             page.querySelector('#chkCompensateAudioOffset').checked = config.CompensateAudioOffset !== false;
@@ -923,6 +945,8 @@
                         var subtitleMode = parseInt(page.querySelector('#selectSubtitleMode').value, 10) || 0;
                         config.EnableTranslation = subtitleMode !== 3 && page.querySelector('#chkEnableTranslation').checked;
                         config.PauseOnPlayback = page.querySelector('#chkPauseOnPlayback').checked;
+                        config.SkipIfSubtitleExists = page.querySelector('#chkSkipIfSubtitleExists').checked;
+                        config.IgnoreForcedSubtitles = page.querySelector('#chkIgnoreForcedSubtitles').checked;
                         config.EnableVad = page.querySelector('#chkEnableVad').checked;
                         config.AlignSubtitlesToSpeech = page.querySelector('#chkAlignSubtitlesToSpeech').checked;
                         config.CompensateAudioOffset = page.querySelector('#chkCompensateAudioOffset').checked;
