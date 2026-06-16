@@ -237,14 +237,14 @@ namespace WhisperSubs.ScheduledTasks
                         // Check for embedded subtitle streams (MKV, MP4, etc.)
                         if (!hasFullSrt && item is Video embeddedCheck && embeddedCheck.HasSubtitles)
                         {
-                            // Issue #82: HasSubtitles is language- and type-blind, so a forced-only,
-                            // image-only, or wrong-type embedded track would wrongly satisfy the full
-                            // pass. When SkipIfSubtitleExists + IgnoreForcedSubtitles are on, prefer a
-                            // stream-aware check: only a usable (text, non-forced) track counts. Bias
-                            // toward generating — if no usable track is found, leave hasFullSrt false.
-                            if (config.SkipIfSubtitleExists && config.IgnoreForcedSubtitles)
+                            // Issue #82: HasSubtitles is language- and type-blind, so a forced-only
+                            // or image-only embedded track would wrongly satisfy the full pass. When
+                            // SkipIfSubtitleExists is on, prefer a stream-aware check that requires a
+                            // text track (and a non-forced one when IgnoreForcedSubtitles is on).
+                            // Bias toward generating — if no usable track is found, leave it false.
+                            if (config.SkipIfSubtitleExists)
                             {
-                                hasFullSrt = HasUsableNonForcedTextSubtitle(item);
+                                hasFullSrt = HasUsableTextSubtitle(item, ignoreForced: config.IgnoreForcedSubtitles);
                             }
                             else
                             {
@@ -344,12 +344,12 @@ namespace WhisperSubs.ScheduledTasks
         /// out the forced/image false-positives here and let the per-language skip (SubtitleManager)
         /// make the precise per-language decision.
         /// </summary>
-        private static bool HasUsableNonForcedTextSubtitle(BaseItem item)
+        private static bool HasUsableTextSubtitle(BaseItem item, bool ignoreForced)
         {
             return SubtitleStreamReader.GetSubtitleStreams(item)
                 .Any(s => s != null
                     && s.IsTextSubtitle
-                    && !s.IsForced
+                    && (!ignoreForced || !s.IsForced)
                     && !SubtitleInventory.IsPluginGeneratedPath(s.Path));
         }
 
