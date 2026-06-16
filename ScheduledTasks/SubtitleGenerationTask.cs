@@ -219,10 +219,15 @@ namespace WhisperSubs.ScheduledTasks
                         var noForeignMarkers = System.IO.Directory.GetFiles(dir, baseName + ".*.forced.noforeignlang");
                         var hasFullSrt = existingFiles.Any(f => !System.IO.Path.GetFileName(f).Contains(".forced."));
 
-                        // Also check for user-provided external subtitle files (non-forced, non-generated)
+                        // Also check for user-provided external subtitle files (non-forced, non-generated).
+                        // Issue #83: ".sub" is image-based (VOBSUB sidecar), so it only counts as a
+                        // usable subtitle when CountImageSubtitlesAsPresent is on — otherwise a text
+                        // subtitle should still be generated. The other extensions are all text.
                         if (!hasFullSrt)
                         {
-                            var subtitleExts = new[] { ".srt", ".ass", ".ssa", ".sub", ".vtt" };
+                            var subtitleExts = config.CountImageSubtitlesAsPresent
+                                ? new[] { ".srt", ".ass", ".ssa", ".sub", ".vtt" }
+                                : new[] { ".srt", ".ass", ".ssa", ".vtt" };
                             hasFullSrt = System.IO.Directory.GetFiles(dir, baseName + ".*")
                                 .Any(f =>
                                 {

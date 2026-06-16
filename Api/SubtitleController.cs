@@ -21,7 +21,11 @@ namespace WhisperSubs.Api
 {
     [ApiController]
     [Route("Plugins/WhisperSubs")]
-    [Authorize]
+    // All endpoints require Jellyfin admin (elevation), not just authentication: they enumerate
+    // libraries and enqueue/trigger resource-heavy transcription, so a non-admin user must not be
+    // able to drive them (privilege boundary / resource-exhaustion). Setup/* repeat this policy
+    // explicitly for clarity; it is redundant under this class-level default but harmless.
+    [Authorize(Policy = "RequiresElevation")]
     public class SubtitleController : ControllerBase
     {
         private readonly ILibraryManager _libraryManager;
