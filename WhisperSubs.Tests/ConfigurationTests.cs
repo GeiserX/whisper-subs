@@ -21,6 +21,37 @@ public class ConfigurationTests
         Assert.Equal(0, config.WhisperThreadCount);
         Assert.NotNull(config.EnabledLibraries);
         Assert.Empty(config.EnabledLibraries);
+
+        // Issue #83: "generate original-language subtitles" defaults ON so behavior is unchanged
+        // for existing users; image subs do NOT count as present by default (still generate text).
+        Assert.True(config.GenerateOriginalLanguageSubtitles);
+        Assert.False(config.CountImageSubtitlesAsPresent);
+    }
+
+    [Fact]
+    public void GenerationToggles_AbsentFromJson_DefaultToOn()
+    {
+        // Existing users' saved config has no Generate*/CountImage* keys. Deserialization must
+        // default GenerateOriginalLanguageSubtitles to true, or an upgrade would silently stop
+        // generating subtitles; CountImageSubtitlesAsPresent stays false (still generate text).
+        var config = JsonSerializer.Deserialize<PluginConfiguration>("{}");
+        Assert.NotNull(config);
+        Assert.True(config!.GenerateOriginalLanguageSubtitles);
+        Assert.False(config.CountImageSubtitlesAsPresent);
+    }
+
+    [Fact]
+    public void GenerationToggles_RoundTripThroughJson()
+    {
+        var original = new PluginConfiguration
+        {
+            GenerateOriginalLanguageSubtitles = false,
+            CountImageSubtitlesAsPresent = true
+        };
+        var restored = JsonSerializer.Deserialize<PluginConfiguration>(JsonSerializer.Serialize(original));
+        Assert.NotNull(restored);
+        Assert.False(restored!.GenerateOriginalLanguageSubtitles);
+        Assert.True(restored.CountImageSubtitlesAsPresent);
     }
 
     [Fact]

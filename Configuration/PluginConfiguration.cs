@@ -128,6 +128,22 @@ namespace WhisperSubs.Configuration
         /// </summary>
         public bool IgnoreForcedSubtitles { get; set; } = true;
 
+        /// <summary>
+        /// Whether the auto-generation task transcribes each title in its own spoken (audio)
+        /// language — e.g. a Korean film gets Korean subtitles, an English film gets English.
+        /// This is the primary "generate subtitles" switch. Default true. An English subtitle for
+        /// non-English audio is a separate concern handled by <see cref="EnableTranslation"/>.
+        /// (Issue #83.) A manual single-item "Generate" always transcribes regardless.
+        /// </summary>
+        public bool GenerateOriginalLanguageSubtitles { get; set; } = true;
+
+        /// <summary>
+        /// When enabled, image-based subtitle tracks (PGS/VOBSUB) count as an existing usable
+        /// subtitle for the skip decision. Default false: image subs are not text and can't be
+        /// searched/edited, so by default the plugin still generates a text subtitle. (Issue #83.)
+        /// </summary>
+        public bool CountImageSubtitlesAsPresent { get; set; } = false;
+
         public List<string> EnabledLibraries { get; set; } = new List<string>();
 
         public PluginConfiguration()
