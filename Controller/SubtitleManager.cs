@@ -55,6 +55,13 @@ namespace WhisperSubs.Controller
             // what they explicitly asked for.
             var desiredLanguages = SubtitleInventory.ParseDesiredLanguages(
                 Plugin.Instance?.Configuration?.DesiredSubtitleLanguages);
+            if (!force && desiredLanguages.Count > 0)
+            {
+                // Surface the parsed allow-list so a typo (e.g. "egnlish") that matches nothing is
+                // diagnosable rather than a silent library-wide no-op.
+                _logger.LogInformation("Desired subtitle languages parsed as [{Languages}] for {ItemName}",
+                    string.Join(", ", desiredLanguages), item.Name);
+            }
 
             int attempted = 0;
             int failed = 0;
@@ -71,27 +78,36 @@ namespace WhisperSubs.Controller
                 }
             }
 
+            var config = Plugin.Instance?.Configuration;
+            // Whether each pass applies in the current mode (separate from whether the language is
+            // desired — the two questions are orthogonal). Hoisted so the mode test isn't duplicated.
+            var fullPassApplies = subtitleMode == SubtitleMode.Full || subtitleMode == SubtitleMode.FullAndForced;
+            var forcedPassApplies = subtitleMode == SubtitleMode.ForcedOnly || subtitleMode == SubtitleMode.FullAndForced;
+            var translationApplies = subtitleMode == SubtitleMode.TranslationOnly
+                || (config?.EnableTranslation == true && fullPassApplies);
+
             if (subtitleMode != SubtitleMode.TranslationOnly)
             {
                 foreach (var lang in languages)
                 {
-                    // Allow-list gates the full-subtitle pass per audio language. The "auto"
-                    // sentinel (no detectable language) normalizes to null → always allowed, so
-                    // whisper auto-detection still runs. Forced subs are not language-filtered
-                    // (they capture foreign inserts regardless of the primary language).
-                    var fullAllowed = force || SubtitleInventory.IsLanguageDesired(lang, desiredLanguages);
-
-                    if (fullAllowed && (subtitleMode == SubtitleMode.Full || subtitleMode == SubtitleMode.FullAndForced))
+                    if (fullPassApplies)
                     {
-                        var (outcome, error) = await GenerateFullSubtitleForLanguageAsync(item, provider, lang, mediaPath, force, cancellationToken);
-                        Record(outcome, error);
-                    }
-                    else if (!fullAllowed && (subtitleMode == SubtitleMode.Full || subtitleMode == SubtitleMode.FullAndForced))
-                    {
-                        _logger.LogInformation("Skipping full subtitle for {ItemName} [{Language}]: not in desired languages", item.Name, lang);
+                        // Allow-list gates the full pass per audio language. The "auto" sentinel
+                        // (no detectable language) normalizes to null → always allowed, so whisper
+                        // auto-detection still runs. force (manual) ignores the allow-list.
+                        if (force || SubtitleInventory.IsLanguageDesired(lang, desiredLanguages))
+                        {
+                            var (outcome, error) = await GenerateFullSubtitleForLanguageAsync(item, provider, lang, mediaPath, force, cancellationToken);
+                            Record(outcome, error);
+                        }
+                        else
+                        {
+                            _logger.LogInformation("Skipping full subtitle for {ItemName} [{Language}]: not in desired languages", item.Name, lang);
+                        }
                     }
 
-                    if (subtitleMode == SubtitleMode.ForcedOnly || subtitleMode == SubtitleMode.FullAndForced)
+                    // Forced subs are not language-filtered (they capture foreign inserts regardless).
+                    if (forcedPassApplies)
                     {
                         var (outcome, error) = await GenerateForcedSubtitleAsync(item, provider, lang, mediaPath, cancellationToken);
                         Record(outcome, error);
@@ -99,24 +115,19 @@ namespace WhisperSubs.Controller
                 }
             }
 
-            // Translation: generate English subs when TranslationOnly mode or EnableTranslation with Full modes.
-            // Issue #83: when an allow-list is set (and not a manual request), only run if English is desired.
-            var config = Plugin.Instance?.Configuration;
-            var englishDesired = force || SubtitleInventory.IsLanguageDesired("en", desiredLanguages);
-            if (englishDesired
-                && (subtitleMode == SubtitleMode.TranslationOnly
-                    || (config?.EnableTranslation == true
-                        && (subtitleMode == SubtitleMode.Full || subtitleMode == SubtitleMode.FullAndForced))))
+            // Translation always targets English. Issue #83: when an allow-list is set (and not a
+            // manual request), only run if English is desired.
+            if (translationApplies)
             {
-                var (outcome, error) = await GenerateTranslatedSubtitleAsync(item, provider, mediaPath, languages, force, cancellationToken);
-                Record(outcome, error);
-            }
-            else if (!englishDesired
-                     && (subtitleMode == SubtitleMode.TranslationOnly
-                         || (config?.EnableTranslation == true
-                             && (subtitleMode == SubtitleMode.Full || subtitleMode == SubtitleMode.FullAndForced))))
-            {
-                _logger.LogInformation("Skipping English translation for {ItemName}: English not in desired languages", item.Name);
+                if (force || SubtitleInventory.IsLanguageDesired("en", desiredLanguages))
+                {
+                    var (outcome, error) = await GenerateTranslatedSubtitleAsync(item, provider, mediaPath, languages, force, cancellationToken);
+                    Record(outcome, error);
+                }
+                else
+                {
+                    _logger.LogInformation("Skipping English translation for {ItemName}: English not in desired languages", item.Name);
+                }
             }
 
             // If we attempted real work and every attempt failed, surface the failure
@@ -126,6 +137,18 @@ namespace WhisperSubs.Controller
                 throw new InvalidOperationException(
                     $"Subtitle generation failed for \"{item.Name}\" — all {attempted} attempt(s) failed.",
                     firstError);
+            }
+
+            // Issue #83 footgun guard: an allow-list that excludes every language whisper could
+            // produce for this item (its audio language(s) and English) yields zero output, silently.
+            // Warn so it's not mistaken for a broken plugin — whisper can only emit the audio's own
+            // language or English, so e.g. wanting only "es" from English audio is impossible.
+            if (attempted == 0 && !force && desiredLanguages.Count > 0)
+            {
+                _logger.LogWarning(
+                    "Generated nothing for {ItemName}: none of the audio language(s) [{Detected}] nor English are in the desired-languages list [{Desired}]. "
+                    + "whisper can only produce a subtitle in the audio's own language or English.",
+                    item.Name, string.Join(", ", languages), string.Join(", ", desiredLanguages));
             }
 
             await item.RefreshMetadata(cancellationToken);
