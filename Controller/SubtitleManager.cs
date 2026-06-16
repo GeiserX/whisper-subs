@@ -28,8 +28,12 @@ namespace WhisperSubs.Controller
             _logger = logger;
         }
 
+        /// <param name="force">When true (an explicit manual request), the "skip if a usable
+        /// subtitle already exists" checks (#82) are bypassed so the user always gets fresh
+        /// generation. The scheduled/auto path passes false. Resume/idempotency skips on the
+        /// plugin's own partial output are unaffected.</param>
         [ExcludeFromCodeCoverage(Justification = "Orchestrates external processes (FFmpeg, whisper) and Jellyfin plugin APIs")]
-        public async Task GenerateSubtitleAsync(BaseItem item, ISubtitleProvider provider, string language, CancellationToken cancellationToken)
+        public async Task GenerateSubtitleAsync(BaseItem item, ISubtitleProvider provider, string language, CancellationToken cancellationToken, bool force = false)
         {
             if (item == null) throw new ArgumentNullException(nameof(item));
 
@@ -67,7 +71,7 @@ namespace WhisperSubs.Controller
                 {
                     if (subtitleMode == SubtitleMode.Full || subtitleMode == SubtitleMode.FullAndForced)
                     {
-                        var (outcome, error) = await GenerateFullSubtitleForLanguageAsync(item, provider, lang, mediaPath, cancellationToken);
+                        var (outcome, error) = await GenerateFullSubtitleForLanguageAsync(item, provider, lang, mediaPath, force, cancellationToken);
                         Record(outcome, error);
                     }
 
@@ -85,7 +89,7 @@ namespace WhisperSubs.Controller
                 || (config?.EnableTranslation == true
                     && (subtitleMode == SubtitleMode.Full || subtitleMode == SubtitleMode.FullAndForced)))
             {
-                var (outcome, error) = await GenerateTranslatedSubtitleAsync(item, provider, mediaPath, languages, cancellationToken);
+                var (outcome, error) = await GenerateTranslatedSubtitleAsync(item, provider, mediaPath, languages, force, cancellationToken);
                 Record(outcome, error);
             }
 
@@ -113,17 +117,43 @@ namespace WhisperSubs.Controller
         }
 
         /// <summary>
+        /// Single source of truth for the issue #82 "skip because a usable subtitle in this
+        /// language already exists" decision. Reads the item's embedded+external subtitle streams
+        /// and applies the SkipIfSubtitleExists / IgnoreForcedSubtitles config. The plugin's own
+        /// generated output is excluded by SubtitleInventory so it never self-satisfies.
+        /// </summary>
+        private static bool ShouldSkipForExistingSubtitle(BaseItem item, string desiredLanguage)
+        {
+            var config = Plugin.Instance?.Configuration;
+            if (config?.SkipIfSubtitleExists != true) return false;   // default-on but explicit
+            return SubtitleInventory.HasUsableSubtitle(
+                SubtitleStreamReader.GetSubtitleStreams(item),
+                desiredLanguage,
+                ignoreForced: config.IgnoreForcedSubtitles);
+        }
+
+        /// <summary>
         /// Generates a full (complete) subtitle file for a single language. Existing v2.5 behavior.
         /// </summary>
         [ExcludeFromCodeCoverage(Justification = "Orchestrates FFmpeg audio extraction and whisper transcription processes")]
         private async Task<(GenerationOutcome Outcome, Exception? Error)> GenerateFullSubtitleForLanguageAsync(
             BaseItem item, ISubtitleProvider provider, string lang,
-            string mediaPath, CancellationToken cancellationToken)
+            string mediaPath, bool force, CancellationToken cancellationToken)
         {
             var srtPath = Path.ChangeExtension(mediaPath, $".{lang}.generated.srt");
             string existingSrt = "";
             double resumeOffsetSeconds = 0;
             int existingEntryCount = 0;
+
+            // Issue #82: if a usable subtitle in THIS language already exists (embedded or external,
+            // text, non-forced when configured) and we have NO partial .generated.srt to resume,
+            // skip generation. The resume path below (when srtPath exists) is preserved untouched.
+            // Bypassed when force=true (explicit manual request).
+            if (!force && !File.Exists(srtPath) && ShouldSkipForExistingSubtitle(item, lang))
+            {
+                _logger.LogInformation("Skipping full subtitle for {ItemName} [{Language}]: usable subtitle already present", item.Name, lang);
+                return (GenerationOutcome.Skipped, null);
+            }
 
             if (File.Exists(srtPath))
             {
@@ -201,7 +231,7 @@ namespace WhisperSubs.Controller
         [ExcludeFromCodeCoverage(Justification = "Orchestrates FFmpeg + whisper processes for translation")]
         private async Task<(GenerationOutcome Outcome, Exception? Error)> GenerateTranslatedSubtitleAsync(
             BaseItem item, ISubtitleProvider provider, string mediaPath,
-            List<string> resolvedLanguages, CancellationToken cancellationToken)
+            List<string> resolvedLanguages, bool force, CancellationToken cancellationToken)
         {
             // Skip if English audio is present
             if (resolvedLanguages.Any(l => string.Equals(l, "en", StringComparison.OrdinalIgnoreCase)))
@@ -216,6 +246,17 @@ namespace WhisperSubs.Controller
             if (File.Exists(translatedSrtPath))
             {
                 _logger.LogInformation("Translated subtitle already exists for {ItemName}, skipping", item.Name);
+                return (GenerationOutcome.Skipped, null);
+            }
+
+            // Issue #82: skip translation when the item already carries a usable English subtitle
+            // (embedded OR external) — for BOTH "auto" and tagged-foreign-audio paths. Without this,
+            // a movie with tagged foreign audio (e.g. Korean) re-translates even when English subs
+            // already exist. Stream-aware so a forced-only / image-only English track does not count.
+            // Bypassed when force=true (explicit manual request).
+            if (!force && ShouldSkipForExistingSubtitle(item, "en"))
+            {
+                _logger.LogInformation("Skipping translation for {ItemName}: usable English subtitle already present", item.Name);
                 return (GenerationOutcome.Skipped, null);
             }
 
@@ -234,7 +275,9 @@ namespace WhisperSubs.Controller
                         .Any(f =>
                         {
                             var name = Path.GetFileName(f).ToLowerInvariant();
+                            // Exclude the plugin's OWN output so it never self-satisfies.
                             return subtitleExts.Any(ext => name.EndsWith(ext))
+                                && !name.Contains(".generated.") && !name.Contains(".translated.")
                                 && (name.Contains(".en.") || name.Contains(".eng.") || name.Contains(".english."));
                         });
 
@@ -1565,41 +1608,11 @@ namespace WhisperSubs.Controller
         /// </summary>
         private static string NormalizeLanguageCode(string code)
         {
-            return code.ToLowerInvariant() switch
-            {
-                "spa" => "es",
-                "eng" => "en",
-                "fra" or "fre" => "fr",
-                "deu" or "ger" => "de",
-                "ita" => "it",
-                "por" => "pt",
-                "rus" => "ru",
-                "jpn" => "ja",
-                "zho" or "chi" => "zh",
-                "kor" => "ko",
-                "ara" => "ar",
-                "hin" => "hi",
-                "pol" => "pl",
-                "nld" or "dut" => "nl",
-                "tur" => "tr",
-                "swe" => "sv",
-                "dan" => "da",
-                "fin" => "fi",
-                "nor" => "no",
-                "ces" or "cze" => "cs",
-                "ron" or "rum" => "ro",
-                "hun" => "hu",
-                "ell" or "gre" => "el",
-                "heb" => "he",
-                "tha" => "th",
-                "ukr" => "uk",
-                "vie" => "vi",
-                "ind" => "id",
-                "cat" => "ca",
-                "eus" or "baq" => "eu",
-                "glg" => "gl",
-                _ => code.ToLowerInvariant()
-            };
+            // Delegates to the single canonical table in SubtitleInventory.NormalizeLang (which also
+            // handles English word-forms and region tags like "pt-BR"). The `?? code.ToLowerInvariant()`
+            // preserves this method's non-null contract: callers expect a usable code back, and
+            // placeholder tags ("auto"/"und", which NormalizeLang maps to null) round-trip unchanged.
+            return SubtitleInventory.NormalizeLang(code) ?? (code ?? "").ToLowerInvariant();
         }
     }
 }

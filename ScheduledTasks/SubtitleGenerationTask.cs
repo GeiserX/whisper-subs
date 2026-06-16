@@ -237,7 +237,19 @@ namespace WhisperSubs.ScheduledTasks
                         // Check for embedded subtitle streams (MKV, MP4, etc.)
                         if (!hasFullSrt && item is Video embeddedCheck && embeddedCheck.HasSubtitles)
                         {
-                            hasFullSrt = true;
+                            // Issue #82: HasSubtitles is language- and type-blind, so a forced-only
+                            // or image-only embedded track would wrongly satisfy the full pass. When
+                            // SkipIfSubtitleExists is on, prefer a stream-aware check that requires a
+                            // text track (and a non-forced one when IgnoreForcedSubtitles is on).
+                            // Bias toward generating — if no usable track is found, leave it false.
+                            if (config.SkipIfSubtitleExists)
+                            {
+                                hasFullSrt = HasUsableTextSubtitle(item, ignoreForced: config.IgnoreForcedSubtitles);
+                            }
+                            else
+                            {
+                                hasFullSrt = true;
+                            }
                         }
                         var hasForcedSrt = existingFiles.Any(f => System.IO.Path.GetFileName(f).Contains(".forced.")) || noForeignMarkers.Length > 0;
 
@@ -246,6 +258,17 @@ namespace WhisperSubs.ScheduledTasks
                         {
                             hasTranslatedSrt = System.IO.File.Exists(
                                 System.IO.Path.Combine(dir, baseName + ".en.translated.srt"));
+
+                            // Issue #82: an existing usable English subtitle stream (embedded OR
+                            // external) satisfies the translation need just as a .en.translated.srt
+                            // would — so a foreign-audio movie that already ships English subs is not
+                            // needlessly re-translated (~7h saved per item).
+                            if (!hasTranslatedSrt && config.SkipIfSubtitleExists)
+                            {
+                                hasTranslatedSrt = SubtitleInventory.HasUsableSubtitle(
+                                    SubtitleStreamReader.GetSubtitleStreams(item), "en",
+                                    ignoreForced: config.IgnoreForcedSubtitles);
+                            }
                         }
 
                         bool alreadyComplete = config.SubtitleMode switch
@@ -259,6 +282,10 @@ namespace WhisperSubs.ScheduledTasks
 
                         if (alreadyComplete)
                         {
+                            // Log WHY so users (esp. large libraries) can see skips aren't a no-op.
+                            _logger.LogInformation(
+                                "[{Current}/{Total}] Skipping {ItemName}: already satisfied (full={Full}, forced={Forced}, translated={Translated})",
+                                completed + 1, allItems.Count, item.Name, hasFullSrt, hasForcedSrt, hasTranslatedSrt);
                             completed++;
                             queue.ReportTaskProgress(null, completed, allItems.Count, failed);
                             progress.Report((double)completed / allItems.Count * 100);
@@ -310,6 +337,23 @@ namespace WhisperSubs.ScheduledTasks
             queue.ReportTaskComplete();
             _logger.LogInformation("Subtitle generation task complete. Processed: {Processed}, Failed: {Failed}",
                 completed, failed);
+        }
+
+        /// <summary>
+        /// Issue #82: true if the item has at least one usable (text-based, non-forced) subtitle
+        /// stream in ANY language, excluding the plugin's own generated output. Used to refine the
+        /// language- and type-blind <c>Video.HasSubtitles</c> so a forced-only or image-only
+        /// embedded track no longer counts as a complete full subtitle. Language-agnostic on purpose
+        /// (the full pass targets the audio languages, which may be auto-detected): we only filter
+        /// out the forced/image false-positives here and let the per-language skip (SubtitleManager)
+        /// make the precise per-language decision.
+        /// </summary>
+        private static bool HasUsableTextSubtitle(BaseItem item, bool ignoreForced)
+        {
+            // Reuse the shared usability predicate (text, non-forced, not our own output) so this
+            // any-language pre-filter never drifts from SubtitleInventory.HasUsableSubtitle.
+            return SubtitleStreamReader.GetSubtitleStreams(item)
+                .Any(s => SubtitleInventory.IsUsableStream(s, ignoreForced));
         }
 
         internal async Task WaitForPlaybackIdleAsync(CancellationToken cancellationToken)

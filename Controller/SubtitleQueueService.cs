@@ -16,12 +16,23 @@ namespace WhisperSubs.Controller
         public required BaseItem Item { get; init; }
         public required string Language { get; init; }
         public TaskCompletionSource<bool>? Completion { get; init; }
+
+        /// <summary>
+        /// True for explicit manual requests: bypasses the "skip if a usable subtitle already
+        /// exists" checks (#82) so the user always gets fresh generation. Persisted to disk, so a
+        /// forced request survives a restart; scheduled items default to false.
+        /// </summary>
+        public bool Force { get; init; }
     }
 
     public class QueueEntry
     {
         public string ItemId { get; set; } = "";
         public string Language { get; set; } = "";
+
+        /// <summary>Whether this was a forced (manual) request — preserved across restarts so an
+        /// explicit "regenerate" survives a restore instead of silently respecting the skip checks.</summary>
+        public bool Force { get; set; }
     }
 
     public class SubtitleQueueService
@@ -139,13 +150,14 @@ namespace WhisperSubs.Controller
         }
 
         [ExcludeFromCodeCoverage(Justification = "Requires BaseItem + Plugin.Instance for persistence")]
-        public void Enqueue(BaseItem item, string language)
+        public void Enqueue(BaseItem item, string language, bool force = false)
         {
             _priorityQueue.Enqueue(new SubtitleWorkItem
             {
                 Item = item,
                 Language = language,
-                Completion = null
+                Completion = null,
+                Force = force
             });
             PersistQueue();
         }
@@ -198,7 +210,8 @@ namespace WhisperSubs.Controller
                     {
                         Item = item,
                         Language = entry.Language,
-                        Completion = null
+                        Completion = null,
+                        Force = entry.Force
                     });
                     restored++;
                 }
@@ -224,7 +237,8 @@ namespace WhisperSubs.Controller
                 var entries = _priorityQueue.Select(item => new QueueEntry
                 {
                     ItemId = item.Item.Id.ToString("N"),
-                    Language = item.Language
+                    Language = item.Language,
+                    Force = item.Force
                 }).ToList();
 
                 var json = JsonSerializer.Serialize(entries);
@@ -296,7 +310,7 @@ namespace WhisperSubs.Controller
                     try
                     {
                         await manager.GenerateSubtitleAsync(
-                            workItem.Item, provider, workItem.Language, cancellationToken);
+                            workItem.Item, provider, workItem.Language, cancellationToken, workItem.Force);
                     }
                     finally
                     {
@@ -346,7 +360,7 @@ namespace WhisperSubs.Controller
                     try
                     {
                         await manager.GenerateSubtitleAsync(
-                            workItem.Item, provider, workItem.Language, cancellationToken);
+                            workItem.Item, provider, workItem.Language, cancellationToken, workItem.Force);
                     }
                     finally
                     {
