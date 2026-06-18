@@ -57,6 +57,7 @@
                         </button>
                     </div>
                     <div id="engineModelHint" class="fieldDescription" style="margin-top:0.4em;"></div>
+                    <div id="engineModelCatalogDescription" class="fieldDescription" style="margin-top:0.4em;"></div>
                 </div>
 
                 <div id="engineProgressContainer" style="display:none; margin-bottom:1.5em;">
@@ -432,8 +433,11 @@
                             WhisperSubsConfig._engineStatus = s;
                             WhisperSubsConfig.renderBinaryStatus(s);
                             WhisperSubsConfig.loadEngineVariants(s.Gpu);
-                            WhisperSubsConfig.loadEngineCatalog();
-                            WhisperSubsConfig.renderDownloadedModels();
+                            // Load the catalog FIRST, then render the dropdown — the dropdown (and its
+                            // description helptext) read _catalogModels, so rendering before the catalog
+                            // resolves would leave both blank until the next interaction.
+                            WhisperSubsConfig.loadEngineCatalog()
+                                .then(function () { WhisperSubsConfig.renderDownloadedModels(); });
                         })
                         .catch(function (err) {
                             console.error('WhisperSubs: engine status check failed', err);
@@ -501,12 +505,14 @@
                 },
 
                 loadEngineCatalog: function () {
-                    WhisperSubsConfig.ajaxGet(ApiClient.getUrl('Plugins/WhisperSubs/Setup/AvailableModels'))
+                    return WhisperSubsConfig.ajaxGet(ApiClient.getUrl('Plugins/WhisperSubs/Setup/AvailableModels'))
                         .then(function (models) {
                             WhisperSubsConfig._catalogModels = models || [];
                         })
                         .catch(function (err) {
                             console.error('WhisperSubs: error loading model catalog', err);
+                            // Swallow so the chained dropdown render still runs (empty catalog).
+                            WhisperSubsConfig._catalogModels = [];
                         });
                 },
 
@@ -546,8 +552,21 @@
                     });
                     if (rec) select.value = rec.FileName;
 
+                    // Show the description for the initially-selected model
+                    WhisperSubsConfig.updateModelCatalogDescription();
+
                     // Enforce binary-first rule
                     WhisperSubsConfig.updateModelDownloadState();
+                },
+
+                updateModelCatalogDescription: function () {
+                    var select = document.querySelector('#engineModelSelect');
+                    var desc = document.querySelector('#engineModelCatalogDescription');
+                    if (!select || !desc) return;
+                    var selected = select.value;
+                    var catalog = WhisperSubsConfig._catalogModels || [];
+                    var match = catalog.find(function (m) { return m.FileName === selected; });
+                    desc.textContent = (match && match.Description) ? match.Description : '';
                 },
 
                 updateModelDownloadState: function () {
@@ -1391,6 +1410,10 @@
 
             document.querySelector('#btnEngineDownloadModel').addEventListener('click', function () {
                 WhisperSubsConfig.startEngineDownload('model');
+            });
+
+            document.querySelector('#engineModelSelect').addEventListener('change', function () {
+                WhisperSubsConfig.updateModelCatalogDescription();
             });
 
             document.querySelector('.whisperSubsConfigurationForm').addEventListener('submit', function (e) {
