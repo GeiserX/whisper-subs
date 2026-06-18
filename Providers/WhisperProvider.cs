@@ -119,6 +119,11 @@ namespace WhisperSubs.Providers
                 startInfo.ArgumentList.Add("-mc");
                 startInfo.ArgumentList.Add("0");
                 startInfo.ArgumentList.Add("-sns");
+                // Make whisper-cli emit "progress = N%" lines to stderr so the
+                // ErrorDataReceived handler below can parse them and report per-file
+                // progress. Without this flag whisper-cli prints no progress at all, so
+                // the regex never matches and the UI progress bar never advances.
+                startInfo.ArgumentList.Add("--print-progress");
                 if (translate)
                 {
                     startInfo.ArgumentList.Add("--translate");
