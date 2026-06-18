@@ -304,6 +304,8 @@ namespace WhisperSubs.ScheduledTasks
                 {
                     _logger.LogInformation("[{Current}/{Total}] Processing {ItemName}",
                         completed + 1, allItems.Count, item.Name);
+                    // Reset at item start so the bar reads 0 during audio extraction (before whisper
+                    // runs). WhisperProvider also resets at each whisper run; both are idempotent.
                     queue.ResetFileProgress();
                     queue.ReportTaskProgress(item.Name, completed, allItems.Count, failed, itemType, libName);
 
