@@ -62,6 +62,9 @@ public class ModelCatalogTests
         Assert.True(tiny.SizeMB < largest.SizeMB);
     }
 
+    // Note: the "turbo" substring is a property of the CURRENT catalog (the only translate-incapable
+    // models happen to be the distilled turbo ones), used here to partition entries for the invariant.
+    // The production helper matches by EXACT FileName, not substring — see IsTranslationCapable_* below.
     [Fact]
     public void Models_TurboEntries_CannotTranslate()
     {
@@ -104,6 +107,17 @@ public class ModelCatalogTests
     [InlineData("   ")]
     [InlineData("ggml-something-else.bin")]
     public void IsTranslationCapable_UnknownOrEmpty_ReturnsTrue(string? model)
+    {
+        Assert.True(ModelCatalog.IsTranslationCapable(model));
+    }
+
+    // Pins the EXACT-match contract: an unknown model whose name merely CONTAINS "turbo" must return
+    // true (it's not in the catalog). Guards against a future refactor that swaps the exact lookup for
+    // a name.Contains("turbo") heuristic — which would pass every other test here but be wrong.
+    [Theory]
+    [InlineData("ggml-turbo-custom.bin")]
+    [InlineData("my-turbo-model.bin")]
+    public void IsTranslationCapable_UnknownTurboSubstring_ReturnsTrue(string model)
     {
         Assert.True(ModelCatalog.IsTranslationCapable(model));
     }
