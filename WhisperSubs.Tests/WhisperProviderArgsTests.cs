@@ -213,13 +213,36 @@ public class WhisperProviderArgsTests
         Assert.Equal(expected, pct);
     }
 
+    // The raw line has no leading whitespace — confirms the `^` anchor doesn't *require* it.
+    [Fact]
+    public void TryParseProgress_NoLeadingWhitespace_Parses()
+    {
+        var ok = WhisperProvider.TryParseProgress("whisper_print_progress_callback: progress = 42%", out var pct);
+        Assert.True(ok);
+        Assert.Equal(42, pct);
+    }
+
+    // Contract: the parser does NOT clamp — it returns whisper's raw percent. Clamping to 0-100 is
+    // the consumer's job (SubtitleQueueService.ReportFileProgress). Pin that so a future change that
+    // moves clamping into the parser is a deliberate, test-visible decision.
+    [Fact]
+    public void TryParseProgress_Above100_ReturnsRawUnclampedValue()
+    {
+        var ok = WhisperProvider.TryParseProgress("whisper_print_progress_callback: progress = 150%", out var pct);
+        Assert.True(ok);
+        Assert.Equal(150, pct);
+    }
+
     [Theory]
     [InlineData("whisper_init_state: loading model")]
     [InlineData("system_info: n_threads = 4 | AVX = 1")]
     [InlineData("main: processing 'a.wav' ... progress = 50% pending")] // anchor guard: has "progress = 50%" but no leading whisper_ token
     [InlineData("main: progress = 7%")]
+    [InlineData("progress = 50%")] // bare progress line, no whisper_ emitter token
+    [InlineData("   ")] // whitespace-only: not IsNullOrEmpty, so it reaches the regex and fails to match
     [InlineData("")]
-    public void TryParseProgress_NonProgressLines_ReturnsFalse(string line)
+    [InlineData(null)] // e.Data can be null on the stderr stream; the IsNullOrEmpty guard handles it
+    public void TryParseProgress_NonProgressLines_ReturnsFalse(string? line)
     {
         var ok = WhisperProvider.TryParseProgress(line, out var pct);
         Assert.False(ok);

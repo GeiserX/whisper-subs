@@ -153,8 +153,9 @@ namespace WhisperSubs.Providers
                 // Reset the per-file progress bar to 0 at the start of every whisper run. This is the
                 // single choke point all transcription paths funnel through (full / translation /
                 // forced-segment / lyrics / resume) and is reached by both the scheduled task and the
-                // manual Generate drain loop — so resetting here (rather than only in the scheduled
-                // task) stops the bar showing the previous run's stale 100% and running backwards.
+                // manual Generate drain loop — so the manual path (which has no item-level reset)
+                // no longer shows the previous run's stale 100% and runs backwards. The scheduled
+                // task also resets at item start (before audio extraction); that reset stays.
                 SubtitleQueueService.Instance.ResetFileProgress();
 
                 process.Start();
@@ -735,8 +736,10 @@ namespace WhisperSubs.Providers
         // contains "progress = N%" can't be misread as progress (and thereby silently skipped from the
         // warning log). Both the whisper_print_progress_callback and whisper_full_with_state forms seen
         // across builds begin with a "whisper_" token, hence the family anchor.
+        // Compiled (unlike the file's other inline regexes) because this one runs once per stderr
+        // line for the whole transcription — the only regex on that hot path.
         private static readonly Regex ProgressRegex = new(
-            @"^\s*whisper_\S*:\s*progress\s*=\s*(\d+)\s*%",
+            @"^\s*whisper_\S*:\s*progress\s*=\s*(\d+)%",
             RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
         /// <summary>
