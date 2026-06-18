@@ -14,7 +14,7 @@ public class ModelCatalogTests
     [Fact]
     public void Models_HasExpectedCount()
     {
-        Assert.Equal(7, ModelCatalog.Models.Length);
+        Assert.Equal(9, ModelCatalog.Models.Length);
     }
 
     [Fact]
