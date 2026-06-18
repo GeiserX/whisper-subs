@@ -11,6 +11,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using WhisperSubs.Configuration;
 using WhisperSubs.Providers;
+using WhisperSubs.Setup;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 using Microsoft.Extensions.Logging;
@@ -388,6 +389,20 @@ namespace WhisperSubs.Controller
             var tempAudioPath = Path.Combine(Path.GetTempPath(), $"{item.Id}_{Guid.NewGuid()}_translate.wav");
             _logger.LogInformation("Generating English translation for {ItemName} (source: {SourceLanguage})",
                 item.Name, sourceLanguage);
+
+            // Issue #44: warn (after the skip guards above) when translating with a turbo model.
+            // whisper.cpp's distilled turbo models were fine-tuned WITHOUT the translate task, so
+            // --translate silently emits the source language instead of English. We don't block —
+            // behavior is unchanged — but this surfaces what was previously a silent failure.
+            var activeModel = Plugin.Instance?.Configuration?.WhisperModelPath;
+            if (!ModelCatalog.IsTranslationCapable(activeModel))
+            {
+                _logger.LogWarning(
+                    "Translation requested for {ItemName} but the active whisper model \"{Model}\" is a turbo model, " +
+                    "which was not trained for translation and will emit the source language instead of English. " +
+                    "Download/activate a non-turbo model (Large V3 or Medium) on the plugin setup page for reliable translation.",
+                    item.Name, Path.GetFileName(activeModel));
+            }
 
             try
             {
