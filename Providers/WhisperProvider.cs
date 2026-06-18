@@ -105,45 +105,14 @@ namespace WhisperSubs.Providers
                     WorkingDirectory = Path.GetDirectoryName(whisperExecutable) ?? ""
                 };
 
-                startInfo.ArgumentList.Add("-m");
-                startInfo.ArgumentList.Add(_modelPath);
-                startInfo.ArgumentList.Add("-f");
-                startInfo.ArgumentList.Add(audioPath);
-                startInfo.ArgumentList.Add("-l");
-                startInfo.ArgumentList.Add(language);
-                if (_threadCount > 0)
+                // Caller resolves whether VAD applies (model configured + present on disk); the pure
+                // arg-builder stays I/O-free and unit-testable.
+                var useVad = !string.IsNullOrEmpty(_vadModelPath) && File.Exists(_vadModelPath);
+                foreach (var arg in BuildTranscribeArguments(
+                    _modelPath, audioPath, language, _threadCount, translate,
+                    useVad ? _vadModelPath : null, tempOutputPrefix, langPrompt))
                 {
-                    startInfo.ArgumentList.Add("-t");
-                    startInfo.ArgumentList.Add(_threadCount.ToString());
-                }
-                startInfo.ArgumentList.Add("-mc");
-                startInfo.ArgumentList.Add("0");
-                startInfo.ArgumentList.Add("-sns");
-                // Make whisper-cli emit "progress = N%" lines to stderr so the
-                // ErrorDataReceived handler below can parse them and report per-file
-                // progress. Without this flag whisper-cli prints no progress at all, so
-                // the regex never matches and the UI progress bar never advances.
-                startInfo.ArgumentList.Add("--print-progress");
-                if (translate)
-                {
-                    startInfo.ArgumentList.Add("--translate");
-                }
-                // Native Silero VAD: makes whisper-cli emit subtitles that start at real speech
-                // onset instead of during the preceding silence (whisper.cpp otherwise chains
-                // segments gaplessly). Only when a VAD model is configured and present on disk.
-                if (!string.IsNullOrEmpty(_vadModelPath) && File.Exists(_vadModelPath))
-                {
-                    startInfo.ArgumentList.Add("--vad");
-                    startInfo.ArgumentList.Add("--vad-model");
-                    startInfo.ArgumentList.Add(_vadModelPath);
-                }
-                startInfo.ArgumentList.Add("-osrt");
-                startInfo.ArgumentList.Add("-of");
-                startInfo.ArgumentList.Add(tempOutputPrefix);
-                if (!string.IsNullOrEmpty(langPrompt))
-                {
-                    startInfo.ArgumentList.Add("--prompt");
-                    startInfo.ArgumentList.Add(langPrompt);
+                    startInfo.ArgumentList.Add(arg);
                 }
 
                 AppendCustomArgs(startInfo);
@@ -169,9 +138,8 @@ namespace WhisperSubs.Providers
                     {
                         errorBuilder.AppendLine(e.Data);
 
-                        // Parse whisper progress: "whisper_print_progress_callback: progress = 42%"
-                        var progressMatch = Regex.Match(e.Data, @"progress\s*=\s*(\d+)%");
-                        if (progressMatch.Success && int.TryParse(progressMatch.Groups[1].Value, out var pct))
+                        // Progress lines drive the per-file bar; everything else is a real warning.
+                        if (TryParseProgress(e.Data, out var pct))
                         {
                             SubtitleQueueService.Instance.ReportFileProgress(pct);
                         }
@@ -181,6 +149,13 @@ namespace WhisperSubs.Providers
                         }
                     }
                 };
+
+                // Reset the per-file progress bar to 0 at the start of every whisper run. This is the
+                // single choke point all transcription paths funnel through (full / translation /
+                // forced-segment / lyrics / resume) and is reached by both the scheduled task and the
+                // manual Generate drain loop — so resetting here (rather than only in the scheduled
+                // task) stops the bar showing the previous run's stale 100% and running backwards.
+                SubtitleQueueService.Instance.ResetFileProgress();
 
                 process.Start();
                 process.BeginOutputReadLine();
@@ -699,6 +674,83 @@ namespace WhisperSubs.Providers
             var ms = totalMs % 1000;
 
             return $"{h:D2}:{m:D2}:{s:D2},{ms:D3}";
+        }
+
+        /// <summary>
+        /// Builds the whisper-cli argument vector shared by every transcription run (the full,
+        /// translation, forced-segment, lyrics and resume callers all funnel through one method, so
+        /// they emit the same flags). Pure and I/O-free so it is unit-testable — the caller resolves
+        /// filesystem-dependent state (VAD model presence, language prompt) and passes the results in.
+        /// </summary>
+        /// <param name="vadModelPath">Resolved Silero VAD model path, or null/empty to omit VAD.</param>
+        /// <param name="langPrompt">Resolved initial prompt, or null/empty to omit it.</param>
+        internal static IReadOnlyList<string> BuildTranscribeArguments(
+            string modelPath, string audioPath, string language, int threadCount, bool translate,
+            string? vadModelPath, string outputPrefix, string? langPrompt)
+        {
+            var args = new List<string>
+            {
+                "-m", modelPath,
+                "-f", audioPath,
+                "-l", language,
+            };
+            if (threadCount > 0)
+            {
+                args.Add("-t");
+                args.Add(threadCount.ToString(CultureInfo.InvariantCulture));
+            }
+            args.Add("-mc");
+            args.Add("0");
+            args.Add("-sns");
+            // Make whisper-cli emit "whisper_print_progress_callback: progress = N%" lines to stderr
+            // so the ErrorDataReceived handler can parse them and report per-file progress. The flag
+            // defaults OFF in whisper.cpp, so without it whisper-cli prints no progress at all, the
+            // regex never matches, and the UI progress bar never advances.
+            args.Add("--print-progress");
+            if (translate)
+            {
+                args.Add("--translate");
+            }
+            // Native Silero VAD: makes whisper-cli emit subtitles that start at real speech onset
+            // instead of during the preceding silence (whisper.cpp otherwise chains segments
+            // gaplessly). Only when a VAD model is configured and present on disk (resolved by caller).
+            if (!string.IsNullOrEmpty(vadModelPath))
+            {
+                args.Add("--vad");
+                args.Add("--vad-model");
+                args.Add(vadModelPath);
+            }
+            args.Add("-osrt");
+            args.Add("-of");
+            args.Add(outputPrefix);
+            if (!string.IsNullOrEmpty(langPrompt))
+            {
+                args.Add("--prompt");
+                args.Add(langPrompt);
+            }
+            return args;
+        }
+
+        // Anchored to whisper.cpp's own progress emitters so an unrelated stderr line that merely
+        // contains "progress = N%" can't be misread as progress (and thereby silently skipped from the
+        // warning log). Both the whisper_print_progress_callback and whisper_full_with_state forms seen
+        // across builds begin with a "whisper_" token, hence the family anchor.
+        private static readonly Regex ProgressRegex = new(
+            @"^\s*whisper_\S*:\s*progress\s*=\s*(\d+)\s*%",
+            RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+        /// <summary>
+        /// Parses a whisper-cli stderr line of the form
+        /// "whisper_print_progress_callback: progress =  42%" into its integer percentage.
+        /// Returns false (and pct = 0) for any non-progress line. Pure and unit-testable.
+        /// </summary>
+        internal static bool TryParseProgress(string? line, out int pct)
+        {
+            pct = 0;
+            if (string.IsNullOrEmpty(line)) return false;
+            var m = ProgressRegex.Match(line);
+            return m.Success
+                && int.TryParse(m.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out pct);
         }
 
         internal void AppendCustomArgs(ProcessStartInfo startInfo)
