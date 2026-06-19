@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Linq;
+using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -22,6 +23,7 @@ namespace WhisperSubs.Controller
     {
         private readonly ILibraryManager _libraryManager;
         private readonly ILogger<SubtitleManager> _logger;
+        private static readonly HttpClient _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
 
         public SubtitleManager(ILibraryManager libraryManager, ILogger<SubtitleManager> logger)
         {
@@ -121,6 +123,7 @@ namespace WhisperSubs.Controller
             }
 
             await item.RefreshMetadata(cancellationToken);
+            FireLingarrNotification(item);
         }
 
         /// <summary>Outcome of a single subtitle generation attempt.</summary>
@@ -1682,6 +1685,53 @@ namespace WhisperSubs.Controller
             // preserves this method's non-null contract: callers expect a usable code back, and
             // placeholder tags ("auto"/"und", which NormalizeLang maps to null) round-trip unchanged.
             return SubtitleInventory.NormalizeLang(code) ?? (code ?? "").ToLowerInvariant();
+        }
+
+        [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage(Justification = "Fire-and-forget HTTP call to external Lingarr service")]
+        private void FireLingarrNotification(BaseItem item)
+        {
+            var config = Plugin.Instance?.Configuration;
+            if (config?.EnableLingarrNotification != true) return;
+            var baseUrl = (config.LingarrUrl ?? "").TrimEnd('/');
+            if (string.IsNullOrWhiteSpace(baseUrl)) return;
+
+            var path = GetLingarrWebhookPath(item);
+            if (path == null) return;
+
+            var url = baseUrl + path;
+            var apiKey = config.LingarrApiKey ?? "";
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    using var request = new HttpRequestMessage(HttpMethod.Post, url);
+                    if (!string.IsNullOrWhiteSpace(apiKey))
+                        request.Headers.Add("X-Api-Key", apiKey);
+                    request.Content = new StringContent("{}", System.Text.Encoding.UTF8, "application/json");
+                    using var response = await _httpClient.SendAsync(request).ConfigureAwait(false);
+                    _logger.LogInformation("Lingarr notified for {ItemName} via {Path}: HTTP {Status}",
+                        item.Name, path, (int)response.StatusCode);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Lingarr notification failed for {ItemName} — subtitle was still saved", item.Name);
+                }
+            });
+        }
+
+        /// <summary>
+        /// Returns the Lingarr webhook path for the given item type, or null if the item
+        /// type has no corresponding Lingarr webhook (e.g. Audio).
+        /// Movies route to /api/webhook/radarr; Episodes to /api/webhook/sonarr.
+        /// </summary>
+        internal static string? GetLingarrWebhookPath(BaseItem item)
+        {
+            if (item is MediaBrowser.Controller.Entities.Movies.Movie)
+                return "/api/webhook/radarr";
+            if (item is MediaBrowser.Controller.Entities.TV.Episode)
+                return "/api/webhook/sonarr";
+            return null;
         }
     }
 }

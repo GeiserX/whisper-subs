@@ -342,6 +342,34 @@
                         </div>
                     </details>
 
+                    <details style="margin-top:1.5em;">
+                        <summary style="cursor:pointer; font-size:1.2em; font-weight:bold; padding:0.5em 0;">Lingarr Integration (Optional)</summary>
+
+                        <div class="checkboxContainer checkboxContainer-withDescription">
+                            <label>
+                                <input is="emby-checkbox" type="checkbox" id="chkEnableLingarrNotification" name="EnableLingarrNotification" />
+                                <span>Notify Lingarr after subtitle generation</span>
+                            </label>
+                            <div class="fieldDescription">
+                                When enabled, WhisperSubs sends a webhook to Lingarr after each subtitle file is written,
+                                so Lingarr can auto-translate it. Movies notify <code>/api/webhook/radarr</code>;
+                                episodes notify <code>/api/webhook/sonarr</code>. Off by default.
+                            </div>
+                        </div>
+
+                        <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfocused" for="txtLingarrUrl">Lingarr URL</label>
+                            <input type="text" id="txtLingarrUrl" name="LingarrUrl" class="emby-input" placeholder="http://lingarr:8080" />
+                            <div class="fieldDescription">Base URL of your Lingarr instance. Must be reachable from the Jellyfin server container (e.g. an internal Docker hostname).</div>
+                        </div>
+
+                        <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfocused" for="txtLingarrApiKey">Lingarr API Key</label>
+                            <input type="password" id="txtLingarrApiKey" name="LingarrApiKey" class="emby-input" autocomplete="new-password" maxlength="256" spellcheck="false" />
+                            <div class="fieldDescription">Sent as <code>X-Api-Key</code> on every webhook request. Find this in Lingarr's settings.</div>
+                        </div>
+                    </details>
+
                     <button is="emby-button" type="submit" class="raised button-submit block" style="margin-top:1.5em;">
                         <span>Save</span>
                     </button>
@@ -971,6 +999,9 @@
                             page.querySelector('#chkEnableVad').checked = config.EnableVad !== false;
                             page.querySelector('#chkAlignSubtitlesToSpeech').checked = config.AlignSubtitlesToSpeech !== false;
                             page.querySelector('#chkCompensateAudioOffset').checked = config.CompensateAudioOffset !== false;
+                            page.querySelector('#chkEnableLingarrNotification').checked = config.EnableLingarrNotification === true;
+                            page.querySelector('#txtLingarrUrl').value = config.LingarrUrl || '';
+                            page.querySelector('#txtLingarrApiKey').value = config.LingarrApiKey || '';
                             updateTranslationVisibility();
                         }
                             WhisperSubsConfig.loadLibraries();
@@ -1002,6 +1033,9 @@
                         config.EnableVad = page.querySelector('#chkEnableVad').checked;
                         config.AlignSubtitlesToSpeech = page.querySelector('#chkAlignSubtitlesToSpeech').checked;
                         config.CompensateAudioOffset = page.querySelector('#chkCompensateAudioOffset').checked;
+                        config.EnableLingarrNotification = page.querySelector('#chkEnableLingarrNotification').checked;
+                        config.LingarrUrl = (page.querySelector('#txtLingarrUrl').value || '').trim();
+                        config.LingarrApiKey = (page.querySelector('#txtLingarrApiKey').value || '').trim();
 
                         // Collect enabled libraries from checkboxes
                         var libraryCheckboxes = page.querySelectorAll('.chkLibrary');

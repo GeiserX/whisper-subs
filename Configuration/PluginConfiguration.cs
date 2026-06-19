@@ -146,6 +146,23 @@ namespace WhisperSubs.Configuration
 
         public List<string> EnabledLibraries { get; set; } = new List<string>();
 
+        /// <summary>
+        /// When enabled, fires an HTTP POST to the configured Lingarr URL after each subtitle
+        /// is generated, so Lingarr can auto-translate the new subtitle. Off by default.
+        /// </summary>
+        public bool EnableLingarrNotification { get; set; } = false;
+
+        /// <summary>
+        /// Base URL of the Lingarr instance to notify after subtitle generation.
+        /// Example: http://lingarr:8080
+        /// </summary>
+        public string LingarrUrl { get; set; } = "";
+
+        /// <summary>
+        /// API key sent as X-Api-Key header in the Lingarr webhook request.
+        /// </summary>
+        public string LingarrApiKey { get; set; } = "";
+
         public PluginConfiguration()
         {
         }
