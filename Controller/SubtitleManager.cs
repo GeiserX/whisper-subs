@@ -1717,8 +1717,12 @@ namespace WhisperSubs.Controller
                         request.Headers.Add("X-Api-Key", apiKey);
                     request.Content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json");
                     using var response = await _httpClient.SendAsync(request).ConfigureAwait(false);
-                    _logger.LogInformation("Lingarr notified for {ItemName} ({MediaType}): HTTP {Status}",
-                        item.Name, mediaType, (int)response.StatusCode);
+                    if (response.IsSuccessStatusCode)
+                        _logger.LogInformation("Lingarr notified for {ItemName} ({MediaType}): HTTP {Status}",
+                            item.Name, mediaType, (int)response.StatusCode);
+                    else
+                        _logger.LogWarning("Lingarr notification rejected for {ItemName} ({MediaType}): HTTP {Status}",
+                            item.Name, mediaType, (int)response.StatusCode);
                 }
                 catch (Exception ex)
                 {
