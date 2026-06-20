@@ -123,7 +123,8 @@ namespace WhisperSubs.Controller
             }
 
             await item.RefreshMetadata(cancellationToken);
-            FireLingarrNotification(item);
+            if (attempted > 0 && failed < attempted)
+                FireLingarrNotification(item, mediaPath);
         }
 
         /// <summary>Outcome of a single subtitle generation attempt.</summary>
@@ -1687,26 +1688,30 @@ namespace WhisperSubs.Controller
             return SubtitleInventory.NormalizeLang(code) ?? (code ?? "").ToLowerInvariant();
         }
 
+        internal static string? ResolveLingarrMediaType(BaseItem item)
+        {
+            if (item is MediaBrowser.Controller.Entities.Movies.Movie) return "Movie";
+            if (item is MediaBrowser.Controller.Entities.TV.Episode) return "Episode";
+            return null;
+        }
+
         [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage(Justification = "Fire-and-forget HTTP call to external Lingarr service")]
-        private void FireLingarrNotification(BaseItem item)
+        private void FireLingarrNotification(BaseItem item, string mediaPath)
         {
             var config = Plugin.Instance?.Configuration;
             if (config?.EnableLingarrNotification != true) return;
-            var baseUrl = (config.LingarrUrl ?? "").TrimEnd('/');
-            if (string.IsNullOrWhiteSpace(baseUrl)) return;
-            if (string.IsNullOrWhiteSpace(item.Path)) return;
+            var rawUrl = (config.LingarrUrl ?? "").Trim();
+            if (string.IsNullOrWhiteSpace(rawUrl)) return;
+            if (!Uri.TryCreate(rawUrl.TrimEnd('/') + '/', UriKind.Absolute, out var baseUri)
+                || (baseUri.Scheme != Uri.UriSchemeHttp && baseUri.Scheme != Uri.UriSchemeHttps)) return;
+            if (string.IsNullOrWhiteSpace(mediaPath)) return;
 
-            string mediaType;
-            if (item is MediaBrowser.Controller.Entities.Movies.Movie)
-                mediaType = "Movie";
-            else if (item is MediaBrowser.Controller.Entities.TV.Episode)
-                mediaType = "Episode";
-            else
-                return;
+            var mediaType = ResolveLingarrMediaType(item);
+            if (mediaType is null) return;
 
-            var url = baseUrl + "/api/webhook/whispersubs";
+            var url = new Uri(baseUri, "api/webhook/whispersubs").ToString();
             var apiKey = config.LingarrApiKey ?? "";
-            var payload = System.Text.Json.JsonSerializer.Serialize(new { path = item.Path, mediaType });
+            var payload = System.Text.Json.JsonSerializer.Serialize(new { path = mediaPath, mediaType });
 
             _ = Task.Run(async () =>
             {

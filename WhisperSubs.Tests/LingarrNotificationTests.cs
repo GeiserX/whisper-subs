@@ -9,34 +9,30 @@ namespace WhisperSubs.Tests;
 public class LingarrNotificationTests
 {
     [Fact]
-    public void GetLingarrWebhookPath_Movie_ReturnsRadarrPath()
+    public void ResolveLingarrMediaType_Movie_ReturnsMovie()
     {
         var item = new Movie { Name = "Test Movie" };
-        var path = SubtitleManager.GetLingarrWebhookPath(item);
-        Assert.Equal("/api/webhook/radarr", path);
+        Assert.Equal("Movie", SubtitleManager.ResolveLingarrMediaType(item));
     }
 
     [Fact]
-    public void GetLingarrWebhookPath_Episode_ReturnsSonarrPath()
+    public void ResolveLingarrMediaType_Episode_ReturnsEpisode()
     {
         var item = new Episode { Name = "Test Episode" };
-        var path = SubtitleManager.GetLingarrWebhookPath(item);
-        Assert.Equal("/api/webhook/sonarr", path);
+        Assert.Equal("Episode", SubtitleManager.ResolveLingarrMediaType(item));
     }
 
     [Fact]
-    public void GetLingarrWebhookPath_Audio_ReturnsNull()
+    public void ResolveLingarrMediaType_Audio_ReturnsNull()
     {
         var item = new MediaBrowser.Controller.Entities.Audio.Audio { Name = "Test Track" };
-        var path = SubtitleManager.GetLingarrWebhookPath(item);
-        Assert.Null(path);
+        Assert.Null(SubtitleManager.ResolveLingarrMediaType(item));
     }
 
     [Fact]
-    public void GetLingarrWebhookPath_Video_ReturnsNull()
+    public void ResolveLingarrMediaType_Video_ReturnsNull()
     {
         var item = new Video { Name = "Test Video" };
-        var path = SubtitleManager.GetLingarrWebhookPath(item);
-        Assert.Null(path);
+        Assert.Null(SubtitleManager.ResolveLingarrMediaType(item));
     }
 }
