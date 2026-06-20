@@ -1694,12 +1694,19 @@ namespace WhisperSubs.Controller
             if (config?.EnableLingarrNotification != true) return;
             var baseUrl = (config.LingarrUrl ?? "").TrimEnd('/');
             if (string.IsNullOrWhiteSpace(baseUrl)) return;
+            if (string.IsNullOrWhiteSpace(item.Path)) return;
 
-            var path = GetLingarrWebhookPath(item);
-            if (path == null) return;
+            string mediaType;
+            if (item is MediaBrowser.Controller.Entities.Movies.Movie)
+                mediaType = "Movie";
+            else if (item is MediaBrowser.Controller.Entities.TV.Episode)
+                mediaType = "Episode";
+            else
+                return;
 
-            var url = baseUrl + path;
+            var url = baseUrl + "/api/webhook/whispersubs";
             var apiKey = config.LingarrApiKey ?? "";
+            var payload = System.Text.Json.JsonSerializer.Serialize(new { path = item.Path, mediaType });
 
             _ = Task.Run(async () =>
             {
@@ -1708,30 +1715,16 @@ namespace WhisperSubs.Controller
                     using var request = new HttpRequestMessage(HttpMethod.Post, url);
                     if (!string.IsNullOrWhiteSpace(apiKey))
                         request.Headers.Add("X-Api-Key", apiKey);
-                    request.Content = new StringContent("{}", System.Text.Encoding.UTF8, "application/json");
+                    request.Content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json");
                     using var response = await _httpClient.SendAsync(request).ConfigureAwait(false);
-                    _logger.LogInformation("Lingarr notified for {ItemName} via {Path}: HTTP {Status}",
-                        item.Name, path, (int)response.StatusCode);
+                    _logger.LogInformation("Lingarr notified for {ItemName} ({MediaType}): HTTP {Status}",
+                        item.Name, mediaType, (int)response.StatusCode);
                 }
                 catch (Exception ex)
                 {
                     _logger.LogWarning(ex, "Lingarr notification failed for {ItemName} — subtitle was still saved", item.Name);
                 }
             });
-        }
-
-        /// <summary>
-        /// Returns the Lingarr webhook path for the given item type, or null if the item
-        /// type has no corresponding Lingarr webhook (e.g. Audio).
-        /// Movies route to /api/webhook/radarr; Episodes to /api/webhook/sonarr.
-        /// </summary>
-        internal static string? GetLingarrWebhookPath(BaseItem item)
-        {
-            if (item is MediaBrowser.Controller.Entities.Movies.Movie)
-                return "/api/webhook/radarr";
-            if (item is MediaBrowser.Controller.Entities.TV.Episode)
-                return "/api/webhook/sonarr";
-            return null;
         }
     }
 }
