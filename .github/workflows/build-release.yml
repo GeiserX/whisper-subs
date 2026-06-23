@@ -131,7 +131,7 @@ jobs:
   build-whisper-rocm:
     needs: [check-version]
     if: needs.check-version.outputs.should_release == 'true'
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     steps:
       - name: Cache whisper ROCm binary
         id: cache-whisper-rocm
@@ -170,7 +170,7 @@ jobs:
 
   # ── Check if release already exists ─────────────────────────────────
   check-version:
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     outputs:
       should_release: ${{ steps.check.outputs.should_release }}
       version: ${{ steps.check.outputs.version }}
@@ -193,7 +193,7 @@ jobs:
   build:
     needs: [build-whisper, build-whisper-rocm, check-version]
     if: needs.check-version.outputs.should_release == 'true'
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
 

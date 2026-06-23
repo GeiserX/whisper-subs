@@ -5,7 +5,7 @@ on:
 
 jobs:
   stale:
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     steps:
       - name: Setup Node.js
         uses: actions/setup-node@v6
