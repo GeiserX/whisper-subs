@@ -123,6 +123,9 @@ jobs:
         with:
           name: ${{ matrix.asset_name }}
           path: /tmp/whisper-${{ matrix.variant }}/build/bin/whisper-cli
+          # Transient hand-off to the release job; final binaries live in the
+          # GitHub Release. Short retention avoids paid Actions storage buildup.
+          retention-days: 1
 
   # ── Build whisper.cpp ROCm binary (needs full SDK container) ───────
   # NOTE: Cannot use `container:` with self-hosted runners — JavaScript actions
@@ -167,6 +170,9 @@ jobs:
         with:
           name: whisper-cli-linux-x64-rocm
           path: ${{ github.workspace }}/rocm-output/whisper-cli
+          # Transient hand-off to the release job; final binaries live in the
+          # GitHub Release. Short retention avoids paid Actions storage buildup.
+          retention-days: 1
 
   # ── Check if release already exists ─────────────────────────────────
   check-version:
