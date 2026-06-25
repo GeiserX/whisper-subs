@@ -211,6 +211,14 @@ namespace WhisperSubs.Api
                     return NotFound(new { error = "Item not found" });
                 }
 
+                // Guard against enqueuing an entire library: only specific media or season/series containers.
+                if (parent is MediaBrowser.Controller.Entities.CollectionFolder
+                    || parent is MediaBrowser.Controller.Entities.UserView
+                    || parent is MediaBrowser.Controller.Entities.AggregateFolder)
+                {
+                    return BadRequest(new { error = "Select a specific movie, episode, season, or series." });
+                }
+
                 var config = Plugin.Instance.Configuration;
                 var targetLanguage = language ?? config.DefaultLanguage;
 
@@ -236,18 +244,20 @@ namespace WhisperSubs.Api
                 }
 
                 var queue = SubtitleQueueService.Instance;
+                int queued = 0, skipped = 0;
                 foreach (var child in children)
                 {
                     // Bulk "Generate all" deliberately does NOT force: it respects the
                     // SkipIfSubtitleExists toggle and the original-language / translation toggles so a
                     // library-wide request fills only the gaps the user actually wants (unlike
                     // single-item Generate, which forces a specific item). See #82/#83.
-                    queue.Enqueue(child, targetLanguage);
+                    if (queue.Enqueue(child, targetLanguage)) queued++;
+                    else skipped++;
                 }
 
                 _logger.LogInformation(
-                    "Queued {Count} items for subtitle generation under {ParentName} [{Language}]",
-                    children.Count, parent.Name, targetLanguage);
+                    "Queued {Queued} items ({Skipped} already queued or in progress) for subtitle generation under {ParentName} [{Language}]",
+                    queued, skipped, parent.Name, targetLanguage);
 
                 // Ensure the background drain worker is running
                 var manager = GetSubtitleManager();
@@ -256,9 +266,13 @@ namespace WhisperSubs.Api
 
                 return Accepted(new
                 {
-                    message = $"Queued {children.Count} item(s) for subtitle generation",
+                    message = skipped > 0
+                        ? $"Queued {queued} item(s) for subtitle generation ({skipped} already queued or in progress)"
+                        : $"Queued {queued} item(s) for subtitle generation",
                     parent = parent.Name,
                     count = children.Count,
+                    queued,
+                    skipped,
                     language = targetLanguage,
                     queueSize = queue.PriorityCount
                 });
