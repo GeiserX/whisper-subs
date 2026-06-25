@@ -432,7 +432,7 @@
                         .then(function (s) {
                             WhisperSubsConfig._engineStatus = s;
                             WhisperSubsConfig.renderBinaryStatus(s);
-                            WhisperSubsConfig.loadEngineVariants(s.Gpu);
+                            WhisperSubsConfig.loadEngineVariants(s.Gpu, s.InstalledVariant);
                             // Load the catalog FIRST, then render the dropdown — the dropdown (and its
                             // description helptext) read _catalogModels, so rendering before the catalog
                             // resolves would leave both blank until the next interaction.
@@ -462,7 +462,7 @@
                     }
                 },
 
-                loadEngineVariants: function (gpuInfo) {
+                loadEngineVariants: function (gpuInfo, installedVariant) {
                     WhisperSubsConfig.ajaxGet(ApiClient.getUrl('Plugins/WhisperSubs/Setup/BinaryVariants'))
                         .then(function (variants) {
                             var select = document.querySelector('#engineBinaryVariant');
@@ -488,7 +488,13 @@
                                 opt.textContent = v.DisplayName;
                                 select.appendChild(opt);
                             });
-                            if (gpuInfo && gpuInfo.RecommendedVariant) {
+                            // Prefer the variant the user actually installed (persisted) so re-opening
+                            // setup doesn't silently re-arm a different variant; fall back to the GPU
+                            // recommendation only when there's no valid persisted choice.
+                            var variantIds = variants.map(function (v) { return v.Id; });
+                            if (installedVariant && variantIds.indexOf(installedVariant) !== -1) {
+                                select.value = installedVariant;
+                            } else if (gpuInfo && gpuInfo.RecommendedVariant) {
                                 select.value = gpuInfo.RecommendedVariant;
                             }
                             // Store gpuInfo for variant change handler
@@ -837,6 +843,34 @@
                             hint.textContent = 'No GPU render device detected. This variant requires a GPU with Vulkan support.';
                             hint.style.color = '#CC7B19';
                         }
+                    } else if (variant === 'vulkan-noavx') {
+                        if (gpuInfo.HasRenderDevice && gpuInfo.HasVulkanLibrary && gpuInfo.HasAvx === false) {
+                            hint.textContent = 'GPU compatibility build: Vulkan acceleration without AVX2. The right choice for an older CPU (no AVX2) with a Vulkan GPU.';
+                            hint.style.color = '#52B54B';
+                        } else if (gpuInfo.HasRenderDevice && gpuInfo.HasVulkanLibrary) {
+                            hint.textContent = 'Vulkan GPU detected, but this CPU supports AVX2 — the standard "Vulkan" variant is recommended over this compatibility build.';
+                            hint.style.color = '#CC7B19';
+                        } else if (gpuInfo.HasRenderDevice) {
+                            hint.textContent = 'GPU detected but Vulkan library not found. May need libvulkan1 installed.';
+                            hint.style.color = '#CC7B19';
+                        } else {
+                            hint.textContent = 'No GPU render device detected. This variant requires a GPU with Vulkan support.';
+                            hint.style.color = '#CC7B19';
+                        }
+                    } else if (variant === 'cuda12-noavx') {
+                        if (gpuInfo.HasNvidia && gpuInfo.HasCudaLibrary && gpuInfo.HasAvx === false) {
+                            hint.textContent = 'GPU compatibility build: CUDA acceleration without AVX2. The right choice for an older CPU (no AVX2) with an NVIDIA GPU.';
+                            hint.style.color = '#52B54B';
+                        } else if (gpuInfo.HasNvidia && gpuInfo.HasCudaLibrary) {
+                            hint.textContent = 'NVIDIA GPU detected, but this CPU supports AVX2 — the standard "CUDA 12" variant is recommended over this compatibility build.';
+                            hint.style.color = '#CC7B19';
+                        } else if (gpuInfo.HasNvidia) {
+                            hint.textContent = 'NVIDIA GPU detected but CUDA libraries not found. Install nvidia-cuda-toolkit or use the CPU (Compatibility) variant.';
+                            hint.style.color = '#CC7B19';
+                        } else {
+                            hint.textContent = 'No NVIDIA GPU detected. This variant requires an NVIDIA GPU with CUDA support.';
+                            hint.style.color = '#CC7B19';
+                        }
                     } else if (variant === 'noavx') {
                         if (gpuInfo.HasAvx === false) {
                             hint.textContent = 'Compatibility variant \u2014 required: this CPU does not support AVX2. No AVX2 or OpenMP needed.';
@@ -848,7 +882,7 @@
                     } else {
                         // CPU
                         if (gpuInfo.HasAvx === false) {
-                            hint.textContent = 'This CPU does not support AVX2\u2014 the CPU variant will crash. Choose "CPU (Compatibility)" (noavx) instead.';
+                            hint.textContent = 'This CPU does not support AVX2 \u2014 the CPU variant will crash. Choose "CPU (Compatibility)" (noavx) instead.';
                             hint.style.color = '#CC3333';
                         } else if (gpuInfo.HasNvidia || gpuInfo.HasAmdGpu || gpuInfo.HasRenderDevice) {
                             hint.textContent = 'GPU detected \u2014 consider a GPU variant for faster transcription.';
