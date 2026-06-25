@@ -58,7 +58,7 @@
             showToast('WhisperSubs: Queuing...');
             generateSubtitles(itemId).then(function (response) {
                 var data = typeof response === 'string' ? JSON.parse(response) : response;
-                var count = data.count || 1;
+                var count = data && data.queued != null ? data.queued : (data && data.count) || 1;
                 showToast('WhisperSubs: Queued ' + count + ' item(s) for subtitle generation');
             }).catch(function () {
                 showToast('WhisperSubs: Failed to queue generation');
@@ -197,7 +197,7 @@
                     showToast('WhisperSubs: Queuing...');
                     generateSubtitles(itemId).then(function (response) {
                         var data = typeof response === 'string' ? JSON.parse(response) : response;
-                        var n = (data && (data.queued != null ? data.queued : data.count)) || 1;
+                        var n = data && data.queued != null ? data.queued : (data && data.count) || 1;
                         showToast('WhisperSubs: Queued ' + n + ' item(s) for subtitle generation');
                     }).catch(function () {
                         showToast('WhisperSubs: Failed to queue generation');
@@ -217,6 +217,10 @@
     // Jellyfin rebuilds the detail DOM on each SPA navigation, so re-run on nav + render.
     var detailInjectTimer = null;
     function scheduleDetailInject() {
+        // Cheap early-exit: this fires on every DOM mutation via the body observer, so on non-detail
+        // pages (library grids, home, search) do almost nothing. A detail page always carries an item
+        // id in the hash; if there's none, skip without touching the timer.
+        if ((window.location.hash || '').indexOf('id=') === -1) return;
         if (detailInjectTimer) clearTimeout(detailInjectTimer);
         detailInjectTimer = setTimeout(injectDetailButton, 150);
     }

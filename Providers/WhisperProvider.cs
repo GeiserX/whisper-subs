@@ -661,7 +661,7 @@ namespace WhisperSubs.Providers
         // Maps a non-zero whisper-cli exit code to an actionable error message, or null if the code
         // is not a known fatal-launch failure. Shared by transcription and language detection so both
         // give the same precise diagnosis (e.g. a SIGILL on a non-AVX2 CPU) instead of a generic error.
-        internal static string? DescribeWhisperExitFailure(int exitCode, string stderr)
+        internal static string? DescribeWhisperExitFailure(int exitCode, string? stderr)
         {
             if (exitCode == 127)
             {

@@ -44,4 +44,15 @@ public class WhisperExitFailureTests
         // caller emits its own generic error.
         Assert.Null(WhisperProvider.DescribeWhisperExitFailure(exitCode, "some stderr"));
     }
+
+    [Theory]
+    [InlineData(127)]
+    [InlineData(132)]
+    public void DescribeWhisperExitFailure_NullStderr_DoesNotThrow(int exitCode)
+    {
+        // The shared helper must tolerate a null stderr (the parameter is string?); both special
+        // branches null-coalesce, so a future caller passing null cannot crash.
+        var result = WhisperProvider.DescribeWhisperExitFailure(exitCode, null);
+        Assert.NotNull(result);
+    }
 }

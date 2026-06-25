@@ -181,6 +181,13 @@ namespace WhisperSubs.Controller
         public Task EnqueuePriorityAsync(BaseItem item, string language)
         {
             var tcs = new TaskCompletionSource<bool>();
+            // De-dup parity with Enqueue: priority items are non-forced. If identical work is already
+            // in flight, don't queue a duplicate — complete with false so an awaiter isn't left hanging.
+            if (!TryReserve(DedupKey(item.Id, language, false)))
+            {
+                tcs.SetResult(false);
+                return tcs.Task;
+            }
             _priorityQueue.Enqueue(new SubtitleWorkItem
             {
                 Item = item,
@@ -221,8 +228,9 @@ namespace WhisperSubs.Controller
                     var item = libraryManager.GetItemById(guid);
                     if (item == null) continue;
 
-                    // Reserve the key so a startup re-scan won't double-queue this; restore is authoritative.
-                    TryReserve(DedupKey(item.Id, entry.Language, entry.Force));
+                    // Skip duplicates: a queue.json containing the same (item, language, force) more
+                    // than once must not restore and re-run every copy — de-dup the restored set too.
+                    if (!TryReserve(DedupKey(item.Id, entry.Language, entry.Force))) continue;
                     _priorityQueue.Enqueue(new SubtitleWorkItem
                     {
                         Item = item,

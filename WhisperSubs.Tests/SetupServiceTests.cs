@@ -228,6 +228,15 @@ public class SetupServiceTests
     }
 
     [Fact]
+    public void CpuInfoHasAvx2_Avx2AsSubstringOfLongerToken_ReturnsFalse()
+    {
+        // Pins exact-token matching: a longer token that merely contains "avx2" (with no bare
+        // "avx2" token present) must NOT match. Guards against a regression to Contains("avx2").
+        var noBareToken = "flags\t\t: fpu sse2 avx2vnni avx512f\n";
+        Assert.False(WhisperSetupService.CpuInfoHasAvx2(noBareToken));
+    }
+
+    [Fact]
     public void Constructor_SetsDataPath()
     {
         var logger = new Microsoft.Extensions.Logging.Abstractions.NullLogger<WhisperSetupService>();
