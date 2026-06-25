@@ -139,6 +139,7 @@ namespace WhisperSubs.Setup
                 ModelPath = configModelValid ? config.WhisperModelPath : autoModelPath,
                 Platform = GetPlatformIdentifier(),
                 SetupComplete = binaryOk && modelOk,
+                InstalledVariant = config.WhisperBinaryVariant,
                 Gpu = DetectGpu()
             };
         }
@@ -525,6 +526,9 @@ namespace WhisperSubs.Setup
                     {
                         var config = Plugin.Instance.Configuration;
                         config.WhisperBinaryPath = BinaryPath;
+                        // Persist the variant that actually validated (after any fallback walk) so the
+                        // setup page can re-offer it instead of re-defaulting to the recommendation.
+                        config.WhisperBinaryVariant = currentVariant;
                         Plugin.Instance.SaveConfiguration();
 
                         lock (_lock)
@@ -881,6 +885,7 @@ namespace WhisperSubs.Setup
         public string? ModelPath { get; set; }
         public string Platform { get; set; } = "";
         public bool SetupComplete { get; set; }
+        public string InstalledVariant { get; set; } = "";
         public GpuInfo Gpu { get; set; } = new();
     }
 

@@ -13,6 +13,7 @@ public class ConfigurationTests
 
         Assert.Equal("", config.WhisperModelPath);
         Assert.Equal("", config.WhisperBinaryPath);
+        Assert.Equal("", config.WhisperBinaryVariant);
         Assert.False(config.EnableAutoGeneration);
         Assert.Equal("auto", config.DefaultLanguage);
         Assert.Equal(SubtitleMode.Full, config.SubtitleMode);

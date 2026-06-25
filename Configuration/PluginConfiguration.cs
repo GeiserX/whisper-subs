@@ -7,6 +7,15 @@ namespace WhisperSubs.Configuration
     {
         public string WhisperModelPath { get; set; } = "";
         public string WhisperBinaryPath { get; set; } = "";
+
+        /// <summary>
+        /// The whisper-cli binary variant that was actually downloaded and validated (e.g. "vulkan",
+        /// "vulkan-noavx", "cpu", "noavx"). Persisted so the setup page re-offers the installed variant
+        /// instead of silently re-defaulting the dropdown to the GPU recommendation on every load,
+        /// which could overwrite a deliberately-chosen compatibility build. (Issue #95 follow-up.)
+        /// </summary>
+        public string WhisperBinaryVariant { get; set; } = "";
+
         public bool EnableAutoGeneration { get; set; } = false;
 
         /// <summary>
