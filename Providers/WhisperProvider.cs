@@ -190,34 +190,9 @@ namespace WhisperSubs.Providers
                 if (process.ExitCode != 0)
                 {
                     var stderr = errorBuilder.ToString();
-
-                    // Exit 127 = dynamic linker couldn't load a shared library. Surface a clear,
-                    // actionable message instead of a raw dump (the binary itself is missing a runtime dep).
-                    if (process.ExitCode == 127)
-                    {
-                        var match = Regex.Match(stderr, @"error while loading shared libraries:\s*(\S+?):");
-                        var lib = match.Success ? match.Groups[1].Value : "a shared library";
-                        throw new InvalidOperationException(
-                            $"whisper-cli could not start: missing {lib}. The binary requires a system library " +
-                            $"that isn't present in this container. Install it (e.g. 'apt install libgomp1' for " +
-                            $"libgomp.so.1) or switch to a binary variant that doesn't need it. Raw error: {stderr.Trim()}");
-                    }
-
-                    // Exit 132 = SIGILL (illegal instruction): the binary used a CPU instruction set
-                    // (e.g. AVX) this CPU doesn't support. The "noavx" (Compatibility) variant is built
-                    // for these CPUs. 134 = SIGABRT, 135 = SIGBUS are adjacent hardware/ABI crashes.
-                    if (process.ExitCode == 132 || process.ExitCode == 134 || process.ExitCode == 135)
-                    {
-                        throw new InvalidOperationException(
-                            "whisper-cli crashed on launch with an illegal-instruction error (exit " +
-                            $"{process.ExitCode}). This CPU likely lacks an instruction set (such as AVX) that " +
-                            "this binary was built for. Re-download the binary and choose the " +
-                            "\"CPU (Compatibility)\" / noavx variant on the plugin setup page, which is built " +
-                            $"for CPUs without AVX. Raw error: {stderr.Trim()}");
-                    }
-
-                    throw new InvalidOperationException(
-                        $"Whisper process failed with exit code {process.ExitCode}. Error: {stderr}");
+                    var failure = DescribeWhisperExitFailure(process.ExitCode, stderr);
+                    if (failure != null) throw new InvalidOperationException(failure);
+                    throw new InvalidOperationException($"Whisper process failed with exit code {process.ExitCode}. Error: {stderr}");
                 }
 
                 if (File.Exists(tempSrtPath))
@@ -330,6 +305,12 @@ namespace WhisperSubs.Providers
 
             // Flush async stdout/stderr pipe buffers
             process.WaitForExit();
+
+            // A crash here (e.g. SIGILL/exit 132 on a non-AVX2 CPU running an AVX2 build) produces
+            // truncated output and would otherwise be misreported as "could not detect language".
+            // Surface the precise, actionable cause first — same diagnosis as the transcription path.
+            var exitFailure = DescribeWhisperExitFailure(process.ExitCode, errorBuilder.ToString());
+            if (exitFailure != null) throw new InvalidOperationException(exitFailure);
 
             var allOutput = outputBuilder.ToString() + "\n" + errorBuilder.ToString();
 
@@ -675,6 +656,30 @@ namespace WhisperSubs.Providers
             var ms = totalMs % 1000;
 
             return $"{h:D2}:{m:D2}:{s:D2},{ms:D3}";
+        }
+
+        // Maps a non-zero whisper-cli exit code to an actionable error message, or null if the code
+        // is not a known fatal-launch failure. Shared by transcription and language detection so both
+        // give the same precise diagnosis (e.g. a SIGILL on a non-AVX2 CPU) instead of a generic error.
+        internal static string? DescribeWhisperExitFailure(int exitCode, string stderr)
+        {
+            if (exitCode == 127)
+            {
+                var match = Regex.Match(stderr ?? string.Empty, @"error while loading shared libraries:\s*(\S+?):");
+                var lib = match.Success ? match.Groups[1].Value : "a shared library";
+                return $"whisper-cli could not start: missing {lib}. The binary requires a system library " +
+                       $"that isn't present in this container. Install it (e.g. 'apt install libgomp1' for " +
+                       $"libgomp.so.1) or switch to a binary variant that doesn't need it. Raw error: {(stderr ?? string.Empty).Trim()}";
+            }
+            if (exitCode == 132 || exitCode == 134 || exitCode == 135)
+            {
+                return "whisper-cli crashed on launch with an illegal-instruction error (exit " +
+                       $"{exitCode}). This CPU likely lacks an instruction set (such as AVX2) that " +
+                       "this binary was built for. Re-download the binary and choose the " +
+                       "\"CPU (Compatibility)\" / noavx variant on the plugin setup page, which is built " +
+                       $"for CPUs without AVX2. Raw error: {(stderr ?? string.Empty).Trim()}";
+            }
+            return null;
         }
 
         /// <summary>
