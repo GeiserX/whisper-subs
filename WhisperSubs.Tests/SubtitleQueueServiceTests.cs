@@ -133,6 +133,53 @@ public class SubtitleQueueServiceTests
         _ = queue.LastError; // no throw; may be null or a prior error
         Assert.True(true);
     }
+
+    // ── Enqueue de-dup (#94): same item + language + force collapses to one queued entry ──
+
+    [Fact]
+    public void DedupKey_SameInputs_AreEqual_AndCaseInsensitiveLanguage()
+    {
+        // Language is normalized to lowercase so "EN" and "en" map to the same unit of work.
+        var id = Guid.NewGuid();
+        Assert.Equal(
+            SubtitleQueueService.DedupKey(id, "EN", false),
+            SubtitleQueueService.DedupKey(id, "en", false));
+    }
+
+    [Fact]
+    public void DedupKey_DiffersByForce()
+    {
+        // A forced (manual) request is a distinct unit from a non-forced one.
+        var id = Guid.NewGuid();
+        Assert.NotEqual(
+            SubtitleQueueService.DedupKey(id, "en", true),
+            SubtitleQueueService.DedupKey(id, "en", false));
+    }
+
+    [Fact]
+    public void DedupKey_DiffersByItem()
+    {
+        // Different items never collapse onto each other.
+        Assert.NotEqual(
+            SubtitleQueueService.DedupKey(Guid.NewGuid(), "en", false),
+            SubtitleQueueService.DedupKey(Guid.NewGuid(), "en", false));
+    }
+
+    [Fact]
+    public void TryReserve_SecondCallSameKey_ReturnsFalse_ThenReleaseAllowsReserve()
+    {
+        // Reserve once, the duplicate is rejected; after Release the key is requestable again.
+        // Unique GUID keeps this isolated from the shared singleton's other in-flight keys.
+        var queue = SubtitleQueueService.Instance;
+        var k = SubtitleQueueService.DedupKey(Guid.NewGuid(), "en", false);
+
+        Assert.True(queue.TryReserve(k));
+        Assert.False(queue.TryReserve(k));
+        queue.Release(k);
+        Assert.True(queue.TryReserve(k));
+
+        queue.Release(k); // clean up so we don't leak the key into other tests
+    }
 }
 
 public class QueueEntryTests
