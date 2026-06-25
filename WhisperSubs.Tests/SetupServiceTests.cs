@@ -180,42 +180,60 @@ public class SetupServiceTests
     [InlineData("vulkan-noavx", false)]
     [InlineData("rocm", false)]
     [InlineData("unknown", false)]
-    public void VariantRequiresAvx_OnlyNonNoavxBuilds(string variant, bool requiresAvx)
+    public void VariantRequiresAvx2_OnlyNonNoavxBuilds(string variant, bool requiresAvx)
     {
-        Assert.Equal(requiresAvx, WhisperSetupService.VariantRequiresAvx(variant));
+        Assert.Equal(requiresAvx, WhisperSetupService.VariantRequiresAvx2(variant));
     }
 
     [Fact]
-    public void CpuInfoHasAvx_DetectsAvxFlag()
+    public void CpuInfoHasAvx2_DetectsAvx2Flag()
     {
-        // Real /proc/cpuinfo "flags" line containing avx
-        var withAvx = "processor\t: 0\nflags\t\t: fpu vme de pse tsc msr pae mce cx8 sse sse2 avx avx2 fma\n";
-        Assert.True(WhisperSetupService.CpuInfoHasAvx(withAvx));
+        // Real /proc/cpuinfo "flags" line containing avx2
+        var withAvx2 = "processor\t: 0\nflags\t\t: fpu vme de pse tsc msr pae mce cx8 sse sse2 avx avx2 fma f16c\n";
+        Assert.True(WhisperSetupService.CpuInfoHasAvx2(withAvx2));
     }
 
     [Fact]
-    public void CpuInfoHasAvx_NoAvxFlag_ReturnsFalse()
+    public void CpuInfoHasAvx2_NoAvx2Flag_ReturnsFalse()
     {
-        // A CPU that lacks AVX (e.g. older Atom/Celeron common in NAS boxes)
+        // A CPU that lacks AVX2 (e.g. older Atom/Celeron common in NAS boxes) — has neither avx nor avx2
         var noAvx = "processor\t: 0\nflags\t\t: fpu vme de pse tsc msr pae mce cx8 sse sse2 sse4_1 sse4_2\n";
-        Assert.False(WhisperSetupService.CpuInfoHasAvx(noAvx));
+        Assert.False(WhisperSetupService.CpuInfoHasAvx2(noAvx));
     }
 
     [Fact]
-    public void CpuInfoHasAvx_DoesNotMatchAvxSubstrings()
+    public void CpuInfoHasAvx2_DoesNotMatchSubstrings()
     {
-        // Must match the whole "avx" token, not "avx512vl" alone implying nothing about plain avx.
-        // A line with only avx512 tokens (no bare "avx") should NOT report avx.
+        // Must match the whole "avx2" token. A line with only avx512 tokens (no bare "avx2")
+        // should NOT report avx2.
         var only512 = "flags\t\t: fpu sse2 avx512f avx512dq avx512bw\n";
-        Assert.False(WhisperSetupService.CpuInfoHasAvx(only512));
+        Assert.False(WhisperSetupService.CpuInfoHasAvx2(only512));
     }
 
     [Theory]
     [InlineData("")]
     [InlineData("processor : 0\nmodel name : Some CPU\n")]  // no flags line at all
-    public void CpuInfoHasAvx_EmptyOrNoFlags_ReturnsFalse(string content)
+    public void CpuInfoHasAvx2_EmptyOrNoFlags_ReturnsFalse(string content)
     {
-        Assert.False(WhisperSetupService.CpuInfoHasAvx(content));
+        Assert.False(WhisperSetupService.CpuInfoHasAvx2(content));
+    }
+
+    [Fact]
+    public void CpuInfoHasAvx2_AvxWithoutAvx2_ReturnsFalse()
+    {
+        // Issue #95: Intel Xeon E5-2687W v2 (Ivy Bridge-EP) has AVX but NOT AVX2.
+        // It must be classified as NOT AVX2-capable so it is steered to a *-noavx build.
+        var ivyBridge = "processor\t: 0\nflags\t\t: fpu vme de pse tsc msr sse sse2 ssse3 sse4_1 sse4_2 avx f16c rdrand\n";
+        Assert.False(WhisperSetupService.CpuInfoHasAvx2(ivyBridge));
+    }
+
+    [Fact]
+    public void CpuInfoHasAvx2_Avx2AsSubstringOfLongerToken_ReturnsFalse()
+    {
+        // Pins exact-token matching: a longer token that merely contains "avx2" (with no bare
+        // "avx2" token present) must NOT match. Guards against a regression to Contains("avx2").
+        var noBareToken = "flags\t\t: fpu sse2 avx2vnni avx512f\n";
+        Assert.False(WhisperSetupService.CpuInfoHasAvx2(noBareToken));
     }
 
     [Fact]

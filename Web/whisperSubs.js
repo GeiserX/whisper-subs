@@ -58,7 +58,7 @@
             showToast('WhisperSubs: Queuing...');
             generateSubtitles(itemId).then(function (response) {
                 var data = typeof response === 'string' ? JSON.parse(response) : response;
-                var count = data.count || 1;
+                var count = data && data.queued != null ? data.queued : (data && data.count) || 1;
                 showToast('WhisperSubs: Queued ' + count + ' item(s) for subtitle generation');
             }).catch(function () {
                 showToast('WhisperSubs: Failed to queue generation');
@@ -128,27 +128,107 @@
 
     // Capture clicks on three-dot menu triggers everywhere
     document.addEventListener('click', function (e) {
-        var trigger = e.target.closest('.btnMoreCommands, [data-action="menu"]');
-        if (!trigger) return;
+        try {
+            if (!e.target || e.target.nodeType !== 1) return;
+            var trigger = e.target.closest('.btnMoreCommands, [data-action="menu"]');
+            if (!trigger) return;
 
-        // Try to get item ID from the nearest card/item element
-        var card = trigger.closest('[data-id]');
-        if (card) {
-            pendingItemId = card.getAttribute('data-id');
-        } else {
-            // Detail page fallback: extract from URL hash
-            var hash = window.location.hash || '';
-            var q = hash.indexOf('?');
-            if (q !== -1) {
-                var params = new URLSearchParams(hash.substring(q + 1));
-                pendingItemId = params.get('id');
+            // Try to get item ID from the nearest card/item element
+            var card = trigger.closest('[data-id]');
+            if (card) {
+                pendingItemId = card.getAttribute('data-id');
+            } else {
+                // Detail page fallback: extract from URL hash
+                var hash = window.location.hash || '';
+                var q = hash.indexOf('?');
+                if (q !== -1) {
+                    var params = new URLSearchParams(hash.substring(q + 1));
+                    pendingItemId = params.get('id');
+                }
             }
-        }
 
-        if (pendingItemId) {
-            watchForActionSheet();
+            if (pendingItemId) {
+                watchForActionSheet();
+            }
+        } catch (err) {
+            return;
         }
     }, true); // capture phase to run before Jellyfin's handler
+
+    // Inject a visible "Generate Subtitles" button onto the item detail page (issue #94),
+    // in addition to the three-dot context-menu item above. Fail-silent: never throw into the host page.
+    function injectDetailButton() {
+        try {
+            var page = document.querySelector('.libraryPage:not(.hide), .itemDetailPage:not(.hide), .detailPage:not(.hide)');
+            if (!page) return;
+
+            // Read the item id from the URL hash at this moment into a LOCAL var
+            // (deliberately NOT the module-global pendingItemId, which tracks the ⋮ menu target).
+            var hash = window.location.hash || '';
+            var m = hash.match(/[?&]id=([^&]+)/);
+            if (!m) return;
+            var itemId = decodeURIComponent(m[1]);
+
+            // Different Jellyfin versions use different button-row classes.
+            var row = page.querySelector('.mainDetailButtons, .detailButtons, .itemActionsBottom, .detailButtonsContainer');
+            if (!row) return;
+
+            if (row.querySelector('.btnWhisperSubsDetail')) return;
+
+            checkAdmin().then(function (admin) {
+                if (!admin) return;
+                if (row.querySelector('.btnWhisperSubsDetail')) return; // re-check after async
+
+                var btn = document.createElement('button');
+                btn.setAttribute('is', 'emby-button');
+                btn.type = 'button';
+                btn.className = 'button-flat detailButton emby-button btnWhisperSubsDetail';
+                btn.title = 'Generate subtitles';
+                btn.innerHTML =
+                    '<div class="detailButton-content">' +
+                        '<span class="material-icons detailButton-icon subtitles" aria-hidden="true"></span>' +
+                        '<span class="detailButton-icon-text">Subtitles</span>' +
+                    '</div>';
+
+                btn.addEventListener('click', function (e) {
+                    e.preventDefault();
+                    if (btn.disabled) return;
+                    btn.disabled = true;
+                    showToast('WhisperSubs: Queuing...');
+                    generateSubtitles(itemId).then(function (response) {
+                        var data = typeof response === 'string' ? JSON.parse(response) : response;
+                        var n = data && data.queued != null ? data.queued : (data && data.count) || 1;
+                        showToast('WhisperSubs: Queued ' + n + ' item(s) for subtitle generation');
+                    }).catch(function () {
+                        showToast('WhisperSubs: Failed to queue generation');
+                    }).then(function () {
+                        setTimeout(function () { btn.disabled = false; }, 3000); // debounce double-clicks
+                    });
+                });
+
+                row.appendChild(btn);
+            });
+        } catch (err) {
+            console.debug('[WhisperSubs] injectDetailButton error', err);
+            return;
+        }
+    }
+
+    // Jellyfin rebuilds the detail DOM on each SPA navigation, so re-run on nav + render.
+    var detailInjectTimer = null;
+    function scheduleDetailInject() {
+        // Cheap early-exit: this fires on every DOM mutation via the body observer, so on non-detail
+        // pages (library grids, home, search) do almost nothing. A detail page always carries an item
+        // id in the hash; if there's none, skip without touching the timer.
+        if ((window.location.hash || '').indexOf('id=') === -1) return;
+        if (detailInjectTimer) clearTimeout(detailInjectTimer);
+        detailInjectTimer = setTimeout(injectDetailButton, 150);
+    }
+    window.addEventListener('hashchange', scheduleDetailInject);
+    window.addEventListener('popstate', scheduleDetailInject);
+    var detailObserver = new MutationObserver(scheduleDetailInject);
+    detailObserver.observe(document.body, { childList: true, subtree: true });
+    scheduleDetailInject(); // initial attempt
 
     console.debug('[WhisperSubs] Context menu integration loaded');
 })();

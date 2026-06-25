@@ -41,6 +41,7 @@ namespace WhisperSubs.Controller
         public static SubtitleQueueService Instance => _instance ??= new SubtitleQueueService();
 
         private readonly ConcurrentQueue<SubtitleWorkItem> _priorityQueue = new();
+        private readonly ConcurrentDictionary<string, byte> _inFlight = new();
         private int _isDraining;
         private string? _currentItemName;
         private int _processedCount;
@@ -137,6 +138,17 @@ namespace WhisperSubs.Controller
             Interlocked.Exchange(ref _taskIsRunning, 0);
         }
 
+        // De-dup key for a queued unit of work. Same item + language + force collapses to one entry,
+        // so double-clicks and overlapping season-bulk requests don't queue the same work twice.
+        internal static string DedupKey(Guid itemId, string language, bool force) =>
+            $"{itemId:N}|{(language ?? string.Empty).ToLowerInvariant()}|{(force ? "1" : "0")}";
+
+        // Reserve a key before enqueuing; returns false if an identical unit is already queued/in-flight.
+        internal bool TryReserve(string key) => _inFlight.TryAdd(key, 0);
+
+        // Release after processing (or on failure/cancel) so the same work can be requested again later.
+        internal void Release(string key) => _inFlight.TryRemove(key, out _);
+
         [ExcludeFromCodeCoverage(Justification = "Requires Plugin.Instance")]
         private static string QueueFilePath
         {
@@ -150,8 +162,10 @@ namespace WhisperSubs.Controller
         }
 
         [ExcludeFromCodeCoverage(Justification = "Requires BaseItem + Plugin.Instance for persistence")]
-        public void Enqueue(BaseItem item, string language, bool force = false)
+        public bool Enqueue(BaseItem item, string language, bool force = false)
         {
+            var key = DedupKey(item.Id, language, force);
+            if (!TryReserve(key)) return false; // identical work already queued / in flight
             _priorityQueue.Enqueue(new SubtitleWorkItem
             {
                 Item = item,
@@ -160,12 +174,20 @@ namespace WhisperSubs.Controller
                 Force = force
             });
             PersistQueue();
+            return true;
         }
 
         [ExcludeFromCodeCoverage(Justification = "Requires BaseItem + Plugin.Instance for persistence")]
         public Task EnqueuePriorityAsync(BaseItem item, string language)
         {
             var tcs = new TaskCompletionSource<bool>();
+            // De-dup parity with Enqueue: priority items are non-forced. If identical work is already
+            // in flight, don't queue a duplicate — complete with false so an awaiter isn't left hanging.
+            if (!TryReserve(DedupKey(item.Id, language, false)))
+            {
+                tcs.SetResult(false);
+                return tcs.Task;
+            }
             _priorityQueue.Enqueue(new SubtitleWorkItem
             {
                 Item = item,
@@ -206,6 +228,9 @@ namespace WhisperSubs.Controller
                     var item = libraryManager.GetItemById(guid);
                     if (item == null) continue;
 
+                    // Skip duplicates: a queue.json containing the same (item, language, force) more
+                    // than once must not restore and re-run every copy — de-dup the restored set too.
+                    if (!TryReserve(DedupKey(item.Id, entry.Language, entry.Force))) continue;
                     _priorityQueue.Enqueue(new SubtitleWorkItem
                     {
                         Item = item,
@@ -333,6 +358,10 @@ namespace WhisperSubs.Controller
                     workItem.Completion?.TrySetException(ex);
                     logger.LogError(ex, "[Queue] Failed: {ItemName}", workItem.Item.Name);
                 }
+                finally
+                {
+                    Release(DedupKey(workItem.Item.Id, workItem.Language, workItem.Force));
+                }
             }
             logger.LogInformation("[Queue] Drain complete. Processed {Count} items total ({Failed} failed).",
                 _processedCount, _failedCount);
@@ -380,6 +409,10 @@ namespace WhisperSubs.Controller
                     _lastError = $"{workItem.Item.Name}: {ex.Message}";
                     workItem.Completion?.TrySetException(ex);
                     logger.LogError(ex, "[Priority] Failed: {ItemName}", workItem.Item.Name);
+                }
+                finally
+                {
+                    Release(DedupKey(workItem.Item.Id, workItem.Language, workItem.Force));
                 }
             }
             _currentItemName = null;

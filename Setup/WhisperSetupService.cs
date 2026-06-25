@@ -460,16 +460,18 @@ namespace WhisperSubs.Setup
             };
             info.HasOpenMP = Array.Exists(openmpPaths, File.Exists);
 
-            // CPU AVX support. Our x64 cpu/cuda12/vulkan binaries are compiled with AVX/AVX2;
+            // CPU AVX2 support. Our x64 cpu/cuda12/vulkan binaries are compiled with AVX2+FMA+F16C;
             // on a CPU that lacks those instructions they crash with SIGILL (illegal instruction,
             // exit 132). Only the *-noavx builds (SSE4.2) are safe there. ARM has no AVX concept,
-            // and its binaries are built without it, so treat ARM as "AVX not required" (HasAvx=true
-            // semantically means "the AVX-requiring builds are safe to run").
+            // and its binaries are built without it, so treat ARM as "AVX2 not required". The
+            // GpuInfo.HasAvx property name is the JSON/UI contract (read by Web/configPage.html);
+            // it semantically means "the AVX2-class instructions the prebuilt binaries require are
+            // present" (true also on ARM, where those builds are safe to run).
             info.HasAvx = RuntimeInformation.OSArchitecture == Architecture.Arm64
-                || DetectCpuHasAvx();
+                || DetectCpuHasAvx2();
 
             // Recommend variant based on detection — require both device AND userspace library.
-            // GPU binaries are also AVX-compiled, so a CPU without AVX must use a *-noavx variant.
+            // GPU binaries are also AVX2-compiled, so a CPU without AVX2 must use a *-noavx variant.
             if (info.HasNvidia && info.HasCudaLibrary) info.RecommendedVariant = info.HasAvx ? "cuda12" : "cuda12-noavx";
             else if (info.HasAmdGpu && info.HasRocmLibrary) info.RecommendedVariant = "rocm";
             else if (info.HasRenderDevice && info.HasVulkanLibrary) info.RecommendedVariant = info.HasAvx ? "vulkan" : "vulkan-noavx";
@@ -662,16 +664,16 @@ namespace WhisperSubs.Setup
         [ExcludeFromCodeCoverage(Justification = "Spawns binary process for validation")]
         private string? ValidateBinary(string binaryPath, string variant)
         {
-            // AVX gate: `--help` exits before any AVX instruction executes, so an AVX-compiled
-            // binary on a non-AVX CPU would *pass* the probe and only crash later during real
+            // AVX2 gate: `--help` exits before any AVX2 instruction executes, so an AVX2-compiled
+            // binary on a non-AVX2 CPU would *pass* the probe and only crash later during real
             // transcription (SIGILL / exit 132). Catch it here so the cpu->noavx fallback fires
             // at download time. ARM hosts have no AVX concept and their binaries don't use it.
-            if (VariantRequiresAvx(variant)
+            if (VariantRequiresAvx2(variant)
                 && RuntimeInformation.OSArchitecture != Architecture.Arm64
-                && !DetectCpuHasAvx())
+                && !DetectCpuHasAvx2())
             {
-                _logger.LogWarning("Variant '{Variant}' requires AVX but this CPU lacks it — will fall back", variant);
-                return "This CPU does not support AVX instructions, which this binary requires. "
+                _logger.LogWarning("Variant '{Variant}' requires AVX2 but this CPU lacks it — will fall back", variant);
+                return "This CPU does not support AVX2 instructions, which this binary requires. "
                      + "Falling back to the compatibility (noavx) build.";
             }
 
@@ -757,21 +759,24 @@ namespace WhisperSubs.Setup
         };
 
         /// <summary>
-        /// Whether the given variant's prebuilt binary was compiled with AVX/AVX2 instructions.
-        /// These crash with SIGILL (exit 132) on CPUs that lack AVX. The "*-noavx" builds use
+        /// Whether the given variant's prebuilt binary was compiled with AVX2 instructions.
+        /// These crash with SIGILL (exit 132) on CPUs that lack AVX2. The "*-noavx" builds use
         /// only SSE4.2 and are safe everywhere. ARM builds have no AVX and are always safe.
         /// </summary>
-        internal static bool VariantRequiresAvx(string variant) => variant switch
+        internal static bool VariantRequiresAvx2(string variant) => variant switch
         {
             "cpu" or "cuda12" or "vulkan" => true,
             _ => false   // noavx, cuda12-noavx, vulkan-noavx, rocm, unknown
         };
 
         /// <summary>
-        /// Parses Linux /proc/cpuinfo content and returns true if the CPU advertises AVX.
-        /// Pure/testable — the file read happens in <see cref="DetectCpuHasAvx"/>.
+        /// Parses Linux /proc/cpuinfo content and returns true if the CPU advertises AVX2.
+        /// The prebuilt cpu/cuda12/vulkan binaries are compiled with AVX2+FMA+F16C, and AVX2 is the
+        /// discriminator: every x86 CPU with AVX2 also has FMA and F16C, so checking AVX2 alone is
+        /// sufficient (and a CPU with plain AVX but no AVX2 — e.g. Ivy Bridge — must NOT pass).
+        /// Pure/testable — the file read happens in <see cref="DetectCpuHasAvx2"/>.
         /// </summary>
-        internal static bool CpuInfoHasAvx(string cpuInfoContent)
+        internal static bool CpuInfoHasAvx2(string cpuInfoContent)
         {
             if (string.IsNullOrEmpty(cpuInfoContent)) return false;
 
@@ -779,30 +784,31 @@ namespace WhisperSubs.Setup
             {
                 if (!line.StartsWith("flags", StringComparison.OrdinalIgnoreCase)) continue;
 
-                // flags are space-separated; match "avx" as a whole token (avoid matching "avx512..."
-                // substrings only — though those imply avx too, an exact-token check is clearest).
+                // flags are space-separated; match "avx2" as a whole token (an exact-token check
+                // avoids matching unrelated substrings such as "avx512..." that don't contain a
+                // bare "avx2" token).
                 var tokens = line.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
                 foreach (var token in tokens)
                 {
-                    if (string.Equals(token, "avx", StringComparison.OrdinalIgnoreCase)) return true;
+                    if (string.Equals(token, "avx2", StringComparison.OrdinalIgnoreCase)) return true;
                 }
             }
             return false;
         }
 
         /// <summary>
-        /// Reads /proc/cpuinfo and reports whether the host CPU supports AVX. Returns true on any
+        /// Reads /proc/cpuinfo and reports whether the host CPU supports AVX2. Returns true on any
         /// non-Linux platform or read failure (fail-open: don't wrongly steer users away from the
         /// faster build when we can't tell — the download-time validation still catches a real crash).
         /// </summary>
         [ExcludeFromCodeCoverage(Justification = "Reads host /proc/cpuinfo")]
-        private static bool DetectCpuHasAvx()
+        private static bool DetectCpuHasAvx2()
         {
             try
             {
                 if (!RuntimeInformation.IsOSPlatform(OSPlatform.Linux)) return true;
                 if (!File.Exists("/proc/cpuinfo")) return true;
-                return CpuInfoHasAvx(File.ReadAllText("/proc/cpuinfo"));
+                return CpuInfoHasAvx2(File.ReadAllText("/proc/cpuinfo"));
             }
             catch
             {
@@ -887,8 +893,11 @@ namespace WhisperSubs.Setup
         public bool HasRenderDevice { get; set; }
         public bool HasVulkanLibrary { get; set; }
         public bool HasOpenMP { get; set; }
-        /// <summary>True if the CPU supports AVX (or is ARM, where AVX is N/A). When false, only
-        /// the "*-noavx" binary variants will run — the others crash with SIGILL.</summary>
+        /// <summary>True if the CPU supports AVX2 (or is ARM, where AVX is N/A). When false, only
+        /// the "*-noavx" binary variants will run — the others (built with AVX2) crash with SIGILL.
+        /// The property name stays "HasAvx" because it is the JSON/UI contract read by
+        /// Web/configPage.html; it semantically means "the AVX2-class instructions the prebuilt
+        /// binaries require are present."</summary>
         public bool HasAvx { get; set; } = true;
         public string RecommendedVariant { get; set; } = "cpu";
     }
