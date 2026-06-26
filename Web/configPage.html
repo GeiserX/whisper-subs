@@ -500,7 +500,14 @@
                         icon.style.color = '#CC3333';
                     }
                     text.textContent = s.Message || '';
-                    if (path) { path.textContent = s.IndexHtmlPath ? ('index.html: ' + s.IndexHtmlPath) : ''; }
+                    if (path) {
+                        // Surface the real last-injection reason (e.g. "no </head> tag in index.html")
+                        // so a state the generic message can't distinguish isn't a dead-end. (Issue #94.)
+                        var parts = [];
+                        if (s.IndexHtmlPath) { parts.push('index.html: ' + s.IndexHtmlPath); }
+                        if (s.LastStartupOutcome) { parts.push('last injection result: ' + s.LastStartupOutcome); }
+                        path.textContent = parts.join('  ·  ');
+                    }
                 },
 
                 reinjectScript: function () {

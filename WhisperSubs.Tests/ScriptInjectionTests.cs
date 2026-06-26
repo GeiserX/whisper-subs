@@ -92,6 +92,15 @@ public class ScriptInjectionTests
     }
 
     [Fact]
+    public void DescribeInjection_TagPresent_IsOkEvenWhenNotWritable()
+    {
+        // "ok" is keyed on the tag being present, NOT on writability — once injected, a read-only
+        // root is fine. A future refactor that gates "ok" on writable must fail this.
+        var (level, _) = Plugin.DescribeInjection(indexExists: true, scriptTagPresent: true, writable: false);
+        Assert.Equal("ok", level);
+    }
+
+    [Fact]
     public void DescribeInjection_PresentButNotWritable_IsError_AndMentionsWritable()
     {
         var (level, message) = Plugin.DescribeInjection(indexExists: true, scriptTagPresent: false, writable: false);

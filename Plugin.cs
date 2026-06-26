@@ -89,21 +89,21 @@ namespace WhisperSubs
                 var (outcome, newHtml) = ComputeInjection(File.ReadAllText(indexPath));
                 switch (outcome)
                 {
+                    case ScriptInjectionOutcome.Injected:
+                        File.WriteAllText(indexPath, newHtml!);
+                        LastInjectionOutcome = "injected";
+                        _logger.LogInformation("WhisperSubs: injected client script into index.html");
+                        return ScriptInjectionOutcome.Injected;
+
                     case ScriptInjectionOutcome.AlreadyPresent:
                         LastInjectionOutcome = "already injected";
                         _logger.LogDebug("WhisperSubs: script tag already present in index.html");
                         return outcome;
 
-                    case ScriptInjectionOutcome.NoHeadTag:
+                    default: // NoHeadTag — ComputeInjection never returns IndexNotFound/WriteFailed here
                         LastInjectionOutcome = "no </head> tag in index.html";
                         _logger.LogWarning("WhisperSubs: could not find </head> in index.html, skipping script injection");
                         return outcome;
-
-                    default:
-                        File.WriteAllText(indexPath, newHtml!);
-                        LastInjectionOutcome = "injected";
-                        _logger.LogInformation("WhisperSubs: injected client script into index.html");
-                        return ScriptInjectionOutcome.Injected;
                 }
             }
             catch (Exception ex)
@@ -204,9 +204,10 @@ namespace WhisperSubs
             if (scriptTagPresent)
             {
                 return ("ok",
-                    "The WhisperSubs client script is injected. If you still don't see the \"Generate Subtitles\" " +
-                    "button or menu item, hard-refresh your browser (Ctrl/Cmd+Shift+R) and make sure you're signed in " +
-                    "as an administrator — both are admin-only.");
+                    "The WhisperSubs client script is injected. If you don't see it, hard-refresh your browser " +
+                    "(Ctrl/Cmd+Shift+R) and make sure you're signed in as an administrator — it's admin-only. The " +
+                    "\"Generate Subtitles\" entry in an item's three-dot (⋮) menu is the most reliable; the button on " +
+                    "the detail page depends on your Jellyfin theme/version, so if only the page button is missing, use the menu item.");
             }
 
             if (!writable)
@@ -228,7 +229,9 @@ namespace WhisperSubs
         {
             try
             {
-                using var fs = new FileStream(path, FileMode.Open, FileAccess.ReadWrite);
+                // FileShare.ReadWrite so a concurrent reader/writer (Jellyfin serving the page, or a
+                // racing re-inject) doesn't make this probe spuriously report "not writable".
+                using var fs = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite);
                 return true;
             }
             catch
