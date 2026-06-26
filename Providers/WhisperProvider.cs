@@ -20,6 +20,7 @@ namespace WhisperSubs.Providers
         private readonly int _threadCount;
         private readonly string _customArgs;
         private readonly string _vadModelPath;
+        private readonly string _detectionModelPath;
         private string? _resolvedExecutable;
 
         private static readonly HashSet<string> DeniedArgs = new(StringComparer.OrdinalIgnoreCase)
@@ -51,7 +52,7 @@ namespace WhisperSubs.Providers
         /// </summary>
         public bool UsesVad => !string.IsNullOrEmpty(_vadModelPath) && File.Exists(_vadModelPath);
 
-        public WhisperProvider(ILogger<WhisperProvider> logger, string modelPath, string binaryPath = "", int threadCount = 0, string customArgs = "", string vadModelPath = "")
+        public WhisperProvider(ILogger<WhisperProvider> logger, string modelPath, string binaryPath = "", int threadCount = 0, string customArgs = "", string vadModelPath = "", string detectionModelPath = "")
         {
             _logger = logger;
             _modelPath = modelPath;
@@ -59,6 +60,41 @@ namespace WhisperSubs.Providers
             _threadCount = threadCount;
             _customArgs = customArgs ?? "";
             _vadModelPath = vadModelPath ?? "";
+            _detectionModelPath = detectionModelPath ?? "";
+        }
+
+        /// <summary>
+        /// Picks the model for per-chunk language detection: the dedicated small detection model when
+        /// it is present, else the transcription model (legacy behavior). A small model makes
+        /// --detect-language (an encoder-only pass) far cheaper, keeping forced-subtitle detection
+        /// under its per-chunk timeout on slow (no-AVX2) CPUs. Pure — existence is resolved by the
+        /// caller so this stays unit-testable. (Issue #95.)
+        /// </summary>
+        internal static string ChooseDetectionModel(string transcriptionModelPath, string? detectionModelPath, bool detectionModelExists)
+            => !string.IsNullOrEmpty(detectionModelPath) && detectionModelExists ? detectionModelPath! : transcriptionModelPath;
+
+        /// <summary>
+        /// Waits (bounded, ~120s) for the dedicated detection model to finish its background download
+        /// so the FIRST forced run uses the small fast model too — not just later runs. No-op when the
+        /// model is already present or none is configured. On timeout/cancel the caller proceeds and
+        /// detection falls back to the transcription model (legacy behavior). (Issue #95.)
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Bounded polling of a background file download")]
+        public async Task WaitForDetectionModelAsync(CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrEmpty(_detectionModelPath) || File.Exists(_detectionModelPath)) return;
+
+            _logger.LogInformation("Waiting up to 120s for the language-detection model to finish downloading...");
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(120);
+            while (DateTime.UtcNow < deadline && !File.Exists(_detectionModelPath))
+            {
+                try { await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken); }
+                catch (OperationCanceledException) { return; }
+            }
+
+            _logger.LogInformation(File.Exists(_detectionModelPath)
+                ? "Language-detection model is ready."
+                : "Language-detection model not ready in time; using the transcription model for detection this run.");
         }
 
         public async Task<string> TranscribeAsync(string audioPath, string language, CancellationToken cancellationToken, bool translate = false)
@@ -258,8 +294,14 @@ namespace WhisperSubs.Providers
                 WorkingDirectory = Path.GetDirectoryName(whisperExecutable) ?? ""
             };
 
+            // Use the dedicated small detection model when available (checked live so a model that
+            // finished downloading after construction is picked up mid-run); else fall back to the
+            // transcription model. This keeps per-chunk detection under the timeout on slow CPUs. (#95)
+            var detectionModel = ChooseDetectionModel(
+                _modelPath, _detectionModelPath,
+                !string.IsNullOrEmpty(_detectionModelPath) && File.Exists(_detectionModelPath));
             startInfo.ArgumentList.Add("-m");
-            startInfo.ArgumentList.Add(_modelPath);
+            startInfo.ArgumentList.Add(detectionModel);
             startInfo.ArgumentList.Add("-f");
             startInfo.ArgumentList.Add(audioPath);
             startInfo.ArgumentList.Add("-l");
@@ -294,7 +336,9 @@ namespace WhisperSubs.Providers
             try
             {
                 using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                timeoutCts.CancelAfter(TimeSpan.FromSeconds(120));
+                // Generous per-chunk cap: with the small detection model this is reached only on a
+                // pathologically slow host; it must not guillotine a legitimately slow detect. (#95)
+                timeoutCts.CancelAfter(TimeSpan.FromSeconds(300));
                 await process.WaitForExitAsync(timeoutCts.Token);
             }
             catch (OperationCanceledException)
