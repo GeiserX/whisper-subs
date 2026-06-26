@@ -230,5 +230,13 @@
     detailObserver.observe(document.body, { childList: true, subtree: true });
     scheduleDetailInject(); // initial attempt
 
-    console.debug('[WhisperSubs] Context menu integration loaded');
+    // Visible (console.log, not console.debug which browsers hide by default) so an admin can confirm
+    // in DevTools that the injected script actually loaded — and see the admin-gate result, since the
+    // "Generate Subtitles" button + menu item are admin-only. (Issue #94.)
+    console.log('[WhisperSubs] client script loaded');
+    checkAdmin().then(function (admin) {
+        console.log(admin
+            ? '[WhisperSubs] administrator confirmed — Generate Subtitles button + menu enabled'
+            : '[WhisperSubs] current user is NOT an administrator — the Generate Subtitles button and menu are admin-only and will not appear');
+    });
 })();
