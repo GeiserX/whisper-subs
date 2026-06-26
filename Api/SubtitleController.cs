@@ -507,6 +507,44 @@ namespace WhisperSubs.Api
         }
 
         /// <summary>
+        /// Reports whether the in-page client script is injected into Jellyfin's index.html, so an
+        /// admin can diagnose a missing "Generate Subtitles" button/menu without reading server logs.
+        /// </summary>
+        [HttpGet("Setup/InjectionStatus")]
+        [Authorize(Policy = "RequiresElevation")]
+        public ActionResult GetInjectionStatus()
+        {
+            try
+            {
+                return Ok(Plugin.Instance.GetInjectionStatus());
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error checking client-script injection status");
+                return StatusCode(500, new { error = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// Re-runs the index.html script injection on demand (config-page button), then returns the
+        /// fresh status — lets an admin fix a wiped/missing injection without restarting Jellyfin.
+        /// </summary>
+        [HttpPost("Setup/ReinjectScript")]
+        [Authorize(Policy = "RequiresElevation")]
+        public ActionResult ReinjectScript()
+        {
+            try
+            {
+                return Ok(Plugin.Instance.ReinjectScript());
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error re-injecting client script");
+                return StatusCode(500, new { error = ex.Message });
+            }
+        }
+
+        /// <summary>
         /// Lists whisper models available for download from HuggingFace.
         /// </summary>
         [HttpGet("Setup/AvailableModels")]
