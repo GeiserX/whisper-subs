@@ -73,6 +73,30 @@ namespace WhisperSubs.Providers
         internal static string ChooseDetectionModel(string transcriptionModelPath, string? detectionModelPath, bool detectionModelExists)
             => !string.IsNullOrEmpty(detectionModelPath) && detectionModelExists ? detectionModelPath! : transcriptionModelPath;
 
+        /// <summary>
+        /// Waits (bounded, ~120s) for the dedicated detection model to finish its background download
+        /// so the FIRST forced run uses the small fast model too — not just later runs. No-op when the
+        /// model is already present or none is configured. On timeout/cancel the caller proceeds and
+        /// detection falls back to the transcription model (legacy behavior). (Issue #95.)
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Bounded polling of a background file download")]
+        public async Task WaitForDetectionModelAsync(CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrEmpty(_detectionModelPath) || File.Exists(_detectionModelPath)) return;
+
+            _logger.LogInformation("Waiting up to 120s for the language-detection model to finish downloading...");
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(120);
+            while (DateTime.UtcNow < deadline && !File.Exists(_detectionModelPath))
+            {
+                try { await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken); }
+                catch (OperationCanceledException) { return; }
+            }
+
+            _logger.LogInformation(File.Exists(_detectionModelPath)
+                ? "Language-detection model is ready."
+                : "Language-detection model not ready in time; using the transcription model for detection this run.");
+        }
+
         public async Task<string> TranscribeAsync(string audioPath, string language, CancellationToken cancellationToken, bool translate = false)
         {
             _logger.LogInformation("Starting Whisper transcription for {AudioPath} with model {ModelPath}", audioPath, _modelPath);
