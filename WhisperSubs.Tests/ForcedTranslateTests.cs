@@ -86,4 +86,33 @@ public class ForcedTranslateTests
         Assert.DoesNotContain("--translate", args);
         Assert.DoesNotContain("--vad", args);
     }
+
+    // Locks fix #2's invariant: forced chunks pass applyVad:false, and that MUST suppress whisper's
+    // VAD even when a VAD model is configured and present on disk — otherwise a short, already-
+    // trimmed chunk can be re-filtered to zero segments and write an empty subtitle. (Issue #95.)
+    [Fact]
+    public void ShouldUseVad_False_WhenApplyVadFalse_EvenWithModelPresent()
+    {
+        Assert.False(WhisperProvider.ShouldUseVad(applyVad: false, vadModelPath: "/models/vad.bin", vadModelExists: true));
+    }
+
+    [Fact]
+    public void ShouldUseVad_True_WhenApplyVadTrue_AndModelPresent()
+    {
+        Assert.True(WhisperProvider.ShouldUseVad(applyVad: true, vadModelPath: "/models/vad.bin", vadModelExists: true));
+    }
+
+    [Fact]
+    public void ShouldUseVad_False_WhenModelConfiguredButMissingOnDisk()
+    {
+        Assert.False(WhisperProvider.ShouldUseVad(applyVad: true, vadModelPath: "/models/vad.bin", vadModelExists: false));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    public void ShouldUseVad_False_WhenNoModelConfigured(string? vadModelPath)
+    {
+        Assert.False(WhisperProvider.ShouldUseVad(applyVad: true, vadModelPath: vadModelPath, vadModelExists: true));
+    }
 }

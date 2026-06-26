@@ -151,10 +151,12 @@ namespace WhisperSubs.Providers
                     WorkingDirectory = Path.GetDirectoryName(whisperExecutable) ?? ""
                 };
 
-                // Caller resolves whether VAD applies (requested + model configured + present on
-                // disk); the pure arg-builder stays I/O-free and unit-testable. Forced chunks pass
-                // applyVad:false so an already-trimmed segment isn't re-filtered to empty. (Issue #95.)
-                var useVad = applyVad && !string.IsNullOrEmpty(_vadModelPath) && File.Exists(_vadModelPath);
+                // Resolve whether VAD applies (requested + model configured + present on disk). The
+                // rule lives in the pure ShouldUseVad helper so "applyVad:false suppresses VAD even
+                // with a model present" — the invariant forced chunks rely on — is unit-testable.
+                // (Issue #95.)
+                var vadModelExists = !string.IsNullOrEmpty(_vadModelPath) && File.Exists(_vadModelPath);
+                var useVad = ShouldUseVad(applyVad, _vadModelPath, vadModelExists);
                 foreach (var arg in BuildTranscribeArguments(
                     _modelPath, audioPath, language, _threadCount, translate,
                     useVad ? _vadModelPath : null, tempOutputPrefix, langPrompt))
@@ -741,6 +743,15 @@ namespace WhisperSubs.Providers
             }
             return null;
         }
+
+        /// <summary>
+        /// Whether to pass whisper-cli's native VAD flag: only when the caller requested it
+        /// (<paramref name="applyVad"/> — forced chunks pass false), a VAD model is configured, and
+        /// it exists on disk. Pure so the "applyVad:false always suppresses VAD, even with a model
+        /// present" invariant is unit-testable. (Issue #95.)
+        /// </summary>
+        internal static bool ShouldUseVad(bool applyVad, string? vadModelPath, bool vadModelExists)
+            => applyVad && !string.IsNullOrEmpty(vadModelPath) && vadModelExists;
 
         /// <summary>
         /// Builds the whisper-cli argument vector shared by every transcription run (the full,
