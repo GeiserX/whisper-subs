@@ -553,6 +553,15 @@ namespace WhisperSubs.Controller
                 var foreignChunks = new List<(double Start, double End, string Language)>();
                 int successfulDetections = 0;
 
+                // First-run guarantee: the small detection model downloads in the background (kicked off
+                // at provider creation, usually landing during the audio extraction above). Give it a
+                // bounded head start so the FIRST forced run uses it too — otherwise early chunks fall
+                // back to the slow transcription model. On timeout we proceed regardless. (Issue #95.)
+                if (provider is WhisperProvider whisperProvider)
+                {
+                    await whisperProvider.WaitForDetectionModelAsync(cancellationToken);
+                }
+
                 for (int i = 0; i < chunks.Count; i++)
                 {
                     cancellationToken.ThrowIfCancellationRequested();

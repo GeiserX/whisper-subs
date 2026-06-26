@@ -84,6 +84,11 @@ namespace WhisperSubs.Setup
         public string VadDirectory => Path.Combine(_dataPath, "whisper", "vad");
         public string VadModelPath => Path.Combine(VadDirectory, ModelCatalog.VadModelFileName);
 
+        // Dedicated language-detection model lives in its own subdir so it never collides with the
+        // transcription-model selection logic (which picks the largest .bin in ModelsDirectory).
+        public string DetectDirectory => Path.Combine(_dataPath, "whisper", "detect");
+        public string DetectionModelPath => Path.Combine(DetectDirectory, ModelCatalog.DetectionModelFileName);
+
         public string BinaryPath => Path.Combine(WhisperDirectory,
             RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "whisper-cli.exe" : "whisper-cli");
 
@@ -359,6 +364,89 @@ namespace WhisperSubs.Setup
             if (!string.IsNullOrWhiteSpace(configuredPath) && File.Exists(configuredPath))
                 return configuredPath;
             return File.Exists(VadModelPath) ? VadModelPath : null;
+        }
+
+        /// <summary>
+        /// Downloads the small dedicated language-detection model (ggml-base.bin, ~148 MB) used for
+        /// the forced-subtitle per-chunk --detect-language calls. Stored in detect/ and resolved by
+        /// file existence — it never touches config.WhisperModelPath, so the user's transcription
+        /// model is left untouched. Caller must call TryAcquire("detect", ...) first. (Issue #95.)
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "HTTP download")]
+        public async Task DownloadDetectionModelAsync(CancellationToken cancellationToken)
+        {
+            try
+            {
+                Directory.CreateDirectory(DetectDirectory);
+
+                var destPath = DetectionModelPath;
+                var tempPath = destPath + ".downloading";
+
+                _logger.LogInformation("Downloading language-detection model from {Url}", ModelCatalog.DetectionModelUrl);
+
+                using var response = await SharedHttpClient.GetAsync(ModelCatalog.DetectionModelUrl, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                response.EnsureSuccessStatusCode();
+
+                var totalBytes = response.Content.Headers.ContentLength ?? -1;
+
+                await using (var stream = await response.Content.ReadAsStreamAsync(cancellationToken))
+                await using (var fileStream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None, 81920))
+                {
+                    var buffer = new byte[81920];
+                    long downloaded = 0;
+                    int bytesRead;
+                    while ((bytesRead = await stream.ReadAsync(buffer, cancellationToken)) > 0)
+                    {
+                        await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken);
+                        downloaded += bytesRead;
+                        if (totalBytes > 0)
+                        {
+                            lock (_lock)
+                            {
+                                _progress = (double)downloaded / totalBytes * 100;
+                                _progressMessage = $"Downloading language-detection model: {downloaded / (1024.0 * 1024.0):F1} / {totalBytes / (1024.0 * 1024.0):F1} MB";
+                            }
+                        }
+                    }
+                    await fileStream.FlushAsync(cancellationToken);
+                }
+
+                // Reject truncated downloads (allow 10% slack).
+                var actualBytes = new FileInfo(tempPath).Length;
+                if (actualBytes < ModelCatalog.DetectionModelSizeBytes * 0.9)
+                {
+                    if (File.Exists(tempPath)) File.Delete(tempPath);
+                    throw new InvalidOperationException(
+                        $"Downloaded detection model is {actualBytes} bytes but expected ~{ModelCatalog.DetectionModelSizeBytes}. File may be corrupted.");
+                }
+
+                if (File.Exists(destPath)) File.Delete(destPath);
+                File.Move(tempPath, destPath);
+
+                var sha256 = ComputeSha256(destPath);
+                _logger.LogInformation("Detection model SHA256: {Hash}", sha256);
+
+                lock (_lock)
+                {
+                    _progress = 100;
+                    _progressMessage = "Language-detection model downloaded successfully.";
+                }
+                _logger.LogInformation("Detection model downloaded to {Path}", destPath);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                lock (_lock)
+                {
+                    _error = ex.Message;
+                    _progressMessage = $"Error downloading detection model: {ex.Message}";
+                }
+                _logger.LogError(ex, "Error downloading language-detection model");
+                throw;
+            }
+            finally
+            {
+                lock (_lock) { _isRunning = false; }
+            }
         }
 
         /// <summary>

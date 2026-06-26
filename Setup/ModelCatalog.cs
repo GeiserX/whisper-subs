@@ -32,6 +32,16 @@ namespace WhisperSubs.Setup
         public const string VadModelUrl = "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin";
         public const long VadModelSizeBytes = 885098;
 
+        // ── Dedicated language-detection model (forced-subtitle per-chunk --detect-language) ──
+        // Forced mode runs --detect-language once per ~30s speech chunk (100+ per film). That only
+        // needs the encoder's language-ID pass, where "base" (~148 MB) is accurate but far cheaper to
+        // run and load than the multi-hundred-MB/GB transcription model — so detection finishes in
+        // seconds even on a slow no-AVX2 CPU instead of timing out. Lives in its own subdir so it
+        // never affects transcription-model selection. (Issue #95.)
+        public const string DetectionModelFileName = "ggml-base.bin";
+        public const string DetectionModelUrl = HuggingFaceBaseUrl + "/ggml-base.bin";
+        public const long DetectionModelSizeBytes = 147951465;
+
         /// <summary>
         /// True if the given model (by file name or full path) is known to translate reliably.
         /// whisper.cpp's distilled "turbo" models were fine-tuned without the translate task and emit
