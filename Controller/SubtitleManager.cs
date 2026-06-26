@@ -642,7 +642,11 @@ namespace WhisperSubs.Controller
                 // path to that language, so we keep the in-source transcription rather than write
                 // mislabeled English into a .<lang>.forced file. (Issue #95.)
                 var translateForced = LanguageIsEnglish(resolvedPrimary);
-                if (translateForced && !ModelCatalog.IsTranslationCapable(Plugin.Instance?.Configuration?.WhisperModelPath))
+                // Gate the turbo-model warning to local whisper runs — a remote provider can translate
+                // fine and shouldn't trigger a warning about the local model path. (CodeRabbit.)
+                if (translateForced
+                    && provider is WhisperProvider
+                    && !ModelCatalog.IsTranslationCapable(Plugin.Instance?.Configuration?.WhisperModelPath))
                 {
                     _logger.LogWarning(
                         "Forced subtitles for {ItemName} will translate foreign dialogue to English, but the active " +
@@ -660,9 +664,10 @@ namespace WhisperSubs.Controller
                     try
                     {
                         await ExtractAudioChunkAsync(fullAudioPath, segmentPath, segment.Start, segDuration, cancellationToken);
-                        // applyVad:false — the chunk is already a VAD-trimmed speech segment; a second
-                        // VAD pass can filter a short clip to zero segments and write an empty subtitle.
-                        // Only WhisperProvider runs a local VAD pass; the remote provider ignores it.
+                        // applyVad:false — the chunk is already an edge-trimmed speech window (it may
+                        // span a few merged utterances); re-running whisper's VAD can filter a short
+                        // window to zero segments and write an empty subtitle. Only WhisperProvider
+                        // runs a local VAD pass; the remote provider ignores it.
                         var srtContent = provider is WhisperProvider whisperProv
                             ? await whisperProv.TranscribeAsync(segmentPath, segment.Language, cancellationToken, translateForced, applyVad: false)
                             : await provider.TranscribeAsync(segmentPath, segment.Language, cancellationToken, translate: translateForced);

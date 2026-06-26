@@ -66,17 +66,19 @@ public class ForcedTranslateTests
             "forced chunk must pass the foreign SOURCE language to -l so --translate knows what to translate from");
     }
 
-    // A non-English primary keeps the in-source transcription (translate off): whisper cannot
-    // translate into a non-English language, so we do not write mislabeled English.
+    // A non-English PRIMARY (translateForced=false) keeps the in-source transcription: whisper can
+    // only translate into English, so for a non-English-primary title we transcribe the foreign
+    // insert in its own language ("fr" here) rather than write mislabeled English. Still no second
+    // VAD pass.
     [Fact]
-    public void ForcedNonEnglishChunk_KeepsSourceTranscription()
+    public void ForcedNonEnglishPrimary_TranscribesWithoutTranslateOrVad()
     {
         var args = WhisperProvider.BuildTranscribeArguments(
             modelPath: "/m/model.bin",
             audioPath: "/tmp/foreign.wav",
-            language: "en",
+            language: "fr",         // the foreign insert's source language under a non-English primary
             threadCount: 0,
-            translate: false,       // Spanish primary, English insert → keep source (transcribe)
+            translate: false,       // translateForced=false for a non-English primary → keep source
             vadModelPath: null,
             outputPrefix: "/tmp/out",
             langPrompt: null);

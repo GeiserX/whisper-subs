@@ -102,10 +102,10 @@ namespace WhisperSubs.Providers
 
         /// <summary>
         /// Transcription overload that can suppress whisper-cli's native VAD pass. Forced-subtitle
-        /// chunks are already trimmed to a single speech segment (found by the detection pass), so
-        /// running whisper's VAD again can filter a short chunk down to zero segments and write an
-        /// empty subtitle — those callers pass <paramref name="applyVad"/> = false. Full and
-        /// translation runs keep VAD on via the interface method's default. (Issue #95.)
+        /// chunks are already edge-trimmed speech windows (found by the detection pass; they may span
+        /// a few merged utterances), so running whisper's VAD again can filter a short window down to
+        /// zero segments and write an empty subtitle — those callers pass <paramref name="applyVad"/>
+        /// = false. Full and translation runs keep VAD on via the interface method's default. (Issue #95.)
         /// </summary>
         public async Task<string> TranscribeAsync(string audioPath, string language, CancellationToken cancellationToken, bool translate, bool applyVad)
         {
