@@ -67,6 +67,21 @@
                     <div id="engineProgressText" class="fieldDescription" style="margin-top:0.5em;"></div>
                 </div>
 
+                <!-- ── In-page button & menu (client-script injection) status ── -->
+                <div id="injectionStatusPanel" style="background:rgba(0,0,0,0.15); border-radius:6px; padding:1em; margin-bottom:1em;">
+                    <div style="display:flex; align-items:center; margin-bottom:0.3em;">
+                        <span id="injectionStatusIcon" style="font-size:1.2em;">&#9744;</span>
+                        <strong style="margin-left:0.4em;">In-page "Generate Subtitles" button &amp; menu</strong>
+                    </div>
+                    <div id="injectionStatusText" class="fieldDescription" style="margin-bottom:0.6em;"></div>
+                    <div style="display:flex; gap:0.6em; align-items:center; flex-wrap:wrap;">
+                        <button is="emby-button" id="btnReinjectScript" class="raised" type="button">
+                            <span>Re-inject script</span>
+                        </button>
+                        <span id="injectionStatusPath" style="opacity:0.6; font-size:0.85em; word-break:break-all;"></span>
+                    </div>
+                </div>
+
                 <form class="whisperSubsConfigurationForm">
 
                     <!-- ── Generation Defaults ───────────────────────── -->
@@ -460,6 +475,52 @@
                         icon.style.color = '#CC7B19';
                         text.textContent = 'Not installed';
                     }
+                },
+
+                // ── In-page button/menu injection status (issue #94) ──────
+                loadInjectionStatus: function () {
+                    WhisperSubsConfig.ajaxGet(ApiClient.getUrl('Plugins/WhisperSubs/Setup/InjectionStatus'))
+                        .then(function (s) { WhisperSubsConfig.renderInjectionStatus(s); })
+                        .catch(function (err) { console.error('WhisperSubs: injection status check failed', err); });
+                },
+
+                renderInjectionStatus: function (s) {
+                    var icon = document.querySelector('#injectionStatusIcon');
+                    var text = document.querySelector('#injectionStatusText');
+                    var path = document.querySelector('#injectionStatusPath');
+                    if (!icon || !text) return;
+                    if (s.Level === 'ok') {
+                        icon.innerHTML = '&#9745;';
+                        icon.style.color = '#52B54B';
+                    } else if (s.Level === 'warning') {
+                        icon.innerHTML = '&#9888;';
+                        icon.style.color = '#CC7B19';
+                    } else {
+                        icon.innerHTML = '&#10007;';
+                        icon.style.color = '#CC3333';
+                    }
+                    text.textContent = s.Message || '';
+                    if (path) { path.textContent = s.IndexHtmlPath ? ('index.html: ' + s.IndexHtmlPath) : ''; }
+                },
+
+                reinjectScript: function () {
+                    var btn = document.querySelector('#btnReinjectScript');
+                    if (btn) { btn.disabled = true; }
+                    ApiClient.ajax({
+                        type: 'POST',
+                        url: ApiClient.getUrl('Plugins/WhisperSubs/Setup/ReinjectScript'),
+                        dataType: 'json'
+                    }).then(function (response) {
+                        var s = typeof response === 'string' ? JSON.parse(response) : response;
+                        WhisperSubsConfig.renderInjectionStatus(s);
+                        Dashboard.alert(s.ScriptTagPresent
+                            ? 'Client script injected. Hard-refresh your browser (Ctrl/Cmd+Shift+R) to load it.'
+                            : 'Could not inject the script. ' + (s.Message || ''));
+                    }).catch(function (err) {
+                        Dashboard.alert('Re-inject failed: ' + (err.message || err));
+                    }).then(function () {
+                        if (btn) { btn.disabled = false; }
+                    });
                 },
 
                 loadEngineVariants: function (gpuInfo, installedVariant) {
@@ -1427,6 +1488,7 @@
             document.querySelector('[data-role="page"]').addEventListener('pageshow', function () {
                 WhisperSubsConfig.loadConfiguration(this);
                 WhisperSubsConfig.loadEngine();
+                WhisperSubsConfig.loadInjectionStatus();
                 // Check if transcription is already running and show banner
                 WhisperSubsConfig.pollQueueStatus();
                 WhisperSubsConfig.ajaxGet(ApiClient.getUrl('Plugins/WhisperSubs/Queue'))
@@ -1440,6 +1502,10 @@
 
             document.querySelector('#btnEngineDownloadBinary').addEventListener('click', function () {
                 WhisperSubsConfig.startEngineDownload('binary');
+            });
+
+            document.querySelector('#btnReinjectScript').addEventListener('click', function () {
+                WhisperSubsConfig.reinjectScript();
             });
 
             document.querySelector('#btnEngineDownloadModel').addEventListener('click', function () {
