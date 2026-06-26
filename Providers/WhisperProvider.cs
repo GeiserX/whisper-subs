@@ -97,7 +97,17 @@ namespace WhisperSubs.Providers
                 : "Language-detection model not ready in time; using the transcription model for detection this run.");
         }
 
-        public async Task<string> TranscribeAsync(string audioPath, string language, CancellationToken cancellationToken, bool translate = false)
+        public Task<string> TranscribeAsync(string audioPath, string language, CancellationToken cancellationToken, bool translate = false)
+            => TranscribeAsync(audioPath, language, cancellationToken, translate, applyVad: true);
+
+        /// <summary>
+        /// Transcription overload that can suppress whisper-cli's native VAD pass. Forced-subtitle
+        /// chunks are already trimmed to a single speech segment (found by the detection pass), so
+        /// running whisper's VAD again can filter a short chunk down to zero segments and write an
+        /// empty subtitle — those callers pass <paramref name="applyVad"/> = false. Full and
+        /// translation runs keep VAD on via the interface method's default. (Issue #95.)
+        /// </summary>
+        public async Task<string> TranscribeAsync(string audioPath, string language, CancellationToken cancellationToken, bool translate, bool applyVad)
         {
             _logger.LogInformation("Starting Whisper transcription for {AudioPath} with model {ModelPath}", audioPath, _modelPath);
 
@@ -111,11 +121,11 @@ namespace WhisperSubs.Providers
                 throw new FileNotFoundException($"Audio file not found: {audioPath}");
             }
 
-            return await TranscribeInternalAsync(audioPath, language, cancellationToken, translate);
+            return await TranscribeInternalAsync(audioPath, language, cancellationToken, translate, applyVad);
         }
 
         [ExcludeFromCodeCoverage(Justification = "Spawns whisper-cli process")]
-        private async Task<string> TranscribeInternalAsync(string audioPath, string language, CancellationToken cancellationToken, bool translate)
+        private async Task<string> TranscribeInternalAsync(string audioPath, string language, CancellationToken cancellationToken, bool translate, bool applyVad)
         {
             var tempOutputPrefix = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
             var tempSrtPath = tempOutputPrefix + ".srt";
@@ -141,9 +151,10 @@ namespace WhisperSubs.Providers
                     WorkingDirectory = Path.GetDirectoryName(whisperExecutable) ?? ""
                 };
 
-                // Caller resolves whether VAD applies (model configured + present on disk); the pure
-                // arg-builder stays I/O-free and unit-testable.
-                var useVad = !string.IsNullOrEmpty(_vadModelPath) && File.Exists(_vadModelPath);
+                // Caller resolves whether VAD applies (requested + model configured + present on
+                // disk); the pure arg-builder stays I/O-free and unit-testable. Forced chunks pass
+                // applyVad:false so an already-trimmed segment isn't re-filtered to empty. (Issue #95.)
+                var useVad = applyVad && !string.IsNullOrEmpty(_vadModelPath) && File.Exists(_vadModelPath);
                 foreach (var arg in BuildTranscribeArguments(
                     _modelPath, audioPath, language, _threadCount, translate,
                     useVad ? _vadModelPath : null, tempOutputPrefix, langPrompt))
@@ -174,14 +185,19 @@ namespace WhisperSubs.Providers
                     {
                         errorBuilder.AppendLine(e.Data);
 
-                        // Progress lines drive the per-file bar; everything else is a real warning.
+                        // Progress lines drive the per-file bar; everything else is whisper-cli's own
+                        // diagnostic output. whisper-cli writes ALL of it (model load, system_info,
+                        // VAD, timings) to stderr by design — it is not a warning, so log it at Debug
+                        // rather than flooding the Jellyfin log with [WRN] on a healthy run. A genuine
+                        // failure still surfaces via the non-zero exit-code path below, which throws
+                        // with the full captured stderr (errorBuilder). (Issue #95.)
                         if (TryParseProgress(e.Data, out var pct))
                         {
                             SubtitleQueueService.Instance.ReportFileProgress(pct);
                         }
                         else
                         {
-                            _logger.LogWarning("Whisper stderr: {Error}", e.Data);
+                            _logger.LogDebug("Whisper stderr: {Error}", e.Data);
                         }
                     }
                 };

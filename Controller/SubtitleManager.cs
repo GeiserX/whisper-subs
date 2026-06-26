@@ -437,6 +437,17 @@ namespace WhisperSubs.Controller
         }
 
         /// <summary>
+        /// True when the language code/name denotes English. whisper's <c>--translate</c> task can
+        /// only ever target English, so forced subtitles translate foreign dialogue only for English
+        /// primaries (see <see cref="GenerateForcedSubtitleAsync"/>). Accepts the ISO 639-1 "en", the
+        /// 639-2 "eng", and the English display name; case-insensitive. (Issue #95.)
+        /// </summary>
+        internal static bool LanguageIsEnglish(string? language) =>
+            string.Equals(language, "en", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(language, "eng", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(language, "english", StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>
         /// Generates a forced subtitle file containing only foreign-language segments.
         /// Uses VAD-based chunking, per-chunk language detection, and selective transcription.
         /// Output: Movie.{lang}.forced.generated.srt
@@ -623,6 +634,23 @@ namespace WhisperSubs.Controller
                 var forcedSrt = new StringBuilder();
                 int entryNum = 1;
 
+                // Forced subtitles should read in the viewer's primary language, not the foreign
+                // source. whisper can only translate INTO English, so when the primary language is
+                // English (the common case — an English title with foreign-language inserts) we
+                // translate each foreign chunk to English, so the .en.forced track actually contains
+                // English instead of the source language. For a non-English primary, whisper has no
+                // path to that language, so we keep the in-source transcription rather than write
+                // mislabeled English into a .<lang>.forced file. (Issue #95.)
+                var translateForced = LanguageIsEnglish(resolvedPrimary);
+                if (translateForced && !ModelCatalog.IsTranslationCapable(Plugin.Instance?.Configuration?.WhisperModelPath))
+                {
+                    _logger.LogWarning(
+                        "Forced subtitles for {ItemName} will translate foreign dialogue to English, but the active " +
+                        "whisper model \"{Model}\" is a turbo model not trained for translation and will emit the source " +
+                        "language instead. Activate a non-turbo model (Large V3 or Medium) for English forced subtitles.",
+                        item.Name, Path.GetFileName(Plugin.Instance?.Configuration?.WhisperModelPath));
+                }
+
                 foreach (var segment in mergedSegments)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
@@ -632,7 +660,12 @@ namespace WhisperSubs.Controller
                     try
                     {
                         await ExtractAudioChunkAsync(fullAudioPath, segmentPath, segment.Start, segDuration, cancellationToken);
-                        var srtContent = await provider.TranscribeAsync(segmentPath, segment.Language, cancellationToken);
+                        // applyVad:false — the chunk is already a VAD-trimmed speech segment; a second
+                        // VAD pass can filter a short clip to zero segments and write an empty subtitle.
+                        // Only WhisperProvider runs a local VAD pass; the remote provider ignores it.
+                        var srtContent = provider is WhisperProvider whisperProv
+                            ? await whisperProv.TranscribeAsync(segmentPath, segment.Language, cancellationToken, translateForced, applyVad: false)
+                            : await provider.TranscribeAsync(segmentPath, segment.Language, cancellationToken, translate: translateForced);
 
                         if (!string.IsNullOrWhiteSpace(srtContent))
                         {
