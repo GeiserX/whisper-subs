@@ -166,7 +166,7 @@ namespace WhisperSubs
                 writable = IsWritable(path);
             }
 
-            var (level, message) = DescribeInjection(exists, tagPresent, writable);
+            var (level, message) = DescribeInjection(exists, tagPresent, writable, path);
             return new ScriptInjectionStatus
             {
                 WebPath = WebPath,
@@ -189,10 +189,11 @@ namespace WhisperSubs
         }
 
         /// <summary>
-        /// Pure: turns the three observable facts about index.html into a severity + user-facing
-        /// message for the config panel. Unit-tested so the guidance stays correct.
+        /// Pure: turns the observable facts about index.html into a severity + user-facing message for
+        /// the config panel. <paramref name="indexHtmlPath"/> is woven into the not-writable remediation
+        /// so the fix is copy-paste. Unit-tested so the guidance stays correct.
         /// </summary>
-        internal static (string Level, string Message) DescribeInjection(bool indexExists, bool scriptTagPresent, bool writable)
+        internal static (string Level, string Message) DescribeInjection(bool indexExists, bool scriptTagPresent, bool writable, string indexHtmlPath)
         {
             if (!indexExists)
             {
@@ -212,10 +213,13 @@ namespace WhisperSubs
 
             if (!writable)
             {
+                var target = string.IsNullOrEmpty(indexHtmlPath) ? "your index.html" : indexHtmlPath;
                 return ("error",
                     "index.html is present but NOT writable, so the client script can't be injected (common with " +
-                    "read-only web roots in Docker). Make the Jellyfin web directory writable, then click Re-inject " +
-                    "(or restart Jellyfin).");
+                    "read-only web roots in Docker). Make it writable by the Jellyfin service user, then click " +
+                    "Re-inject (or restart Jellyfin). On a Linux package install: sudo chown root:jellyfin \"" + target +
+                    "\" && sudo chmod 664 \"" + target + "\". On Docker the user/group differs (e.g. linuxserver.io " +
+                    "uses your PUID/PGID) and a read-only web mount must be made writable in your compose file.");
             }
 
             return ("warning",
