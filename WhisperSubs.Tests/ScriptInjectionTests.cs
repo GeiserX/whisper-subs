@@ -128,6 +128,17 @@ public class ScriptInjectionTests
     }
 
     [Fact]
+    public void DescribeInjection_NotWritable_QuotesPathWithSpaces()
+    {
+        // The whole reason the path is quoted: a web root with spaces must stay a single copy-paste
+        // argument. Drop the quotes and chown/chmod would split it — this case catches that regression.
+        const string spaced = "/srv/My Media/jellyfin web/index.html";
+        var (level, message) = Plugin.DescribeInjection(indexExists: true, scriptTagPresent: false, writable: false, indexHtmlPath: spaced);
+        Assert.Equal("error", level);
+        Assert.Contains("\"" + spaced + "\"", message); // appears as one quoted token, not bare
+    }
+
+    [Fact]
     public void DescribeInjection_WritableButNotInjected_IsWarning()
     {
         var (level, message) = Plugin.DescribeInjection(indexExists: true, scriptTagPresent: false, writable: true, indexHtmlPath: "/web/index.html");
