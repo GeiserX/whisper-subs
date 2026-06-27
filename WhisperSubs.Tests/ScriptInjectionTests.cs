@@ -108,10 +108,23 @@ public class ScriptInjectionTests
             indexHtmlPath: "/usr/share/jellyfin/web/index.html");
         Assert.Equal("error", level);
         Assert.Contains("writable", message);
-        // The remediation must be copy-paste: concrete chown/chmod with the real path.
+        // The remediation must be copy-paste: concrete chown/chmod, the load-bearing 664 mode (644
+        // would NOT grant the jellyfin group write), and the real path QUOTED so paths with spaces
+        // stay valid.
         Assert.Contains("chown", message);
         Assert.Contains("chmod", message);
-        Assert.Contains("/usr/share/jellyfin/web/index.html", message);
+        Assert.Contains("664", message);
+        Assert.Contains("\"/usr/share/jellyfin/web/index.html\"", message);
+    }
+
+    [Fact]
+    public void DescribeInjection_NotWritable_EmptyPath_UsesGenericFallback()
+    {
+        // Defensive fallback when the path is somehow empty — still actionable, no dangling quotes.
+        var (level, message) = Plugin.DescribeInjection(indexExists: true, scriptTagPresent: false, writable: false, indexHtmlPath: "");
+        Assert.Equal("error", level);
+        Assert.Contains("your index.html", message);
+        Assert.Contains("chown", message);
     }
 
     [Fact]
