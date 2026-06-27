@@ -216,9 +216,10 @@ namespace WhisperSubs
                 var target = string.IsNullOrEmpty(indexHtmlPath) ? "your index.html" : indexHtmlPath;
                 return ("error",
                     "index.html is present but NOT writable, so the client script can't be injected (common with " +
-                    "read-only web roots in Docker). Make it writable by the Jellyfin user — e.g. on Linux: " +
-                    "sudo chown root:jellyfin \"" + target + "\" && sudo chmod 664 \"" + target + "\" — then click " +
-                    "Re-inject (or restart Jellyfin).");
+                    "read-only web roots in Docker). Make it writable by the Jellyfin service user, then click " +
+                    "Re-inject (or restart Jellyfin). On a Linux package install: sudo chown root:jellyfin \"" + target +
+                    "\" && sudo chmod 664 \"" + target + "\". On Docker the user/group differs (e.g. linuxserver.io " +
+                    "uses your PUID/PGID) and a read-only web mount must be made writable in your compose file.");
             }
 
             return ("warning",
