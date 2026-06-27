@@ -78,7 +78,7 @@ public class ScriptInjectionTests
     [Fact]
     public void DescribeInjection_IndexMissing_IsError()
     {
-        var (level, message) = Plugin.DescribeInjection(indexExists: false, scriptTagPresent: false, writable: false);
+        var (level, message) = Plugin.DescribeInjection(indexExists: false, scriptTagPresent: false, writable: false, indexHtmlPath: "");
         Assert.Equal("error", level);
         Assert.Contains("index.html", message);
     }
@@ -86,7 +86,7 @@ public class ScriptInjectionTests
     [Fact]
     public void DescribeInjection_TagPresent_IsOk()
     {
-        var (level, message) = Plugin.DescribeInjection(indexExists: true, scriptTagPresent: true, writable: true);
+        var (level, message) = Plugin.DescribeInjection(indexExists: true, scriptTagPresent: true, writable: true, indexHtmlPath: "/web/index.html");
         Assert.Equal("ok", level);
         Assert.Contains("administrator", message); // reminds that the button is admin-only
     }
@@ -96,22 +96,52 @@ public class ScriptInjectionTests
     {
         // "ok" is keyed on the tag being present, NOT on writability — once injected, a read-only
         // root is fine. A future refactor that gates "ok" on writable must fail this.
-        var (level, _) = Plugin.DescribeInjection(indexExists: true, scriptTagPresent: true, writable: false);
+        var (level, _) = Plugin.DescribeInjection(indexExists: true, scriptTagPresent: true, writable: false, indexHtmlPath: "/web/index.html");
         Assert.Equal("ok", level);
     }
 
     [Fact]
     public void DescribeInjection_PresentButNotWritable_IsError_AndMentionsWritable()
     {
-        var (level, message) = Plugin.DescribeInjection(indexExists: true, scriptTagPresent: false, writable: false);
+        var (level, message) = Plugin.DescribeInjection(
+            indexExists: true, scriptTagPresent: false, writable: false,
+            indexHtmlPath: "/usr/share/jellyfin/web/index.html");
         Assert.Equal("error", level);
         Assert.Contains("writable", message);
+        // The remediation must be copy-paste: concrete chown/chmod, the load-bearing 664 mode (644
+        // would NOT grant the jellyfin group write), and the real path QUOTED so paths with spaces
+        // stay valid.
+        Assert.Contains("chown", message);
+        Assert.Contains("chmod", message);
+        Assert.Contains("664", message);
+        Assert.Contains("\"/usr/share/jellyfin/web/index.html\"", message);
+    }
+
+    [Fact]
+    public void DescribeInjection_NotWritable_EmptyPath_UsesGenericFallback()
+    {
+        // Defensive fallback when the path is somehow empty — still actionable, no dangling quotes.
+        var (level, message) = Plugin.DescribeInjection(indexExists: true, scriptTagPresent: false, writable: false, indexHtmlPath: "");
+        Assert.Equal("error", level);
+        Assert.Contains("your index.html", message);
+        Assert.Contains("chown", message);
+    }
+
+    [Fact]
+    public void DescribeInjection_NotWritable_QuotesPathWithSpaces()
+    {
+        // The whole reason the path is quoted: a web root with spaces must stay a single copy-paste
+        // argument. Drop the quotes and chown/chmod would split it — this case catches that regression.
+        const string spaced = "/srv/My Media/jellyfin web/index.html";
+        var (level, message) = Plugin.DescribeInjection(indexExists: true, scriptTagPresent: false, writable: false, indexHtmlPath: spaced);
+        Assert.Equal("error", level);
+        Assert.Contains("\"" + spaced + "\"", message); // appears as one quoted token, not bare
     }
 
     [Fact]
     public void DescribeInjection_WritableButNotInjected_IsWarning()
     {
-        var (level, message) = Plugin.DescribeInjection(indexExists: true, scriptTagPresent: false, writable: true);
+        var (level, message) = Plugin.DescribeInjection(indexExists: true, scriptTagPresent: false, writable: true, indexHtmlPath: "/web/index.html");
         Assert.Equal("warning", level);
         Assert.Contains("Re-inject", message);
     }
