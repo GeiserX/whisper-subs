@@ -364,15 +364,8 @@ namespace WhisperSubs.Api
                 {
                     var dir = System.IO.Path.GetDirectoryName(item.Path);
                     var baseName = System.IO.Path.GetFileNameWithoutExtension(item.Path);
-                    var found = new List<string>();
-
-                    if (dir != null)
-                    {
-                        foreach (var f in System.IO.Directory.GetFiles(dir, $"{baseName}.*.generated.srt"))
-                        {
-                            found.Add(f);
-                        }
-                    }
+                    // Issue #101: subtitles may live in the media folder OR the item's metadata path.
+                    var found = SubtitleManager.FindGeneratedFiles(item, dir, $"{baseName}.*.generated.srt").ToList();
 
                     var fullFiles = found.Where(f => !System.IO.Path.GetFileName(f).Contains(".forced.")).ToList();
                     var forcedFiles = found.Where(f => System.IO.Path.GetFileName(f).Contains(".forced.")).ToList();
@@ -389,8 +382,8 @@ namespace WhisperSubs.Api
 
                 var subtitlePath = System.IO.Path.ChangeExtension(item.Path, $".{lang}.generated.srt");
                 var forcedSubtitlePath = System.IO.Path.ChangeExtension(item.Path, $".{lang}.forced.generated.srt");
-                var hasGeneratedSubtitle = System.IO.File.Exists(subtitlePath);
-                var hasForcedSubtitle = System.IO.File.Exists(forcedSubtitlePath);
+                var hasGeneratedSubtitle = SubtitleManager.GeneratedFileExists(item, subtitlePath);
+                var hasForcedSubtitle = SubtitleManager.GeneratedFileExists(item, forcedSubtitlePath);
 
                 return Ok(new SubtitleStatus
                 {

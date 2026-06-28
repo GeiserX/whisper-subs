@@ -215,8 +215,10 @@ namespace WhisperSubs.ScheduledTasks
                     var dir = System.IO.Path.GetDirectoryName(mediaPath);
                     if (dir != null)
                     {
-                        var existingFiles = System.IO.Directory.GetFiles(dir, baseName + ".*.generated.srt");
-                        var noForeignMarkers = System.IO.Directory.GetFiles(dir, baseName + ".*.forced.noforeignlang");
+                        // Issue #101: subtitles may live in the media folder OR the item's internal
+                        // metadata path (read-only / save-with-media-off libraries), so look in both.
+                        var existingFiles = SubtitleManager.FindGeneratedFiles(item, dir, baseName + ".*.generated.srt").ToArray();
+                        var noForeignMarkers = SubtitleManager.FindGeneratedFiles(item, dir, baseName + ".*.forced.noforeignlang").ToArray();
                         var hasFullSrt = existingFiles.Any(f => !System.IO.Path.GetFileName(f).Contains(".forced."));
 
                         // Also check for user-provided external subtitle files (non-forced, non-generated).
@@ -261,8 +263,8 @@ namespace WhisperSubs.ScheduledTasks
                         var hasTranslatedSrt = false;
                         if (needsTranslation && dir != null)
                         {
-                            hasTranslatedSrt = System.IO.File.Exists(
-                                System.IO.Path.Combine(dir, baseName + ".en.translated.srt"));
+                            hasTranslatedSrt = SubtitleManager.GeneratedFileExists(
+                                item, System.IO.Path.Combine(dir, baseName + ".en.translated.srt"));
 
                             // Issue #82: an existing usable English subtitle stream (embedded OR
                             // external) satisfies the translation need just as a .en.translated.srt
