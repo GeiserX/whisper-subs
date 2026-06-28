@@ -97,12 +97,19 @@ namespace WhisperSubs.Controller
             {
                 // Don't second-guess the destination on failure — if the metadata dir can't be created,
                 // let the subsequent write surface the real error rather than silently writing into the
-                // media folder the user opted out of.
-                try { Directory.CreateDirectory(dir); }
-                catch (Exception ex) { _logger.LogWarning(ex, "WhisperSubs: could not create metadata subtitle dir {Dir}; the save will surface the error", dir); }
-                _logger.LogInformation(
-                    "Saving subtitle for {ItemName} to Jellyfin metadata path (media folder read-only or save-with-media off): {Dir}",
-                    item.Name, dir);
+                // media folder the user opted out of. Log the divert only on a successful create so we
+                // don't claim "saving to metadata path" right before the write fails.
+                try
+                {
+                    Directory.CreateDirectory(dir);
+                    _logger.LogInformation(
+                        "Saving subtitle for {ItemName} to Jellyfin metadata path (media folder read-only or save-with-media off): {Dir}",
+                        item.Name, dir);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "WhisperSubs: could not create metadata subtitle dir {Dir}; the save will surface the error", dir);
+                }
             }
 
             return RebaseFilename(mediaAdjacentPath, dir);
