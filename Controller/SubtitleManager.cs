@@ -29,6 +29,99 @@ namespace WhisperSubs.Controller
             _logger = logger;
         }
 
+        // ── Subtitle save location (issue #101) ──────────────────────────────
+        // On a read-only media library, or when the library has "Save subtitles into media folders"
+        // turned off, writing the sidecar next to the media fails (or isn't wanted). Mirror Jellyfin's
+        // own behaviour: fall back to the item's internal metadata path (e.g. /config/metadata/library/
+        // aa/<guid>/), which Jellyfin's MediaInfoResolver scans for external subtitles (matched by the
+        // video's base filename) just like a media-adjacent sidecar — the same place OpenSubtitles lands
+        // for read-only libraries.
+
+        /// <summary>
+        /// Pure: chooses the directory a subtitle should be written to. Save next to the media only
+        /// when the library opts in (<paramref name="saveWithMedia"/>) AND that folder is writable;
+        /// otherwise use Jellyfin's internal metadata path. An empty metadata path falls back to media
+        /// so we never return an empty directory. (Issue #101.)
+        /// </summary>
+        internal static string ChooseSubtitleDirectory(string mediaDirectory, string internalMetadataPath, bool saveWithMedia, bool mediaDirectoryWritable)
+        {
+            if (saveWithMedia && mediaDirectoryWritable) return mediaDirectory;
+            return string.IsNullOrEmpty(internalMetadataPath) ? mediaDirectory : internalMetadataPath;
+        }
+
+        /// <summary>
+        /// Resolves the on-disk path for a generated subtitle sidecar: media-adjacent when the library's
+        /// "Save subtitles into media folders" is on and the folder is writable, else the item's internal
+        /// metadata path. Keeps the same filename so Jellyfin's base-name match still resolves it. (Issue #101.)
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Reads Jellyfin library options + probes/creates directories")]
+        private string ResolveSubtitleSavePath(BaseItem item, string mediaAdjacentPath)
+        {
+            bool saveWithMedia;
+            try { saveWithMedia = _libraryManager.GetLibraryOptions(item)?.SaveSubtitlesWithMedia ?? true; }
+            catch { saveWithMedia = true; }
+            return ResolveSavePath(item, mediaAdjacentPath, saveWithMedia);
+        }
+
+        /// <summary>
+        /// Resolves the path for a generated .lrc lyric. Lyrics keep their media-adjacent location and
+        /// only divert to the internal metadata path when the media folder is read-only — Jellyfin's
+        /// lyric resolver isn't assumed to scan the metadata path, so writable libraries stay unchanged.
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Delegates to a directory-probing resolver")]
+        private string ResolveLyricsSavePath(BaseItem item, string mediaAdjacentPath)
+            => ResolveSavePath(item, mediaAdjacentPath, saveWithMedia: true);
+
+        [ExcludeFromCodeCoverage(Justification = "Probes/creates directories on disk")]
+        private string ResolveSavePath(BaseItem item, string mediaAdjacentPath, bool saveWithMedia)
+        {
+            var fileName = Path.GetFileName(mediaAdjacentPath);
+            var mediaDir = Path.GetDirectoryName(mediaAdjacentPath) ?? "";
+
+            string metadataPath;
+            try { metadataPath = item.GetInternalMetadataPath() ?? ""; }
+            catch (Exception ex) { _logger.LogDebug(ex, "WhisperSubs: could not resolve internal metadata path"); metadataPath = ""; }
+
+            var dir = ChooseSubtitleDirectory(mediaDir, metadataPath, saveWithMedia, IsDirectoryWritable(mediaDir));
+
+            if (!string.Equals(dir, mediaDir, StringComparison.Ordinal))
+            {
+                try
+                {
+                    Directory.CreateDirectory(dir);
+                    _logger.LogInformation(
+                        "Saving subtitle for {ItemName} to Jellyfin metadata path (media folder read-only or save-with-media off): {Dir}",
+                        item.Name, dir);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "WhisperSubs: could not create metadata dir {Dir}, falling back to media folder", dir);
+                    dir = mediaDir;
+                }
+            }
+
+            return Path.Combine(dir, fileName);
+        }
+
+        /// <summary>Best-effort writability probe: create then delete a temp file in the directory.</summary>
+        [ExcludeFromCodeCoverage(Justification = "Probes the filesystem")]
+        private static bool IsDirectoryWritable(string directory)
+        {
+            if (string.IsNullOrEmpty(directory)) return false;
+            var probe = Path.Combine(directory, "." + Guid.NewGuid().ToString("N") + ".whispersubs.tmp");
+            try
+            {
+                using (File.Create(probe)) { }
+                File.Delete(probe);
+                return true;
+            }
+            catch
+            {
+                try { if (File.Exists(probe)) File.Delete(probe); } catch { /* best effort */ }
+                return false;
+            }
+        }
+
         /// <param name="force">When true (an explicit manual request), the "skip if a usable
         /// subtitle already exists" checks (#82) are bypassed so the user always gets fresh
         /// generation. The scheduled/auto path passes false. Resume/idempotency skips on the
@@ -191,7 +284,7 @@ namespace WhisperSubs.Controller
             BaseItem item, ISubtitleProvider provider, string lang,
             string mediaPath, bool force, CancellationToken cancellationToken)
         {
-            var srtPath = Path.ChangeExtension(mediaPath, $".{lang}.generated.srt");
+            var srtPath = ResolveSubtitleSavePath(item, Path.ChangeExtension(mediaPath, $".{lang}.generated.srt"));
             string existingSrt = "";
             double resumeOffsetSeconds = 0;
             int existingEntryCount = 0;
@@ -291,7 +384,7 @@ namespace WhisperSubs.Controller
                 return (GenerationOutcome.Skipped, null);
             }
 
-            var translatedSrtPath = Path.ChangeExtension(mediaPath, ".en.translated.srt");
+            var translatedSrtPath = ResolveSubtitleSavePath(item, Path.ChangeExtension(mediaPath, ".en.translated.srt"));
 
             // Skip if translated subs already exist
             if (File.Exists(translatedSrtPath))
@@ -497,8 +590,8 @@ namespace WhisperSubs.Controller
                 }
             }
 
-            var forcedSrtPath = Path.ChangeExtension(mediaPath, $".{resolvedPrimary}.forced.generated.srt");
-            var noForeignMarkerPath = Path.ChangeExtension(mediaPath, $".{resolvedPrimary}.forced.noforeignlang");
+            var forcedSrtPath = ResolveSubtitleSavePath(item, Path.ChangeExtension(mediaPath, $".{resolvedPrimary}.forced.generated.srt"));
+            var noForeignMarkerPath = ResolveSubtitleSavePath(item, Path.ChangeExtension(mediaPath, $".{resolvedPrimary}.forced.noforeignlang"));
 
             // Skip if forced SRT already exists with content
             if (File.Exists(forcedSrtPath))
@@ -809,7 +902,7 @@ namespace WhisperSubs.Controller
             var baseName = Path.GetFileNameWithoutExtension(mediaPath);
             var dir = Path.GetDirectoryName(mediaPath)!;
             // Jellyfin's LyricResolver expects track.lrc (matching the audio filename)
-            var lrcPath = Path.Combine(dir, $"{baseName}.lrc");
+            var lrcPath = ResolveLyricsSavePath(item, Path.Combine(dir, $"{baseName}.lrc"));
 
             if (File.Exists(lrcPath))
             {
