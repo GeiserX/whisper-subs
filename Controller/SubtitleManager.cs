@@ -50,6 +50,27 @@ namespace WhisperSubs.Controller
         }
 
         /// <summary>
+        /// Pure: re-homes a media-adjacent path's file name into <paramref name="targetDirectory"/>,
+        /// preserving the base name so Jellyfin's video-base-name match still resolves the sidecar.
+        /// </summary>
+        internal static string RebaseFilename(string mediaAdjacentPath, string targetDirectory)
+            => Path.Combine(targetDirectory, Path.GetFileName(mediaAdjacentPath));
+
+        /// <summary>
+        /// Pure: the directories a generated artifact for an item may live in — the media folder and
+        /// (when distinct/non-empty) the internal metadata path. Read/skip/status sites use this so they
+        /// find subtitles wherever the write side put them. (Issue #101.)
+        /// </summary>
+        internal static IReadOnlyList<string> CandidateArtifactDirectories(string? mediaDirectory, string? internalMetadataPath)
+        {
+            var dirs = new List<string>();
+            if (!string.IsNullOrEmpty(mediaDirectory)) dirs.Add(mediaDirectory!);
+            if (!string.IsNullOrEmpty(internalMetadataPath) && !dirs.Contains(internalMetadataPath!, StringComparer.Ordinal))
+                dirs.Add(internalMetadataPath!);
+            return dirs;
+        }
+
+        /// <summary>
         /// Resolves the on-disk path for a generated subtitle sidecar: media-adjacent when the library's
         /// "Save subtitles into media folders" is on and the folder is writable, else the item's internal
         /// metadata path. Keeps the same filename so Jellyfin's base-name match still resolves it. (Issue #101.)
@@ -57,50 +78,79 @@ namespace WhisperSubs.Controller
         [ExcludeFromCodeCoverage(Justification = "Reads Jellyfin library options + probes/creates directories")]
         private string ResolveSubtitleSavePath(BaseItem item, string mediaAdjacentPath)
         {
+            var mediaDir = Path.GetDirectoryName(mediaAdjacentPath) ?? "";
+
             bool saveWithMedia;
             try { saveWithMedia = _libraryManager.GetLibraryOptions(item)?.SaveSubtitlesWithMedia ?? true; }
             catch { saveWithMedia = true; }
-            return ResolveSavePath(item, mediaAdjacentPath, saveWithMedia);
-        }
-
-        /// <summary>
-        /// Resolves the path for a generated .lrc lyric. Lyrics keep their media-adjacent location and
-        /// only divert to the internal metadata path when the media folder is read-only — Jellyfin's
-        /// lyric resolver isn't assumed to scan the metadata path, so writable libraries stay unchanged.
-        /// </summary>
-        [ExcludeFromCodeCoverage(Justification = "Delegates to a directory-probing resolver")]
-        private string ResolveLyricsSavePath(BaseItem item, string mediaAdjacentPath)
-            => ResolveSavePath(item, mediaAdjacentPath, saveWithMedia: true);
-
-        [ExcludeFromCodeCoverage(Justification = "Probes/creates directories on disk")]
-        private string ResolveSavePath(BaseItem item, string mediaAdjacentPath, bool saveWithMedia)
-        {
-            var fileName = Path.GetFileName(mediaAdjacentPath);
-            var mediaDir = Path.GetDirectoryName(mediaAdjacentPath) ?? "";
 
             string metadataPath;
             try { metadataPath = item.GetInternalMetadataPath() ?? ""; }
             catch (Exception ex) { _logger.LogDebug(ex, "WhisperSubs: could not resolve internal metadata path"); metadataPath = ""; }
 
-            var dir = ChooseSubtitleDirectory(mediaDir, metadataPath, saveWithMedia, IsDirectoryWritable(mediaDir));
+            // Only probe writability when it can change the decision (save-with-media on) — otherwise we'd
+            // pointlessly touch a temp file in the media folder the user explicitly opted out of.
+            var writable = saveWithMedia && IsDirectoryWritable(mediaDir);
+            var dir = ChooseSubtitleDirectory(mediaDir, metadataPath, saveWithMedia, writable);
 
             if (!string.Equals(dir, mediaDir, StringComparison.Ordinal))
             {
-                try
-                {
-                    Directory.CreateDirectory(dir);
-                    _logger.LogInformation(
-                        "Saving subtitle for {ItemName} to Jellyfin metadata path (media folder read-only or save-with-media off): {Dir}",
-                        item.Name, dir);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "WhisperSubs: could not create metadata dir {Dir}, falling back to media folder", dir);
-                    dir = mediaDir;
-                }
+                // Don't second-guess the destination on failure — if the metadata dir can't be created,
+                // let the subsequent write surface the real error rather than silently writing into the
+                // media folder the user opted out of.
+                try { Directory.CreateDirectory(dir); }
+                catch (Exception ex) { _logger.LogWarning(ex, "WhisperSubs: could not create metadata subtitle dir {Dir}; the save will surface the error", dir); }
+                _logger.LogInformation(
+                    "Saving subtitle for {ItemName} to Jellyfin metadata path (media folder read-only or save-with-media off): {Dir}",
+                    item.Name, dir);
             }
 
-            return Path.Combine(dir, fileName);
+            return RebaseFilename(mediaAdjacentPath, dir);
+        }
+
+        /// <summary>
+        /// All directories a generated artifact for <paramref name="item"/> may live in (media folder +
+        /// internal metadata path). The read/skip/status counterpart to <see cref="ResolveSubtitleSavePath"/>.
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Reads the Jellyfin item's internal metadata path")]
+        private static IReadOnlyList<string> GeneratedArtifactDirectories(BaseItem item, string? mediaDirectory)
+        {
+            string metadataPath;
+            try { metadataPath = item.GetInternalMetadataPath() ?? ""; }
+            catch { metadataPath = ""; }
+            return CandidateArtifactDirectories(mediaDirectory, metadataPath);
+        }
+
+        /// <summary>
+        /// Globs a generated-subtitle pattern across BOTH the media folder and the item's metadata path,
+        /// so skip/status checks find subtitles wherever the write side saved them. (Issue #101.)
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Filesystem enumeration")]
+        internal static IReadOnlyList<string> FindGeneratedFiles(BaseItem item, string? mediaDirectory, string searchPattern)
+        {
+            var files = new List<string>();
+            foreach (var d in GeneratedArtifactDirectories(item, mediaDirectory))
+            {
+                try { if (Directory.Exists(d)) files.AddRange(Directory.GetFiles(d, searchPattern)); }
+                catch { /* unreadable directory — skip */ }
+            }
+            return files;
+        }
+
+        /// <summary>
+        /// True if a generated artifact with this media-adjacent path's file name exists in EITHER the
+        /// media folder or the item's metadata path. (Issue #101.)
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Filesystem existence checks")]
+        internal static bool GeneratedFileExists(BaseItem item, string mediaAdjacentPath)
+        {
+            var fileName = Path.GetFileName(mediaAdjacentPath);
+            foreach (var d in GeneratedArtifactDirectories(item, Path.GetDirectoryName(mediaAdjacentPath)))
+            {
+                try { if (File.Exists(Path.Combine(d, fileName))) return true; }
+                catch { /* ignore */ }
+            }
+            return false;
         }
 
         /// <summary>Best-effort writability probe: create then delete a temp file in the directory.</summary>
@@ -902,7 +952,7 @@ namespace WhisperSubs.Controller
             var baseName = Path.GetFileNameWithoutExtension(mediaPath);
             var dir = Path.GetDirectoryName(mediaPath)!;
             // Jellyfin's LyricResolver expects track.lrc (matching the audio filename)
-            var lrcPath = ResolveLyricsSavePath(item, Path.Combine(dir, $"{baseName}.lrc"));
+            var lrcPath = Path.Combine(dir, $"{baseName}.lrc");
 
             if (File.Exists(lrcPath))
             {
