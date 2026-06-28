@@ -29,6 +29,156 @@ namespace WhisperSubs.Controller
             _logger = logger;
         }
 
+        // ── Subtitle save location (issue #101) ──────────────────────────────
+        // On a read-only media library, or when the library has "Save subtitles into media folders"
+        // turned off, writing the sidecar next to the media fails (or isn't wanted). Mirror Jellyfin's
+        // own behaviour: fall back to the item's internal metadata path (e.g. /config/metadata/library/
+        // aa/<guid>/), which Jellyfin's MediaInfoResolver scans for external subtitles (matched by the
+        // video's base filename) just like a media-adjacent sidecar — the same place OpenSubtitles lands
+        // for read-only libraries.
+
+        /// <summary>
+        /// Pure: chooses the directory a subtitle should be written to. Save next to the media only
+        /// when the library opts in (<paramref name="saveWithMedia"/>) AND that folder is writable;
+        /// otherwise use Jellyfin's internal metadata path. An empty metadata path falls back to media
+        /// so we never return an empty directory. (Issue #101.)
+        /// </summary>
+        internal static string ChooseSubtitleDirectory(string mediaDirectory, string internalMetadataPath, bool saveWithMedia, bool mediaDirectoryWritable)
+        {
+            if (saveWithMedia && mediaDirectoryWritable) return mediaDirectory;
+            return string.IsNullOrEmpty(internalMetadataPath) ? mediaDirectory : internalMetadataPath;
+        }
+
+        /// <summary>
+        /// Pure: re-homes a media-adjacent path's file name into <paramref name="targetDirectory"/>,
+        /// preserving the base name so Jellyfin's video-base-name match still resolves the sidecar.
+        /// </summary>
+        internal static string RebaseFilename(string mediaAdjacentPath, string targetDirectory)
+            => Path.Combine(targetDirectory, Path.GetFileName(mediaAdjacentPath));
+
+        /// <summary>
+        /// Pure: the directories a generated artifact for an item may live in — the media folder and
+        /// (when distinct/non-empty) the internal metadata path. Read/skip/status sites use this so they
+        /// find subtitles wherever the write side put them. (Issue #101.)
+        /// </summary>
+        internal static IReadOnlyList<string> CandidateArtifactDirectories(string? mediaDirectory, string? internalMetadataPath)
+        {
+            var dirs = new List<string>();
+            if (!string.IsNullOrEmpty(mediaDirectory)) dirs.Add(mediaDirectory!);
+            if (!string.IsNullOrEmpty(internalMetadataPath) && !dirs.Contains(internalMetadataPath!, StringComparer.Ordinal))
+                dirs.Add(internalMetadataPath!);
+            return dirs;
+        }
+
+        /// <summary>
+        /// Resolves the on-disk path for a generated subtitle sidecar: media-adjacent when the library's
+        /// "Save subtitles into media folders" is on and the folder is writable, else the item's internal
+        /// metadata path. Keeps the same filename so Jellyfin's base-name match still resolves it. (Issue #101.)
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Reads Jellyfin library options + probes/creates directories")]
+        private string ResolveSubtitleSavePath(BaseItem item, string mediaAdjacentPath)
+        {
+            var mediaDir = Path.GetDirectoryName(mediaAdjacentPath) ?? "";
+
+            bool saveWithMedia;
+            try { saveWithMedia = _libraryManager.GetLibraryOptions(item)?.SaveSubtitlesWithMedia ?? true; }
+            catch { saveWithMedia = true; }
+
+            string metadataPath;
+            try { metadataPath = item.GetInternalMetadataPath() ?? ""; }
+            catch (Exception ex) { _logger.LogDebug(ex, "WhisperSubs: could not resolve internal metadata path"); metadataPath = ""; }
+
+            // Only probe writability when it can change the decision (save-with-media on) — otherwise we'd
+            // pointlessly touch a temp file in the media folder the user explicitly opted out of.
+            var writable = saveWithMedia && IsDirectoryWritable(mediaDir);
+            var dir = ChooseSubtitleDirectory(mediaDir, metadataPath, saveWithMedia, writable);
+
+            if (!string.Equals(dir, mediaDir, StringComparison.Ordinal))
+            {
+                // Don't second-guess the destination on failure — if the metadata dir can't be created,
+                // let the subsequent write surface the real error rather than silently writing into the
+                // media folder the user opted out of. Log the divert only on a successful create so we
+                // don't claim "saving to metadata path" right before the write fails.
+                try
+                {
+                    Directory.CreateDirectory(dir);
+                    _logger.LogInformation(
+                        "Saving subtitle for {ItemName} to Jellyfin metadata path (media folder read-only or save-with-media off): {Dir}",
+                        item.Name, dir);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "WhisperSubs: could not create metadata subtitle dir {Dir}; the save will surface the error", dir);
+                }
+            }
+
+            return RebaseFilename(mediaAdjacentPath, dir);
+        }
+
+        /// <summary>
+        /// All directories a generated artifact for <paramref name="item"/> may live in (media folder +
+        /// internal metadata path). The read/skip/status counterpart to <see cref="ResolveSubtitleSavePath"/>.
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Reads the Jellyfin item's internal metadata path")]
+        private static IReadOnlyList<string> GeneratedArtifactDirectories(BaseItem item, string? mediaDirectory)
+        {
+            string metadataPath;
+            try { metadataPath = item.GetInternalMetadataPath() ?? ""; }
+            catch { metadataPath = ""; }
+            return CandidateArtifactDirectories(mediaDirectory, metadataPath);
+        }
+
+        /// <summary>
+        /// Globs a generated-subtitle pattern across BOTH the media folder and the item's metadata path,
+        /// so skip/status checks find subtitles wherever the write side saved them. (Issue #101.)
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Filesystem enumeration")]
+        internal static IReadOnlyList<string> FindGeneratedFiles(BaseItem item, string? mediaDirectory, string searchPattern)
+        {
+            var files = new List<string>();
+            foreach (var d in GeneratedArtifactDirectories(item, mediaDirectory))
+            {
+                try { if (Directory.Exists(d)) files.AddRange(Directory.GetFiles(d, searchPattern)); }
+                catch { /* unreadable directory — skip */ }
+            }
+            return files;
+        }
+
+        /// <summary>
+        /// True if a generated artifact with this media-adjacent path's file name exists in EITHER the
+        /// media folder or the item's metadata path. (Issue #101.)
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Filesystem existence checks")]
+        internal static bool GeneratedFileExists(BaseItem item, string mediaAdjacentPath)
+        {
+            var fileName = Path.GetFileName(mediaAdjacentPath);
+            foreach (var d in GeneratedArtifactDirectories(item, Path.GetDirectoryName(mediaAdjacentPath)))
+            {
+                try { if (File.Exists(Path.Combine(d, fileName))) return true; }
+                catch { /* ignore */ }
+            }
+            return false;
+        }
+
+        /// <summary>Best-effort writability probe: create then delete a temp file in the directory.</summary>
+        [ExcludeFromCodeCoverage(Justification = "Probes the filesystem")]
+        private static bool IsDirectoryWritable(string directory)
+        {
+            if (string.IsNullOrEmpty(directory)) return false;
+            var probe = Path.Combine(directory, "." + Guid.NewGuid().ToString("N") + ".whispersubs.tmp");
+            try
+            {
+                using (File.Create(probe)) { }
+                File.Delete(probe);
+                return true;
+            }
+            catch
+            {
+                try { if (File.Exists(probe)) File.Delete(probe); } catch { /* best effort */ }
+                return false;
+            }
+        }
+
         /// <param name="force">When true (an explicit manual request), the "skip if a usable
         /// subtitle already exists" checks (#82) are bypassed so the user always gets fresh
         /// generation. The scheduled/auto path passes false. Resume/idempotency skips on the
@@ -191,7 +341,7 @@ namespace WhisperSubs.Controller
             BaseItem item, ISubtitleProvider provider, string lang,
             string mediaPath, bool force, CancellationToken cancellationToken)
         {
-            var srtPath = Path.ChangeExtension(mediaPath, $".{lang}.generated.srt");
+            var srtPath = ResolveSubtitleSavePath(item, Path.ChangeExtension(mediaPath, $".{lang}.generated.srt"));
             string existingSrt = "";
             double resumeOffsetSeconds = 0;
             int existingEntryCount = 0;
@@ -291,7 +441,7 @@ namespace WhisperSubs.Controller
                 return (GenerationOutcome.Skipped, null);
             }
 
-            var translatedSrtPath = Path.ChangeExtension(mediaPath, ".en.translated.srt");
+            var translatedSrtPath = ResolveSubtitleSavePath(item, Path.ChangeExtension(mediaPath, ".en.translated.srt"));
 
             // Skip if translated subs already exist
             if (File.Exists(translatedSrtPath))
@@ -497,8 +647,8 @@ namespace WhisperSubs.Controller
                 }
             }
 
-            var forcedSrtPath = Path.ChangeExtension(mediaPath, $".{resolvedPrimary}.forced.generated.srt");
-            var noForeignMarkerPath = Path.ChangeExtension(mediaPath, $".{resolvedPrimary}.forced.noforeignlang");
+            var forcedSrtPath = ResolveSubtitleSavePath(item, Path.ChangeExtension(mediaPath, $".{resolvedPrimary}.forced.generated.srt"));
+            var noForeignMarkerPath = ResolveSubtitleSavePath(item, Path.ChangeExtension(mediaPath, $".{resolvedPrimary}.forced.noforeignlang"));
 
             // Skip if forced SRT already exists with content
             if (File.Exists(forcedSrtPath))
