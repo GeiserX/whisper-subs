@@ -17,6 +17,7 @@ public class SpeechAlignmentGateTests
     [InlineData(true, true, false, false)]   // VAD on, no opt-in → SKIP (default behaviour, unchanged)
     [InlineData(true, true, true, true)]     // VAD on + opt-in → run (the #78 fix)
     [InlineData(false, false, false, false)] // alignment disabled → never run
+    [InlineData(false, true, false, false)]  // alignment disabled (VAD on) → never run
     [InlineData(false, true, true, false)]   // alignment disabled overrides the opt-in
     [InlineData(false, false, true, false)]
     public void ShouldAlignToSpeech_Matrix(bool alignEnabled, bool usesVad, bool alignWithVad, bool expected)

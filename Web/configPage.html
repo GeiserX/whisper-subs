@@ -302,8 +302,9 @@
                         <div class="fieldDescription">
                             If subtitles still appear <strong>early</strong> with "Use speech detection (VAD)" enabled, turn this on
                             to also run the speech-alignment pass above on top of VAD. VAD improves transcription but doesn't always
-                            correct whisper's tendency to start a line slightly early; this snaps those starts forward (it only ever
-                            moves an early line later, never earlier). Off by default. Requires "Align subtitles to speech" to be on.
+                            correct whisper's tendency to start a line slightly early; this snaps those starts forward — it only ever
+                            moves a line later, never earlier (though on coarse audio the energy-based detector may push a few starts
+                            slightly late). Off by default. Requires "Align subtitles to speech" to be on.
                             <br />
                             Applies only to locally-generated subtitles (whisper-cli), not the remote API or forced subtitles.
                         </div>
