@@ -369,11 +369,12 @@ whisper.cpp emits subtitle segments back-to-back with no gaps, so the next line 
 |---|---|
 | **Enable VAD** | Runs whisper-cli with its native **Silero Voice Activity Detection** (`--vad`), so each cue starts at the real speech onset rather than during the preceding silence. The Silero VAD model (~865 KB) is auto-downloaded into the plugin's `whisper/vad/` data directory on first use. This is the primary speech-onset mechanism. |
 | **Align subtitles to speech** | Older, energy-based fallback. Snaps each subtitle's start to the detected speech onset using a quick FFmpeg silence-detection pass over the audio. Used only when **Enable VAD** is off (native VAD handles this more reliably). |
+| **Also align to speech when VAD is on** | If lines still appear early with **Enable VAD** on, also runs the forward-snap above on top of VAD -- native VAD improves transcription but doesn't always correct whisper's slightly-early cue starts. Off by default; requires **Align subtitles to speech** on. Only moves a start later, never earlier (though on coarse audio it may push a few starts slightly late). |
 | **Compensate audio start offset** | Shifts all subtitle timestamps by the audio stream's container start time, keeping subtitles in sync when a file's audio doesn't begin exactly at 0:00. |
 
 > These corrections apply only to **locally-generated subtitles** (whisper-cli) -- both full and translated subtitles. They do not affect the remote Whisper API or forced subtitles.
 >
-> With native VAD enabled (the default), no extra FFmpeg pass is needed. The FFmpeg silence-detection alignment only runs as a fallback when VAD is disabled.
+> With native VAD enabled (the default), the FFmpeg silence-detection pass is skipped -- unless **Also align to speech when VAD is on** is enabled, which layers it on top of VAD for content where lines still appear early.
 
 ## Usage
 
