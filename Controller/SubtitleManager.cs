@@ -1731,6 +1731,15 @@ namespace WhisperSubs.Controller
         /// double-shift the appended tail, so offset compensation is skipped (alignment still runs
         /// on the 0-based fresh SRT, which matches the 0-based silence segments).</param>
         [ExcludeFromCodeCoverage(Justification = "Orchestrates FFprobe/FFmpeg processes for timing correction")]
+        /// <summary>
+        /// Pure: whether to run the FFmpeg speech-onset forward-snap. Runs when the user enabled
+        /// <c>AlignSubtitlesToSpeech</c> AND either VAD is off, or they opted into layering it on top
+        /// of VAD (<c>AlignSubtitlesToSpeechWithVad</c>) — native VAD improves transcription but does
+        /// not always correct whisper's tendency to start a cue slightly early. (Issue #78.)
+        /// </summary>
+        internal static bool ShouldAlignToSpeech(bool alignEnabled, bool providerUsesVad, bool alignWithVad)
+            => alignEnabled && (!providerUsesVad || alignWithVad);
+
         private async Task<string> ApplyTimingCorrectionsAsync(
             string srtContent, string mediaPath, string audioPath, bool isResume, bool providerUsesVad, CancellationToken ct)
         {
@@ -1763,13 +1772,17 @@ namespace WhisperSubs.Controller
                 }
             }
 
-            // Feature 2: snap subtitle starts forward to detected speech onsets.
-            // Skipped when this run's provider already emitted speech-aligned output via native
-            // VAD (providerUsesVad) — re-running this energy-based pass would be redundant and risk
-            // double-correcting. It remains the fallback when VAD is off/unavailable. Using the
-            // provider's own flag (not a re-resolution) keeps a single source of truth and avoids
-            // the mid-download drift where the model lands between construction and this call.
-            if (config?.AlignSubtitlesToSpeech == true && !providerUsesVad)
+            // Feature 2: snap subtitle starts forward to detected speech onsets. By default this is
+            // skipped under native VAD (providerUsesVad) — but VAD improves transcription, not
+            // whisper's tendency to start a cue slightly early, so on some content lines still appear
+            // early under VAD. The AlignSubtitlesToSpeechWithVad opt-in layers this forward-snap on
+            // top of VAD too; the snap only ever moves an early cue later, never earlier. Using the
+            // provider's own flag (not a re-resolution) keeps a single source of truth and avoids the
+            // mid-download drift where the model lands between construction and this call. (Issue #78.)
+            if (ShouldAlignToSpeech(
+                    config?.AlignSubtitlesToSpeech == true,
+                    providerUsesVad,
+                    config?.AlignSubtitlesToSpeechWithVad == true))
             {
                 try
                 {
