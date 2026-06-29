@@ -94,10 +94,21 @@ namespace WhisperSubs.Configuration
         /// the natural gaps using FFmpeg silence detection. Local whisper-cli only.
         ///
         /// Note: this is the older energy-based fallback. When <see cref="EnableVad"/> is on
-        /// (the default), whisper.cpp's native Silero VAD handles speech-onset gaps far more
-        /// reliably and this FFmpeg pass is skipped.
+        /// (the default) this FFmpeg pass is skipped, because native VAD usually handles speech-onset
+        /// gaps — unless <see cref="AlignSubtitlesToSpeechWithVad"/> opts back into running it on top.
         /// </summary>
         public bool AlignSubtitlesToSpeech { get; set; } = true;
+
+        /// <summary>
+        /// When enabled, also runs the <see cref="AlignSubtitlesToSpeech"/> forward-snap (FFmpeg
+        /// silence detection) even when <see cref="EnableVad"/> is on. Native VAD improves
+        /// transcription but does not always correct whisper's tendency to start a cue slightly
+        /// before speech, so on some content lines still appear early. Enabling this layers the
+        /// forward-snap on top of VAD — it only ever moves an early cue later, never earlier.
+        /// Off by default (the energy-based detector can be unreliable on some material); requires
+        /// <see cref="AlignSubtitlesToSpeech"/> to be on. Local whisper-cli only. (Issue #78.)
+        /// </summary>
+        public bool AlignSubtitlesToSpeechWithVad { get; set; } = false;
 
         /// <summary>
         /// When enabled, whisper-cli runs with native Silero Voice Activity Detection
