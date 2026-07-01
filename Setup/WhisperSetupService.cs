@@ -84,6 +84,28 @@ namespace WhisperSubs.Setup
         public string VadDirectory => Path.Combine(_dataPath, "whisper", "vad");
         public string VadModelPath => Path.Combine(VadDirectory, ModelCatalog.VadModelFileName);
 
+        /// <summary>Default on-disk location for a specific VAD model file inside the managed vad/ dir. (Issue #105.)</summary>
+        public string VadModelPathFor(string fileName) => Path.Combine(VadDirectory, fileName);
+
+        /// <summary>
+        /// True when <paramref name="path"/> lives directly in the managed vad/ directory — i.e. it is
+        /// one of the plugin's own downloaded models (or the legacy auto-written path), not a genuine
+        /// external custom model a user pointed at. Lets the resolver honour a real external override
+        /// while ignoring a stale auto-written path when the user switches versions. Pure (string-only)
+        /// so it is unit-testable. (Issue #105.)
+        /// </summary>
+        internal static bool IsManagedVadPath(string? path, string vadDirectory)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return false;
+            try
+            {
+                var parent = Path.GetDirectoryName(Path.GetFullPath(path));
+                return parent != null
+                    && string.Equals(parent, Path.GetFullPath(vadDirectory), StringComparison.OrdinalIgnoreCase);
+            }
+            catch { return false; }
+        }
+
         // Dedicated language-detection model lives in its own subdir so it never collides with the
         // transcription-model selection logic (which picks the largest .bin in ModelsDirectory).
         public string DetectDirectory => Path.Combine(_dataPath, "whisper", "detect");
@@ -269,18 +291,19 @@ namespace WhisperSubs.Setup
         /// Caller must call TryAcquire("vad", ...) first. Sets config.VadModelPath on success.
         /// </summary>
         [ExcludeFromCodeCoverage(Justification = "HTTP download + Plugin.Instance")]
-        public async Task DownloadVadModelAsync(CancellationToken cancellationToken)
+        public async Task DownloadVadModelAsync(string? versionKey, CancellationToken cancellationToken)
         {
+            var option = ModelCatalog.ResolveVadModel(versionKey);
             try
             {
                 Directory.CreateDirectory(VadDirectory);
 
-                var destPath = VadModelPath;
+                var destPath = VadModelPathFor(option.FileName);
                 var tempPath = destPath + ".downloading";
 
-                _logger.LogInformation("Downloading Silero VAD model from {Url}", ModelCatalog.VadModelUrl);
+                _logger.LogInformation("Downloading Silero VAD model ({Key}) from {Url}", option.Key, option.Url);
 
-                using var response = await SharedHttpClient.GetAsync(ModelCatalog.VadModelUrl, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                using var response = await SharedHttpClient.GetAsync(option.Url, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
                 response.EnsureSuccessStatusCode();
 
                 var totalBytes = response.Content.Headers.ContentLength ?? -1;
@@ -309,11 +332,11 @@ namespace WhisperSubs.Setup
 
                 // Reject truncated downloads (the model is ~865 KB; allow 10% slack).
                 var actualBytes = new FileInfo(tempPath).Length;
-                if (actualBytes < ModelCatalog.VadModelSizeBytes * 0.9)
+                if (actualBytes < option.SizeBytes * 0.9)
                 {
                     if (File.Exists(tempPath)) File.Delete(tempPath);
                     throw new InvalidOperationException(
-                        $"Downloaded VAD model is {actualBytes} bytes but expected ~{ModelCatalog.VadModelSizeBytes}. File may be corrupted.");
+                        $"Downloaded VAD model is {actualBytes} bytes but expected ~{option.SizeBytes}. File may be corrupted.");
                 }
 
                 if (File.Exists(destPath)) File.Delete(destPath);
@@ -356,14 +379,33 @@ namespace WhisperSubs.Setup
         }
 
         /// <summary>
-        /// Resolves the Silero VAD model path: the configured path if it exists, else the default
-        /// vad/ location if present, else null (not downloaded yet).
+        /// Resolves the Silero VAD model path with a 3-tier priority: (1) a genuine external override —
+        /// a non-managed <paramref name="configuredPath"/> that exists — wins; (2) the selected version's
+        /// model at its managed <c>vad/</c> location, so switching <paramref name="versionKey"/> takes
+        /// effect even when a stale managed path is still recorded in config; (3) any existing
+        /// <paramref name="configuredPath"/> as a fallback while the newly selected version downloads.
+        /// Returns null when nothing is present yet. (Issue #105.)
         /// </summary>
-        public string? ResolveVadModelPath(string? configuredPath)
+        public string? ResolveVadModelPath(string? configuredPath, string? versionKey = null)
         {
+            // 1. A genuine external override — a custom model file the user pointed at, living OUTSIDE
+            //    the managed vad/ dir — always wins.
+            if (!string.IsNullOrWhiteSpace(configuredPath) && File.Exists(configuredPath)
+                && !IsManagedVadPath(configuredPath, VadDirectory))
+                return configuredPath;
+
+            // 2. The selected version's model at its default location. A legacy install's auto-written
+            //    configuredPath points inside vad/, so it is ignored here in favour of the version the
+            //    user actually selected — switching versions in the UI then takes effect. (Issue #105.)
+            var selectedPath = VadModelPathFor(ModelCatalog.ResolveVadModel(versionKey).FileName);
+            if (File.Exists(selectedPath)) return selectedPath;
+
+            // 3. Last resort: any configured path that still exists (e.g. a previously downloaded
+            //    version recorded in config, present while the newly selected one is still downloading).
             if (!string.IsNullOrWhiteSpace(configuredPath) && File.Exists(configuredPath))
                 return configuredPath;
-            return File.Exists(VadModelPath) ? VadModelPath : null;
+
+            return null;
         }
 
         /// <summary>

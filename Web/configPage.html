@@ -310,6 +310,58 @@
                         </div>
                     </div>
 
+                    <details style="margin-top:1.5em;">
+                        <summary style="cursor:pointer; font-size:1.2em; font-weight:bold; padding:0.5em 0;">VAD tuning (advanced)</summary>
+
+                        <div class="selectContainer">
+                            <label class="selectLabel" for="selectVadModelVersion">Silero VAD model</label>
+                            <select is="emby-select" id="selectVadModelVersion" name="VadModelVersion">
+                                <option value="v5.1.2">Silero VAD v5.1.2 (default)</option>
+                                <option value="v6.2.0">Silero VAD v6.2.0 (newer)</option>
+                            </select>
+                            <div class="fieldDescription">Which Silero VAD model whisper-cli uses. v5.1.2 is the default; v6.2.0 is newer. Changing this downloads the selected model on the next run.</div>
+                        </div>
+
+                        <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfocused" for="numVadThreshold">VAD Threshold</label>
+                            <input type="number" id="numVadThreshold" name="VadThreshold" class="emby-input" step="0.05" min="0" max="1" placeholder="0.5" />
+                            <div class="fieldDescription">Speech-probability cutoff, 0–1. Lower catches quieter speech but adds false positives. Default 0.5.</div>
+                        </div>
+
+                        <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfocused" for="numVadMinSpeechDurationMs">Min Speech Duration (ms)</label>
+                            <input type="number" id="numVadMinSpeechDurationMs" name="VadMinSpeechDurationMs" class="emby-input" step="10" min="0" placeholder="250" />
+                            <div class="fieldDescription">Minimum speech-segment length in milliseconds; shorter segments are discarded. Default 250 ms.</div>
+                        </div>
+
+                        <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfocused" for="numVadMinSilenceDurationMs">Min Silence Duration (ms)</label>
+                            <input type="number" id="numVadMinSilenceDurationMs" name="VadMinSilenceDurationMs" class="emby-input" step="10" min="0" placeholder="100" />
+                            <div class="fieldDescription">Minimum silence in milliseconds that splits two subtitles. Higher values group sentences together. Default 100 ms.</div>
+                        </div>
+
+                        <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfocused" for="numVadMaxSpeechDurationS">Max Speech Duration (s)</label>
+                            <input type="number" id="numVadMaxSpeechDurationS" name="VadMaxSpeechDurationS" class="emby-input" step="1" min="1" placeholder="unlimited" />
+                            <div class="fieldDescription">Maximum subtitle-segment length in seconds; longer speech is auto-split. Empty = unlimited. ~30 avoids timestamp drift on long takes.</div>
+                        </div>
+
+                        <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfocused" for="numVadSpeechPadMs">Speech Padding (ms)</label>
+                            <input type="number" id="numVadSpeechPadMs" name="VadSpeechPadMs" class="emby-input" step="5" min="0" placeholder="30" />
+                            <div class="fieldDescription">Padding in milliseconds added to each side of a speech segment so word edges aren't clipped. Default 30 ms.</div>
+                        </div>
+
+                        <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfocused" for="numVadSamplesOverlap">Samples Overlap (s)</label>
+                            <input type="number" id="numVadSamplesOverlap" name="VadSamplesOverlap" class="emby-input" step="0.05" min="0" max="1" placeholder="0.1" />
+                            <div class="fieldDescription">Audio overlap in seconds carried between consecutive segments to avoid clipping words at boundaries. Default 0.1 s.</div>
+                        </div>
+
+                        <div class="fieldDescription" style="margin-top:0.5em;">These apply only when 'native VAD' is enabled. Leave a field empty to use whisper.cpp's default. A matching flag placed in Custom Whisper Arguments overrides the value set here.</div>
+
+                    </details>
+
                     <div class="checkboxContainer checkboxContainer-withDescription">
                         <label>
                             <input is="emby-checkbox" type="checkbox" id="chkCompensateAudioOffset" name="CompensateAudioOffset" />
@@ -1089,6 +1141,13 @@
                             page.querySelector('#chkEnableVad').checked = config.EnableVad !== false;
                             page.querySelector('#chkAlignSubtitlesToSpeech').checked = config.AlignSubtitlesToSpeech !== false;
                             page.querySelector('#chkAlignSubtitlesToSpeechWithVad').checked = config.AlignSubtitlesToSpeechWithVad === true;
+                            page.querySelector('#selectVadModelVersion').value = config.VadModelVersion || 'v5.1.2';
+                            page.querySelector('#numVadThreshold').value = (config.VadThreshold >= 0) ? config.VadThreshold : '';
+                            page.querySelector('#numVadMinSpeechDurationMs').value = (config.VadMinSpeechDurationMs >= 0) ? config.VadMinSpeechDurationMs : '';
+                            page.querySelector('#numVadMinSilenceDurationMs').value = (config.VadMinSilenceDurationMs >= 0) ? config.VadMinSilenceDurationMs : '';
+                            page.querySelector('#numVadMaxSpeechDurationS').value = (config.VadMaxSpeechDurationS > 0) ? config.VadMaxSpeechDurationS : '';
+                            page.querySelector('#numVadSpeechPadMs').value = (config.VadSpeechPadMs >= 0) ? config.VadSpeechPadMs : '';
+                            page.querySelector('#numVadSamplesOverlap').value = (config.VadSamplesOverlap >= 0) ? config.VadSamplesOverlap : '';
                             page.querySelector('#chkCompensateAudioOffset').checked = config.CompensateAudioOffset !== false;
                             updateTranslationVisibility();
                         }
@@ -1121,6 +1180,19 @@
                         config.EnableVad = page.querySelector('#chkEnableVad').checked;
                         config.AlignSubtitlesToSpeech = page.querySelector('#chkAlignSubtitlesToSpeech').checked;
                         config.AlignSubtitlesToSpeechWithVad = page.querySelector('#chkAlignSubtitlesToSpeechWithVad').checked;
+                        config.VadModelVersion = page.querySelector('#selectVadModelVersion').value || 'v5.1.2';
+                        var vadNumField = function (sel, isInt) {
+                            var raw = (page.querySelector(sel).value || '').trim();
+                            if (raw === '') return -1;
+                            var n = isInt ? parseInt(raw, 10) : parseFloat(raw);
+                            return isNaN(n) ? -1 : n;
+                        };
+                        config.VadThreshold = vadNumField('#numVadThreshold', false);
+                        config.VadMinSpeechDurationMs = vadNumField('#numVadMinSpeechDurationMs', true);
+                        config.VadMinSilenceDurationMs = vadNumField('#numVadMinSilenceDurationMs', true);
+                        config.VadMaxSpeechDurationS = vadNumField('#numVadMaxSpeechDurationS', false);
+                        config.VadSpeechPadMs = vadNumField('#numVadSpeechPadMs', true);
+                        config.VadSamplesOverlap = vadNumField('#numVadSamplesOverlap', false);
                         config.CompensateAudioOffset = page.querySelector('#chkCompensateAudioOffset').checked;
 
                         // Collect enabled libraries from checkboxes

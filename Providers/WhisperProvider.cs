@@ -20,6 +20,7 @@ namespace WhisperSubs.Providers
         private readonly int _threadCount;
         private readonly string _customArgs;
         private readonly string _vadModelPath;
+        private readonly VadTuning _vadTuning;
         private readonly string _detectionModelPath;
         private string? _resolvedExecutable;
 
@@ -36,11 +37,13 @@ namespace WhisperSubs.Providers
             "--detect-language", "-dl", "--no-timestamps", "-nt",
             "--prompt", "--offset-n", "-on", "--offset-t", "-ot",
             "--duration", "-d",
-            // VAD is plugin-managed (model path + flag + tuning injected below); block manual override.
-            "--vad", "-v", "--vad-model", "-vm",
-            "--vad-threshold", "-vt", "--vad-min-speech-duration-ms", "-vspd",
-            "--vad-min-silence-duration-ms", "-vsd", "--vad-max-speech-duration-s", "-vmsd",
-            "--vad-speech-pad-ms", "-vp", "--vad-samples-overlap", "-vo"
+            // VAD enable + model path are plugin-managed (injected below), so block manual override of
+            // just those. The VAD *tuning* flags (--vad-threshold, --vad-min/max-*-duration-*,
+            // --vad-speech-pad-ms, --vad-samples-overlap) are intentionally NOT denied: they are
+            // first-class settings now, and a user may also drop one here to supersede its setting —
+            // custom args are appended after the structured flags, so whisper-cli takes the last
+            // value. (Issue #105.)
+            "--vad", "-v", "--vad-model", "-vm"
         };
 
         public string Name => "Whisper";
@@ -52,7 +55,7 @@ namespace WhisperSubs.Providers
         /// </summary>
         public bool UsesVad => !string.IsNullOrEmpty(_vadModelPath) && File.Exists(_vadModelPath);
 
-        public WhisperProvider(ILogger<WhisperProvider> logger, string modelPath, string binaryPath = "", int threadCount = 0, string customArgs = "", string vadModelPath = "", string detectionModelPath = "")
+        public WhisperProvider(ILogger<WhisperProvider> logger, string modelPath, string binaryPath = "", int threadCount = 0, string customArgs = "", string vadModelPath = "", string detectionModelPath = "", VadTuning? vadTuning = null)
         {
             _logger = logger;
             _modelPath = modelPath;
@@ -60,6 +63,7 @@ namespace WhisperSubs.Providers
             _threadCount = threadCount;
             _customArgs = customArgs ?? "";
             _vadModelPath = vadModelPath ?? "";
+            _vadTuning = vadTuning ?? VadTuning.Unset;
             _detectionModelPath = detectionModelPath ?? "";
         }
 
@@ -159,7 +163,7 @@ namespace WhisperSubs.Providers
                 var useVad = ShouldUseVad(applyVad, _vadModelPath, vadModelExists);
                 foreach (var arg in BuildTranscribeArguments(
                     _modelPath, audioPath, language, _threadCount, translate,
-                    useVad ? _vadModelPath : null, tempOutputPrefix, langPrompt))
+                    useVad ? _vadModelPath : null, tempOutputPrefix, langPrompt, _vadTuning))
                 {
                     startInfo.ArgumentList.Add(arg);
                 }
@@ -763,7 +767,7 @@ namespace WhisperSubs.Providers
         /// <param name="langPrompt">Resolved initial prompt, or null/empty to omit it.</param>
         internal static IReadOnlyList<string> BuildTranscribeArguments(
             string modelPath, string audioPath, string language, int threadCount, bool translate,
-            string? vadModelPath, string outputPrefix, string? langPrompt)
+            string? vadModelPath, string outputPrefix, string? langPrompt, VadTuning? tuning = null)
         {
             var args = new List<string>
             {
@@ -796,6 +800,7 @@ namespace WhisperSubs.Providers
                 args.Add("--vad");
                 args.Add("--vad-model");
                 args.Add(vadModelPath);
+                AppendVadTuning(args, tuning ?? VadTuning.Unset);
             }
             args.Add("-osrt");
             args.Add("-of");
@@ -806,6 +811,48 @@ namespace WhisperSubs.Providers
                 args.Add(langPrompt);
             }
             return args;
+        }
+
+        /// <summary>
+        /// Appends whisper-cli native-VAD tuning flags for every non-sentinel <see cref="VadTuning"/>
+        /// value (a negative value means "unset — leave whisper's built-in default"). Only meaningful
+        /// alongside <c>--vad</c>, so callers invoke it right after emitting the VAD model flags. Floats
+        /// are formatted with the invariant culture so the decimal separator is always '.', never a
+        /// locale comma that whisper-cli would reject. Pure, so the emitted flags are unit-testable.
+        /// (Issue #105.)
+        /// </summary>
+        internal static void AppendVadTuning(List<string> args, VadTuning tuning)
+        {
+            if (tuning.Threshold >= 0f)
+            {
+                args.Add("--vad-threshold");
+                args.Add(tuning.Threshold.ToString(CultureInfo.InvariantCulture));
+            }
+            if (tuning.MinSpeechMs >= 0)
+            {
+                args.Add("--vad-min-speech-duration-ms");
+                args.Add(tuning.MinSpeechMs.ToString(CultureInfo.InvariantCulture));
+            }
+            if (tuning.MinSilenceMs >= 0)
+            {
+                args.Add("--vad-min-silence-duration-ms");
+                args.Add(tuning.MinSilenceMs.ToString(CultureInfo.InvariantCulture));
+            }
+            if (tuning.MaxSpeechS > 0f)
+            {
+                args.Add("--vad-max-speech-duration-s");
+                args.Add(tuning.MaxSpeechS.ToString(CultureInfo.InvariantCulture));
+            }
+            if (tuning.SpeechPadMs >= 0)
+            {
+                args.Add("--vad-speech-pad-ms");
+                args.Add(tuning.SpeechPadMs.ToString(CultureInfo.InvariantCulture));
+            }
+            if (tuning.SamplesOverlap >= 0f)
+            {
+                args.Add("--vad-samples-overlap");
+                args.Add(tuning.SamplesOverlap.ToString(CultureInfo.InvariantCulture));
+            }
         }
 
         // Anchored to whisper.cpp's own progress emitters so an unrelated stderr line that merely

@@ -119,12 +119,47 @@ namespace WhisperSubs.Configuration
         public bool EnableVad { get; set; } = true;
 
         /// <summary>
-        /// Filesystem path to the Silero VAD ggml model used by <see cref="EnableVad"/>.
-        /// Set automatically when the plugin downloads the VAD model; can be overridden to point
-        /// at a custom Silero VAD ggml file. When empty, the plugin looks in its default
-        /// vad/ data directory and downloads the model on first use if missing.
+        /// Filesystem path to the Silero VAD ggml model. Auto-set to the last downloaded model's path,
+        /// so since issue #105 this reflects "the last model written to disk", not necessarily the
+        /// active version — <see cref="VadModelVersion"/> drives selection and the resolver ignores an
+        /// auto-written path inside the managed vad/ dir. It may still be pointed at a custom Silero VAD
+        /// ggml file OUTSIDE that dir, which is treated as an explicit external override and takes
+        /// precedence over <see cref="VadModelVersion"/>. When empty, the plugin uses its default vad/
+        /// data directory and downloads the selected model on first use if missing.
         /// </summary>
         public string VadModelPath { get; set; } = "";
+
+        /// <summary>
+        /// Which Silero VAD model to use, by selection key (see <c>ModelCatalog.VadModels</c>):
+        /// "v5.1.2" (default) or "v6.2.0". Empty or unknown falls back to the default (v5.1.2), so
+        /// existing installs keep their current model and timing on upgrade. Selecting a different
+        /// version downloads it on the next run. Local whisper-cli only. (Issue #105.)
+        /// </summary>
+        public string VadModelVersion { get; set; } = "";
+
+        // ── Native VAD tuning (issue #105) ──
+        // Each parameter maps to a whisper-cli --vad-* flag. The negative sentinel means "unset — let
+        // whisper.cpp use its built-in default", so the default configuration emits NO --vad tuning
+        // flags and produces the exact same command line as before this feature. Only applies when
+        // EnableVad is on; a matching flag placed in CustomWhisperArgs supersedes these (appended last).
+
+        /// <summary>VAD speech-probability threshold (whisper default 0.5). -1 = use whisper's default.</summary>
+        public float VadThreshold { get; set; } = -1f;
+
+        /// <summary>Minimum speech segment length in ms; shorter segments are dropped (whisper default 250). -1 = default.</summary>
+        public int VadMinSpeechDurationMs { get; set; } = -1;
+
+        /// <summary>Minimum silence in ms that splits two speech segments (whisper default 100). -1 = default.</summary>
+        public int VadMinSilenceDurationMs { get; set; } = -1;
+
+        /// <summary>Maximum speech segment length in seconds; longer ones auto-split (whisper default unlimited). -1 = default.</summary>
+        public float VadMaxSpeechDurationS { get; set; } = -1f;
+
+        /// <summary>Padding in ms added to each side of a speech segment (whisper default 30). -1 = default.</summary>
+        public int VadSpeechPadMs { get; set; } = -1;
+
+        /// <summary>Audio overlap in seconds carried between consecutive segments (whisper default 0.1). -1 = default.</summary>
+        public float VadSamplesOverlap { get; set; } = -1f;
 
         /// <summary>
         /// When enabled, compensates for a container audio start-time offset (the audio stream

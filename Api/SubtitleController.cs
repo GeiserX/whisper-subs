@@ -601,7 +601,7 @@ namespace WhisperSubs.Api
 
             _ = Task.Run(async () =>
             {
-                try { await service.DownloadVadModelAsync(CancellationToken.None); }
+                try { await service.DownloadVadModelAsync(Plugin.Instance?.Configuration?.VadModelVersion, CancellationToken.None); }
                 catch (Exception ex) { _logger.LogError(ex, "Background VAD model download failed"); }
             });
 
