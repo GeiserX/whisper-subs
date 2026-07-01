@@ -72,7 +72,7 @@ jobs:
     steps:
       - name: Cache whisper binary
         id: cache-whisper
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: /tmp/whisper-${{ matrix.variant }}/build/bin/whisper-cli
           key: whisper-1.8.4-${{ matrix.asset_name }}-v11
@@ -138,7 +138,7 @@ jobs:
     steps:
       - name: Cache whisper ROCm binary
         id: cache-whisper-rocm
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}/rocm-output/whisper-cli
           key: whisper-1.8.4-rocm-6.1.2-v4
@@ -181,7 +181,7 @@ jobs:
       should_release: ${{ steps.check.outputs.should_release }}
       version: ${{ steps.check.outputs.version }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Get version and check tag
         id: check
@@ -201,7 +201,7 @@ jobs:
     if: needs.check-version.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v5
