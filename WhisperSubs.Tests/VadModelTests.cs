@@ -140,21 +140,28 @@ public class VadModelTests
         Assert.Empty(si.ArgumentList);
     }
 
+    // Issue #105: VAD tuning flags are now first-class settings — they must NOT be denied.
+    // A user may also drop one into CustomWhisperArgs to supersede a structured setting
+    // (custom args are appended last, so whisper-cli takes the last value).
     [Theory]
-    [InlineData("--vad-threshold 0.9")]
-    [InlineData("-vt 0.9")]
-    [InlineData("--vad-min-speech-duration-ms 250")]
-    [InlineData("-vspd 250")]
-    [InlineData("--vad-speech-pad-ms 30")]
-    [InlineData("-vp 30")]
-    [InlineData("--vad-samples-overlap 0.1")]
-    public void AppendCustomArgs_VadTuningFlags_Stripped(string customArgs)
+    [InlineData("--vad-threshold 0.9", "--vad-threshold")]
+    [InlineData("-vt 0.9", "-vt")]
+    [InlineData("--vad-min-speech-duration-ms 250", "--vad-min-speech-duration-ms")]
+    [InlineData("-vspd 250", "-vspd")]
+    [InlineData("--vad-speech-pad-ms 30", "--vad-speech-pad-ms")]
+    [InlineData("-vp 30", "-vp")]
+    [InlineData("--vad-samples-overlap 0.1", "--vad-samples-overlap")]
+    [InlineData("--vad-min-silence-duration-ms 100", "--vad-min-silence-duration-ms")]
+    [InlineData("-vsd 100", "-vsd")]
+    [InlineData("--vad-max-speech-duration-s 30", "--vad-max-speech-duration-s")]
+    [InlineData("-vmsd 30", "-vmsd")]
+    [InlineData("-vo 0.1", "-vo")]
+    public void AppendCustomArgs_VadTuningFlags_PassThrough(string customArgs, string expectedFlag)
     {
-        // VAD is fully plugin-managed; tuning sub-flags must not pass through either.
         var provider = CreateProvider(customArgs);
         var si = CreateStartInfo();
         provider.AppendCustomArgs(si);
-        Assert.Empty(si.ArgumentList);
+        Assert.Contains(expectedFlag, si.ArgumentList);
     }
 
     // ── UsesVad: single source of truth for "VAD already applied" ──
