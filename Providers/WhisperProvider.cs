@@ -815,8 +815,10 @@ namespace WhisperSubs.Providers
 
         /// <summary>
         /// Appends whisper-cli native-VAD tuning flags for every non-sentinel <see cref="VadTuning"/>
-        /// value (a negative value means "unset — leave whisper's built-in default"). Only meaningful
-        /// alongside <c>--vad</c>, so callers invoke it right after emitting the VAD model flags. Floats
+        /// value (a negative value means "unset — leave whisper's built-in default"; max-speech-duration
+        /// additionally treats 0 as unset, since a 0-second cap is meaningless — unlike the other fields
+        /// where 0 is a valid setting). Only meaningful alongside <c>--vad</c>, so callers invoke it
+        /// right after emitting the VAD model flags. Floats
         /// are formatted with the invariant culture so the decimal separator is always '.', never a
         /// locale comma that whisper-cli would reject. Pure, so the emitted flags are unit-testable.
         /// (Issue #105.)

@@ -152,7 +152,7 @@ namespace WhisperSubs.Configuration
         /// <summary>Minimum silence in ms that splits two speech segments (whisper default 100). -1 = default.</summary>
         public int VadMinSilenceDurationMs { get; set; } = -1;
 
-        /// <summary>Maximum speech segment length in seconds; longer ones auto-split (whisper default unlimited). -1 = default.</summary>
+        /// <summary>Maximum speech segment length in seconds; longer ones auto-split (whisper default unlimited). Any value &lt;= 0 (default -1) leaves it unlimited — 0 is not a meaningful cap, so it is treated as unset like the negative sentinel.</summary>
         public float VadMaxSpeechDurationS { get; set; } = -1f;
 
         /// <summary>Padding in ms added to each side of a speech segment (whisper default 30). -1 = default.</summary>
