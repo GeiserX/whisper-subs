@@ -55,6 +55,25 @@ public class ConfigurationTests
         Assert.True(restored.CountImageSubtitlesAsPresent);
     }
 
+    /// <summary>
+    /// Issue #105: all seven new VAD tuning fields must default to their sentinel values so an
+    /// existing install that upgrades emits NO extra --vad-* flags and the command line is
+    /// byte-identical to before the feature existed.
+    /// </summary>
+    [Fact]
+    public void PluginConfiguration_VadTuningDefaults_AllSentinels()
+    {
+        var config = new PluginConfiguration();
+
+        Assert.Equal("", config.VadModelVersion);
+        Assert.Equal(-1f, config.VadThreshold);
+        Assert.Equal(-1, config.VadMinSpeechDurationMs);
+        Assert.Equal(-1, config.VadMinSilenceDurationMs);
+        Assert.Equal(-1f, config.VadMaxSpeechDurationS);
+        Assert.Equal(-1, config.VadSpeechPadMs);
+        Assert.Equal(-1f, config.VadSamplesOverlap);
+    }
+
     [Fact]
     public void SubtitleMode_HasExpectedValues()
     {

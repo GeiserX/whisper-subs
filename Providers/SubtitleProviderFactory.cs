@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.Logging;
 using WhisperSubs.Configuration;
 using WhisperSubs.Setup;
@@ -6,6 +7,7 @@ namespace WhisperSubs.Providers
 {
     internal static class SubtitleProviderFactory
     {
+        [ExcludeFromCodeCoverage(Justification = "Orchestration: news up providers and depends on Plugin.Instance, File.Exists and TryAcquire — not unit-testable, same rationale as the excluded download/process methods.")]
         public static ISubtitleProvider Create(PluginConfiguration config, ILoggerFactory loggerFactory)
         {
             if (!string.IsNullOrWhiteSpace(config.RemoteWhisperApiUrl))
@@ -30,18 +32,24 @@ namespace WhisperSubs.Providers
             var vadModelPath = "";
             if (config.EnableVad)
             {
-                vadModelPath = setup.ResolveVadModelPath(config.VadModelPath) ?? "";
+                vadModelPath = setup.ResolveVadModelPath(config.VadModelPath, config.VadModelVersion) ?? "";
 
-                // Auto-fetch the tiny (~865 KB) Silero model in the background if missing, so VAD
-                // works without manual setup. TryAcquire no-ops if another download is running;
-                // this run proceeds without --vad and subsequent runs pick the model up.
-                if (string.IsNullOrEmpty(vadModelPath)
+                // Auto-fetch the tiny (~865 KB) selected Silero model in the background when IT is
+                // missing — keyed on the selected version's own file, not on whether resolve returned
+                // something, so choosing a new version downloads it even while an already-present older
+                // model is used as a graceful fallback this run. Skipped when the user pointed at a
+                // genuine external custom model (nothing for us to fetch). TryAcquire no-ops if another
+                // download is running; subsequent runs pick the model up. (Issues #78/#105.)
+                var selectedModelPath = setup.VadModelPathFor(ModelCatalog.ResolveVadModel(config.VadModelVersion).FileName);
+                var usingExternalModel = !string.IsNullOrEmpty(vadModelPath)
+                    && !WhisperSetupService.IsManagedVadPath(vadModelPath, setup.VadDirectory);
+                if (!usingExternalModel && !System.IO.File.Exists(selectedModelPath)
                     && WhisperSetupService.TryAcquire("vad", "Downloading Silero VAD model..."))
                 {
                     var logger = loggerFactory.CreateLogger<WhisperSetupService>();
                     _ = System.Threading.Tasks.Task.Run(async () =>
                     {
-                        try { await setup.DownloadVadModelAsync(System.Threading.CancellationToken.None); }
+                        try { await setup.DownloadVadModelAsync(config.VadModelVersion, System.Threading.CancellationToken.None); }
                         catch (System.Exception ex) { logger.LogWarning(ex, "Background VAD model download failed"); }
                     });
                 }
@@ -64,6 +72,8 @@ namespace WhisperSubs.Providers
                 });
             }
 
+            var vadTuning = BuildVadTuning(config);
+
             return new WhisperProvider(
                 loggerFactory.CreateLogger<WhisperProvider>(),
                 config.WhisperModelPath,
@@ -71,7 +81,22 @@ namespace WhisperSubs.Providers
                 config.WhisperThreadCount,
                 config.CustomWhisperArgs,
                 vadModelPath,
-                detectionModelPath);
+                detectionModelPath,
+                vadTuning);
         }
+
+        /// <summary>
+        /// Maps the plugin's VAD tuning config fields onto a <see cref="VadTuning"/>. Extracted from
+        /// <see cref="Create"/> (excluded from coverage as untestable orchestration) so the field-by-field
+        /// mapping stays pure and unit-testable — a guard against a silent field transposition. (Issue #105.)
+        /// </summary>
+        internal static VadTuning BuildVadTuning(PluginConfiguration config)
+            => new VadTuning(
+                config.VadThreshold,
+                config.VadMinSpeechDurationMs,
+                config.VadMinSilenceDurationMs,
+                config.VadMaxSpeechDurationS,
+                config.VadSpeechPadMs,
+                config.VadSamplesOverlap);
     }
 }

@@ -368,6 +368,13 @@ whisper.cpp emits subtitle segments back-to-back with no gaps, so the next line 
 | Setting | What it does |
 |---|---|
 | **Enable VAD** | Runs whisper-cli with its native **Silero Voice Activity Detection** (`--vad`), so each cue starts at the real speech onset rather than during the preceding silence. The Silero VAD model (~865 KB) is auto-downloaded into the plugin's `whisper/vad/` data directory on first use. This is the primary speech-onset mechanism. |
+| **Silero VAD model** | Selects the Silero VAD model version: **v5.1.2** (default -- preserves existing timing on upgrade) or **v6.2.0** (newer, opt-in). The chosen model (~885 KB) is downloaded automatically on the next run if not already present. |
+| **VAD threshold** | Speech probability cutoff (`--vad-threshold`). Lower values detect more speech; higher values are stricter. Default: `0.5`. Leave blank to use whisper's built-in default. The six VAD tuning settings below apply only when **Enable VAD** is on. |
+| **VAD min speech duration** | Minimum speech segment length in milliseconds to keep (`--vad-min-speech-duration-ms`). Default: `250`. |
+| **VAD min silence duration** | Minimum silence gap in milliseconds before a segment boundary (`--vad-min-silence-duration-ms`). Default: `100`. |
+| **VAD max speech duration** | Maximum speech segment length in seconds before a forced split (`--vad-max-speech-duration-s`). Default: unlimited. |
+| **VAD speech pad** | Padding in milliseconds added around each detected speech chunk (`--vad-speech-pad-ms`). Default: `30`. |
+| **VAD samples overlap** | Overlap fraction between consecutive analysis windows (`--vad-samples-overlap`). Default: `0.1`. |
 | **Align subtitles to speech** | Older, energy-based fallback. Snaps each subtitle's start to the detected speech onset using a quick FFmpeg silence-detection pass over the audio. Used only when **Enable VAD** is off (native VAD handles this more reliably). |
 | **Also align to speech when VAD is on** | If lines still appear early with **Enable VAD** on, also runs the forward-snap above on top of VAD -- native VAD improves transcription but doesn't always correct whisper's slightly-early cue starts. Off by default; requires **Align subtitles to speech** on. Only moves a start later, never earlier (though on coarse audio it may push a few starts slightly late). |
 | **Compensate audio start offset** | Shifts all subtitle timestamps by the audio stream's container start time, keeping subtitles in sync when a file's audio doesn't begin exactly at 0:00. |

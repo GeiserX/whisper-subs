@@ -32,6 +32,32 @@ namespace WhisperSubs.Setup
         public const string VadModelUrl = "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin";
         public const long VadModelSizeBytes = 885098;
 
+        // ── Selectable Silero VAD models (issue #105) ──
+        // v5.1.2 stays the DEFAULT: an existing install keeps the exact model + timing it already has,
+        // so upgrading never silently re-downloads a different model or shifts VAD segmentation.
+        // v6.2.0 is offered as a newer opt-in. Both are ~885 KB ggml conversions from the official
+        // ggml-org/whisper-vad repo and load on the pinned whisper-cli v1.8.4 (v6.2.0 is the very model
+        // whisper.cpp's own v1.8.4 VAD example ships with, so compatibility is confirmed upstream).
+        public const string DefaultVadModelKey = "v5.1.2";
+
+        public static readonly VadModelOption[] VadModels = new[]
+        {
+            new VadModelOption("v5.1.2", VadModelFileName, VadModelUrl, VadModelSizeBytes,
+                "Silero VAD v5.1.2 (default)"),
+            new VadModelOption("v6.2.0", "ggml-silero-v6.2.0.bin",
+                "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin",
+                885098, "Silero VAD v6.2.0 (newer)"),
+        };
+
+        /// <summary>
+        /// Resolves a VAD model selection key (e.g. "v6.2.0") to its catalog entry. Unknown, empty or
+        /// null keys fall back to the default (v5.1.2) so a stale or absent config value never breaks
+        /// VAD. (Issue #105.)
+        /// </summary>
+        public static VadModelOption ResolveVadModel(string? key)
+            => Array.Find(VadModels, m => string.Equals(m.Key, key, StringComparison.OrdinalIgnoreCase))
+               ?? VadModels[0];
+
         // ── Dedicated language-detection model (forced-subtitle per-chunk --detect-language) ──
         // Forced mode runs --detect-language once per ~30s speech chunk (100+ per film). That only
         // needs the encoder's language-ID pass, where "base" (~148 MB) is accurate but far cheaper to
@@ -76,4 +102,11 @@ namespace WhisperSubs.Setup
             CanTranslate = canTranslate;
         }
     }
+
+    /// <summary>
+    /// A selectable Silero VAD model: the stable selection <see cref="Key"/> stored in config
+    /// (e.g. "v6.2.0"), the ggml file name, its download URL and expected size, and a UI label.
+    /// (Issue #105.)
+    /// </summary>
+    public sealed record VadModelOption(string Key, string FileName, string Url, long SizeBytes, string DisplayName);
 }
