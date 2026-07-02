@@ -123,6 +123,39 @@ Then configure the plugin with:
 
 > **Note:** The binary must be compiled for the same architecture as the container (typically x86_64 Linux). Download the `linux-x64` release asset or build inside a matching environment.
 
+#### In-Page "Generate Subtitles" Button
+
+The plugin adds an in-page "Generate Subtitles" button/menu to the Jellyfin web UI. This appears on media detail pages and lets you trigger transcription directly from your browser. Internally, the plugin injects a script tag into Jellyfin's `index.html` to register this UI.
+
+By default, the plugin attempts **direct on-disk injection** — writing the script tag directly to the index.html file. This requires write access to Jellyfin's web root, which is often read-only in containerized setups. If your web root is read-only (common in Docker), you have two options:
+
+**Option A: Use File Transformation (Recommended for read-only roots)**
+
+Install the third-party **File Transformation** plugin by IAmParadox27. This plugin allows whisper-subs to inject the script at serve-time, without modifying the index.html file on disk:
+
+1. In Jellyfin, go to **Dashboard** > **Plugins** > **Repositories**.
+2. Add this repository URL:
+   ```
+   https://www.iamparadox.dev/jellyfin/plugins/manifest.json
+   ```
+3. Go to **Catalog**, find **File Transformation**, and click **Install**.
+4. Restart Jellyfin.
+5. Open the **WhisperSubs** plugin settings page — the *In-page "Generate Subtitles" button & menu* status panel at the top shows the active mechanism (it should now include **File Transformation (serve-time)**).
+
+No permission changes or `chown`/`chmod` are needed. Both direct injection and File Transformation coexist safely — if both are available, both mechanisms activate and work together without duplication.
+
+**Option B: Make index.html writable (if you manage the web root)**
+
+The status panel on the WhisperSubs settings page shows the exact `index.html` path it detected. Make that file writable by the Jellyfin service user, then click **Re-inject**:
+
+```bash
+# Linux package install (use the path shown in the status panel):
+sudo chown root:jellyfin /usr/share/jellyfin/web/index.html
+sudo chmod 664 /usr/share/jellyfin/web/index.html
+```
+
+On Docker the user/group differ (e.g. linuxserver.io images use your `PUID`/`PGID`), and a read-only web mount must be made writable in your compose file before the direct on-disk injection can work.
+
 #### <a id="container-setup"></a>Container Library Requirements
 
 The plugin's built-in binary downloader fetches pre-built whisper-cli binaries. These require runtime libraries that are **not included** in the default Jellyfin Docker image:

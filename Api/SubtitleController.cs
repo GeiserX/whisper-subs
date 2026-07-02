@@ -1,14 +1,18 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Net.Http;
 using WhisperSubs.Configuration;
 using WhisperSubs.Controller;
 using WhisperSubs.Providers;
 using WhisperSubs.Setup;
+using WhisperSubs.Web;
 using Jellyfin.Data.Enums;
+using MediaBrowser.Controller;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Tasks;
@@ -26,23 +30,35 @@ namespace WhisperSubs.Api
     // able to drive them (privilege boundary / resource-exhaustion). Setup/* repeat this policy
     // explicitly for clarity; it is redundant under this class-level default but harmless.
     [Authorize(Policy = "RequiresElevation")]
+    // Excluded from coverage as a WHOLE: every endpoint orchestrates Jellyfin runtime services
+    // (library manager, task manager, live HTTP) and the testable logic lives in pure helpers
+    // elsewhere. coverlet.runsettings already excludes this type for LOCAL runs, but CI's
+    // `dotnet test --collect` does not load that runsettings file — the attribute is what makes
+    // the exclusion effective in both places.
+    [ExcludeFromCodeCoverage(Justification = "Thin API layer over Jellyfin runtime services; logic lives in unit-tested pure helpers")]
     public class SubtitleController : ControllerBase
     {
         private readonly ILibraryManager _libraryManager;
         private readonly ILogger<SubtitleController> _logger;
         private readonly ILoggerFactory _loggerFactory;
         private readonly ITaskManager _taskManager;
+        private readonly IServerApplicationHost _serverApplicationHost;
+        private readonly IHttpClientFactory _httpClientFactory;
 
         public SubtitleController(
             ILibraryManager libraryManager,
             ILogger<SubtitleController> logger,
             ILoggerFactory loggerFactory,
-            ITaskManager taskManager)
+            ITaskManager taskManager,
+            IServerApplicationHost serverApplicationHost,
+            IHttpClientFactory httpClientFactory)
         {
             _libraryManager = libraryManager;
             _logger = logger;
             _loggerFactory = loggerFactory;
             _taskManager = taskManager;
+            _serverApplicationHost = serverApplicationHost;
+            _httpClientFactory = httpClientFactory;
         }
 
         private SubtitleManager GetSubtitleManager()
@@ -505,11 +521,13 @@ namespace WhisperSubs.Api
         /// </summary>
         [HttpGet("Setup/InjectionStatus")]
         [Authorize(Policy = "RequiresElevation")]
-        public ActionResult GetInjectionStatus()
+        public async Task<ActionResult> GetInjectionStatus()
         {
             try
             {
-                return Ok(Plugin.Instance.GetInjectionStatus());
+                var status = Plugin.Instance.GetInjectionStatus();
+                status.ServedHtmlVerified = await ProbeServedIndexHtmlAsync().ConfigureAwait(false);
+                return Ok(status);
             }
             catch (Exception ex)
             {
@@ -521,19 +539,53 @@ namespace WhisperSubs.Api
         /// <summary>
         /// Re-runs the index.html script injection on demand (config-page button), then returns the
         /// fresh status — lets an admin fix a wiped/missing injection without restarting Jellyfin.
+        /// Also re-attempts File Transformation registration (issue #108) so installing that plugin
+        /// after WhisperSubs is picked up from here without a second restart.
         /// </summary>
         [HttpPost("Setup/ReinjectScript")]
         [Authorize(Policy = "RequiresElevation")]
-        public ActionResult ReinjectScript()
+        public async Task<ActionResult> ReinjectScript()
         {
             try
             {
-                return Ok(Plugin.Instance.ReinjectScript());
+                Plugin.Instance.FileTransformation = WebFileTransformation.TryRegister(_logger);
+                var status = Plugin.Instance.ReinjectScript();
+                status.ServedHtmlVerified = await ProbeServedIndexHtmlAsync().ConfigureAwait(false);
+                return Ok(status);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error re-injecting client script");
                 return StatusCode(500, new { error = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// Fetches the index.html Jellyfin actually SERVES (locally) and checks for our script marker —
+        /// the only ground truth when a serve-time transform (File Transformation) is in play, and a
+        /// stronger signal than the on-disk file in every mode. Best-effort: any failure (HTTPS-only
+        /// bind, unusual network config) returns "unknown" and never breaks the status endpoint.
+        /// </summary>
+        private async Task<string> ProbeServedIndexHtmlAsync()
+        {
+            try
+            {
+                var baseUrl = _serverApplicationHost.GetApiUrlForLocalAccess(allowHttps: false).TrimEnd('/');
+                using var client = _httpClientFactory.CreateClient();
+                client.Timeout = TimeSpan.FromSeconds(3);
+                using var response = await client.GetAsync(baseUrl + "/web/index.html", HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode || response.Content.Headers.ContentLength > 5_000_000)
+                {
+                    return "unknown";
+                }
+
+                var html = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                return html.Contains(Plugin.ScriptTag, StringComparison.OrdinalIgnoreCase) ? "yes" : "no";
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "WhisperSubs: served index.html probe failed");
+                return "unknown";
             }
         }
 
