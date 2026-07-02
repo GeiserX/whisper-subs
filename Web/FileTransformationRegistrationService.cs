@@ -42,10 +42,12 @@ namespace WhisperSubs.Web
                             plugin.FileTransformation = state;
                         }
 
-                        // Done when FT isn't installed (nothing to retry), or when registered AND the
-                        // state was recorded. A successful registration while Plugin.Instance is still
-                        // null keeps retrying (idempotent) so the status is recorded once it exists.
-                        if (!state.Present || (state.Registered && plugin != null))
+                        // Done when registered AND the state was recorded, or when FT is CLEANLY absent
+                        // (scan completed, no assembly, no error — nothing to retry). A scan that FAILED
+                        // (Present=false with an Error, e.g. assemblies still loading at startup) keeps
+                        // retrying, as does a successful registration while Plugin.Instance is still null
+                        // (idempotent re-register records the status once it exists).
+                        if ((state.Registered && plugin != null) || (!state.Present && state.Error.Length == 0))
                         {
                             return;
                         }

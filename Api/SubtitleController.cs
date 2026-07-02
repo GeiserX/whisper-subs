@@ -572,14 +572,16 @@ namespace WhisperSubs.Api
             {
                 var baseUrl = _serverApplicationHost.GetApiUrlForLocalAccess(allowHttps: false).TrimEnd('/');
                 using var client = _httpClientFactory.CreateClient();
-                client.Timeout = TimeSpan.FromSeconds(3);
-                using var response = await client.GetAsync(baseUrl + "/web/index.html", HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
+                // One token bounds the WHOLE probe: with ResponseHeadersRead, HttpClient.Timeout only
+                // covers the header phase, so the body read needs the same cancellation to stay bounded.
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+                using var response = await client.GetAsync(baseUrl + "/web/index.html", HttpCompletionOption.ResponseHeadersRead, cts.Token).ConfigureAwait(false);
                 if (!response.IsSuccessStatusCode || response.Content.Headers.ContentLength > 5_000_000)
                 {
                     return "unknown";
                 }
 
-                var html = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                var html = await response.Content.ReadAsStringAsync(cts.Token).ConfigureAwait(false);
                 return html.Contains(Plugin.ScriptTag, StringComparison.OrdinalIgnoreCase) ? "yes" : "no";
             }
             catch (Exception ex)
