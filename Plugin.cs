@@ -4,6 +4,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Text.RegularExpressions;
 using WhisperSubs.Configuration;
+using WhisperSubs.Web;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Common.Plugins;
 using MediaBrowser.Model.Plugins;
@@ -33,6 +34,14 @@ namespace WhisperSubs
 
         /// <summary>Outcome of the most recent <see cref="InjectClientScript"/> run (startup or manual re-inject).</summary>
         public string LastInjectionOutcome { get; private set; } = "not run";
+
+        /// <summary>
+        /// State of the File Transformation plugin integration (issue #108) — written by
+        /// <see cref="FileTransformationRegistrationService"/> at startup and by the config-page
+        /// Re-inject action. When registered, the client script is injected into the SERVED
+        /// index.html without touching the file on disk.
+        /// </summary>
+        public FileTransformationState FileTransformation { get; internal set; } = FileTransformationState.NotChecked;
 
         public Plugin(
             IApplicationPaths applicationPaths,
@@ -140,6 +149,59 @@ namespace WhisperSubs
             return (ScriptInjectionOutcome.Injected, headEnd.Replace(html, ScriptTag + "\n</head>", 1));
         }
 
+        // Any <script> tag referencing our client script, tolerant of attribute/spacing variants and a
+        // trailing newline, so NormalizeInjection can strip historical or hand-edited forms. The match
+        // timeout is cheap insurance on the per-serve hot path: a timeout surfaces as an exception that
+        // TransformIndexHtml's catch converts into "serve the original content unchanged".
+        private static readonly Regex WhisperSubsScriptTagRegex = new(
+            "<script[^>]*whisperSubs\\.js[^>]*>\\s*</script>\\s*",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled,
+            TimeSpan.FromMilliseconds(100));
+
+        // Hoisted + compiled because NormalizeInjection runs on every served index.html.
+        private static readonly Regex HeadEndRegex = new(
+            "</head>", RegexOptions.IgnoreCase | RegexOptions.Compiled, TimeSpan.FromMilliseconds(100));
+
+        /// <summary>
+        /// Pure, self-healing serve-time transform used as the File Transformation callback body
+        /// (issue #108): strips every existing WhisperSubs script-tag variant, then inserts exactly one
+        /// canonical <see cref="ScriptTag"/> before the first &lt;/head&gt;. Idempotent — HTML that is
+        /// already canonical comes back byte-identical, which is what makes serve-time injection safe
+        /// to layer on top of a direct on-disk injection (no double tag). When the HTML has no
+        /// &lt;/head&gt; to anchor on, the input is returned unchanged (never strip without re-adding,
+        /// never return null).
+        /// </summary>
+        internal static string NormalizeInjection(string? html)
+        {
+            if (string.IsNullOrEmpty(html))
+            {
+                return html ?? string.Empty;
+            }
+
+            var stripped = WhisperSubsScriptTagRegex.Replace(html, string.Empty);
+
+            if (!HeadEndRegex.IsMatch(stripped))
+            {
+                return html;
+            }
+
+            return HeadEndRegex.Replace(stripped, ScriptTag + "\n</head>", 1);
+        }
+
+        /// <summary>
+        /// Pure: which injection mechanism(s) are effectively active, for the status panel.
+        /// "direct" = tag present in index.html on disk; "file-transformation" = registered serve-time
+        /// transform; both can be active at once (the idempotent transform keeps the served page canonical).
+        /// </summary>
+        internal static string ResolveInjectionMode(bool scriptTagPresent, bool ftRegistered)
+            => (scriptTagPresent, ftRegistered) switch
+            {
+                (true, true) => "direct+file-transformation",
+                (true, false) => "direct",
+                (false, true) => "file-transformation",
+                _ => "none"
+            };
+
         /// <summary>
         /// Live snapshot of whether the client script is wired into index.html, for the config-page
         /// "In-page button &amp; menu" panel. Re-reads the file each call so it reflects reality now
@@ -166,7 +228,8 @@ namespace WhisperSubs
                 writable = IsWritable(path);
             }
 
-            var (level, message) = DescribeInjection(exists, tagPresent, writable, path);
+            var ft = FileTransformation;
+            var (level, message) = DescribeInjection(exists, tagPresent, writable, path, ft.Registered);
             return new ScriptInjectionStatus
             {
                 WebPath = WebPath,
@@ -176,7 +239,12 @@ namespace WhisperSubs
                 Writable = writable,
                 LastStartupOutcome = LastInjectionOutcome,
                 Level = level,
-                Message = message
+                Message = message,
+                Mode = ResolveInjectionMode(tagPresent, ft.Registered),
+                FileTransformationPresent = ft.Present,
+                FileTransformationVersion = ft.Version,
+                FileTransformationRegistered = ft.Registered,
+                FileTransformationError = ft.Error
             };
         }
 
@@ -193,7 +261,7 @@ namespace WhisperSubs
         /// the config panel. <paramref name="indexHtmlPath"/> is woven into the not-writable remediation
         /// so the fix is copy-paste. Unit-tested so the guidance stays correct.
         /// </summary>
-        internal static (string Level, string Message) DescribeInjection(bool indexExists, bool scriptTagPresent, bool writable, string indexHtmlPath)
+        internal static (string Level, string Message) DescribeInjection(bool indexExists, bool scriptTagPresent, bool writable, string indexHtmlPath, bool fileTransformationRegistered = false)
         {
             if (!indexExists)
             {
@@ -202,10 +270,23 @@ namespace WhisperSubs
                     "button and menu item can't be added. This is unusual — confirm this server hosts the Jellyfin web UI.");
             }
 
-            if (scriptTagPresent)
+            if (fileTransformationRegistered && !scriptTagPresent)
             {
                 return ("ok",
-                    "The WhisperSubs client script is injected. If you don't see it, hard-refresh your browser " +
+                    "The WhisperSubs client script is injected at serve time via the File Transformation plugin — " +
+                    "no changes to index.html on disk are needed (ideal for read-only web roots). If you don't see " +
+                    "it, hard-refresh your browser (Ctrl/Cmd+Shift+R) and make sure you're signed in as an " +
+                    "administrator — it's admin-only. The \"Generate Subtitles\" entry in an item's three-dot (⋮) " +
+                    "menu is the most reliable place.");
+            }
+
+            if (scriptTagPresent)
+            {
+                var alsoFt = fileTransformationRegistered
+                    ? " It is also registered with the File Transformation plugin (serve-time), which keeps the served page canonical."
+                    : "";
+                return ("ok",
+                    "The WhisperSubs client script is injected." + alsoFt + " If you don't see it, hard-refresh your browser " +
                     "(Ctrl/Cmd+Shift+R) and make sure you're signed in as an administrator — it's admin-only. The " +
                     "\"Generate Subtitles\" entry in an item's three-dot (⋮) menu is the most reliable; the button on " +
                     "the detail page depends on your Jellyfin theme/version, so if only the page button is missing, use the menu item.");
@@ -215,8 +296,11 @@ namespace WhisperSubs
             {
                 var target = string.IsNullOrEmpty(indexHtmlPath) ? "your index.html" : indexHtmlPath;
                 return ("error",
-                    "index.html is present but NOT writable, so the client script can't be injected (common with " +
-                    "read-only web roots in Docker). Make it writable by the Jellyfin service user, then click " +
+                    "index.html is present but NOT writable, so the client script can't be injected directly (common with " +
+                    "read-only web roots in Docker). Recommended fix: install the File Transformation plugin " +
+                    "(Dashboard → Plugins → Repositories → add https://www.iamparadox.dev/jellyfin/plugins/manifest.json, " +
+                    "install \"File Transformation\", restart Jellyfin) — WhisperSubs then injects at serve time with no " +
+                    "permission changes. Alternatively, make it writable by the Jellyfin service user, then click " +
                     "Re-inject (or restart Jellyfin). On a Linux package install: sudo chown root:jellyfin \"" + target +
                     "\" && sudo chmod 664 \"" + target + "\". On Docker the user/group differs (e.g. linuxserver.io " +
                     "uses your PUID/PGID) and a read-only web mount must be made writable in your compose file.");
@@ -266,5 +350,19 @@ namespace WhisperSubs
         public string LastStartupOutcome { get; set; } = "";
         public string Level { get; set; } = "";
         public string Message { get; set; } = "";
+
+        /// <summary>Effective mechanism(s): "direct", "file-transformation", "direct+file-transformation" or "none". (Issue #108.)</summary>
+        public string Mode { get; set; } = "";
+
+        public bool FileTransformationPresent { get; set; }
+        public string FileTransformationVersion { get; set; } = "";
+        public bool FileTransformationRegistered { get; set; }
+        public string FileTransformationError { get; set; } = "";
+
+        /// <summary>
+        /// Best-effort probe of the SERVED index.html (the ground truth under serve-time transforms):
+        /// "yes" (marker found), "no" (fetched but marker absent) or "unknown" (probe unavailable).
+        /// </summary>
+        public string ServedHtmlVerified { get; set; } = "unknown";
     }
 }
