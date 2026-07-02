@@ -74,6 +74,7 @@
                         <strong style="margin-left:0.4em;">In-page "Generate Subtitles" button &amp; menu</strong>
                     </div>
                     <div id="injectionStatusText" class="fieldDescription" style="margin-bottom:0.6em;"></div>
+                    <div id="injectionStatusMode" class="fieldDescription" style="margin-bottom:0.6em; opacity:0.85;"></div>
                     <div style="display:flex; gap:0.6em; align-items:center; flex-wrap:wrap;">
                         <button is="emby-button" id="btnReinjectScript" class="raised" type="button">
                             <span>Re-inject script</span>
@@ -556,6 +557,7 @@
                     var icon = document.querySelector('#injectionStatusIcon');
                     var text = document.querySelector('#injectionStatusText');
                     var path = document.querySelector('#injectionStatusPath');
+                    var mode = document.querySelector('#injectionStatusMode');
                     if (!icon || !text) return;
                     if (s.Level === 'ok') {
                         icon.innerHTML = '&#9745;';
@@ -575,6 +577,28 @@
                         if (s.IndexHtmlPath) { parts.push('index.html: ' + s.IndexHtmlPath); }
                         if (s.LastStartupOutcome) { parts.push('last injection result: ' + s.LastStartupOutcome); }
                         path.textContent = parts.join('  ·  ');
+                    }
+                    if (mode) {
+                        var ver = s.FileTransformationVersion || '';
+                        var modeLabel;
+                        if (s.Mode === 'direct') {
+                            modeLabel = 'Mechanism: direct (index.html on disk)';
+                        } else if (s.Mode === 'file-transformation') {
+                            modeLabel = 'Mechanism: File Transformation plugin (serve-time' + (ver ? ', v' + ver : '') + ')';
+                        } else if (s.Mode === 'direct+file-transformation') {
+                            modeLabel = 'Mechanism: direct + File Transformation (serve-time' + (ver ? ', v' + ver : '') + ')';
+                        } else {
+                            modeLabel = 'Mechanism: none active';
+                        }
+                        if (s.ServedHtmlVerified === 'yes') {
+                            modeLabel += ' · served page verified ✓';
+                        } else if (s.ServedHtmlVerified === 'no') {
+                            modeLabel += ' · marker NOT found in served page';
+                        }
+                        if (s.FileTransformationPresent && !s.FileTransformationRegistered && s.FileTransformationError) {
+                            modeLabel += ' · File Transformation error: ' + s.FileTransformationError;
+                        }
+                        mode.textContent = modeLabel;
                     }
                 },
 
