@@ -157,4 +157,48 @@ public class RequestStoreTests
 
         Assert.Equal(2, store.CountActiveForUser("alice"));
     }
+
+    [Fact]
+    public void GetById_FindsExisting_AndReturnsNullForUnknown()
+    {
+        var store = new SubtitleRequestStore();
+        var r = Create(store, "alice", "item1");
+        Assert.Same(r.Request, store.GetById(r.Request!.Id));
+        Assert.Null(store.GetById("does-not-exist"));
+    }
+
+    [Fact]
+    public void TryTransition_OnlySwapsFromTheExpectedState()
+    {
+        var store = new SubtitleRequestStore();
+        var r = Create(store, "alice", "item1"); // Pending
+        var id = r.Request!.Id;
+
+        // Wrong expected state → no-op, request unchanged.
+        Assert.False(store.TryTransition(id, RequestState.Queued, RequestState.Completed, Now, out var same));
+        Assert.Equal(RequestState.Pending, same!.State);
+
+        // Correct expected → transitions.
+        Assert.True(store.TryTransition(id, RequestState.Pending, RequestState.Queued, Now, out var moved));
+        Assert.Equal(RequestState.Queued, moved!.State);
+
+        // A second attempt from the (now stale) expected state must fail — the CAS that prevents a double-approve.
+        Assert.False(store.TryTransition(id, RequestState.Pending, RequestState.Queued, Now, out _));
+
+        // Unknown id → false, null request.
+        Assert.False(store.TryTransition("nope", RequestState.Pending, RequestState.Queued, Now, out var missing));
+        Assert.Null(missing);
+    }
+
+    [Fact]
+    public void GetAll_ReturnsEveryRequest_NewestFirst()
+    {
+        var store = new SubtitleRequestStore();
+        Create(store, "alice", "a", now: Now - TimeSpan.FromHours(2).Ticks);
+        Create(store, "bob", "b", now: Now); // newer
+        var all = store.GetAll();
+
+        Assert.Equal(2, all.Count);
+        Assert.True(all[0].CreatedTicks >= all[1].CreatedTicks); // newest first
+    }
 }

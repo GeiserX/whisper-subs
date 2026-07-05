@@ -1,11 +1,51 @@
 using System.Text.Json;
 using WhisperSubs.Configuration;
+using WhisperSubs.Controller;
 using Xunit;
 
 namespace WhisperSubs.Tests;
 
 public class ConfigurationTests
 {
+    [Fact]
+    public void RequestQueueDefaults_AreSafeAndOptIn()
+    {
+        var config = new PluginConfiguration();
+        // The whole user-request path is off by default; existing installs are unchanged (#112).
+        Assert.False(config.AllowUserRequests);
+        Assert.False(config.AutoApproveUserRequests);
+        Assert.Equal(PriorityTier.High, config.AdminRequestTier);
+        Assert.Equal(PriorityTier.Medium, config.UserRequestTier);
+        Assert.Equal(PriorityTier.Background, config.BackgroundSweepTier);
+        Assert.Equal(5, config.UserRequestDailyQuota);
+        Assert.Equal(24, config.UserRequestQuotaWindowHours);
+        Assert.Equal(3, config.UserRequestActiveCap);
+        Assert.Equal(200, config.UserRequestMaxItemsPerRequest);
+        Assert.Equal(500, config.UserRequestGlobalCap);
+    }
+
+    [Fact]
+    public void RequestTiers_AbsentFromJson_KeepSafeDefaults()
+    {
+        // Existing installs' config has no request keys — an upgrade must not enable the feature.
+        var config = JsonSerializer.Deserialize<PluginConfiguration>("{}");
+        Assert.NotNull(config);
+        Assert.False(config!.AllowUserRequests);
+        Assert.Equal(PriorityTier.High, config.AdminRequestTier);
+        Assert.Equal(PriorityTier.Medium, config.UserRequestTier);
+    }
+
+    [Fact]
+    public void RequestTier_SerializesByName_AndRoundTrips()
+    {
+        // Tiers serialize by NAME over the config REST API ([JsonStringEnumConverter]); the config page
+        // relies on the string value, not an integer.
+        var json = JsonSerializer.Serialize(new PluginConfiguration { AdminRequestTier = PriorityTier.Critical });
+        Assert.Contains("\"Critical\"", json);
+        var back = JsonSerializer.Deserialize<PluginConfiguration>(json);
+        Assert.Equal(PriorityTier.Critical, back!.AdminRequestTier);
+    }
+
     [Fact]
     public void PluginConfiguration_DefaultValues()
     {

@@ -171,6 +171,30 @@ public class SubtitleQueueServiceTests
 
         queue.Release(k); // clean up so we don't leak the key into other tests
     }
+
+    [Fact]
+    public void CountsByTier_ReturnsANonNullMap()
+    {
+        // Thin projection over the (separately tested) PriorityLanes.CountsByTier — just exercise it.
+        var counts = SubtitleQueueService.Instance.CountsByTier();
+        Assert.NotNull(counts);
+    }
+
+    [Fact]
+    public void MergeWork_OrsForce_PromotesToStrongerTier_KeepsExistingItem()
+    {
+        // #112: two requests for the same (item,language) collapse — Force OR'd, tier promoted to the
+        // stronger, item/language taken from the existing entry.
+        var existing = new SubtitleWorkItem { Item = new Video { Name = "A" }, Language = "en", Force = false, Tier = PriorityTier.Medium };
+        var incoming = new SubtitleWorkItem { Item = new Video { Name = "B" }, Language = "en", Force = true, Tier = PriorityTier.Critical };
+
+        var merged = SubtitleQueueService.MergeWork(existing, incoming);
+
+        Assert.True(merged.Force);
+        Assert.Equal(PriorityTier.Critical, merged.Tier);
+        Assert.Same(existing.Item, merged.Item);
+        Assert.Equal("en", merged.Language);
+    }
 }
 
 public class QueueEntryTests

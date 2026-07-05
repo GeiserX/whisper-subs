@@ -80,12 +80,6 @@ namespace WhisperSubs.Controller
         /// <summary>A request that has reached a final state.</summary>
         public static bool IsTerminal(RequestState state)
             => state == RequestState.Completed || state == RequestState.Declined || state == RequestState.Failed;
-
-        /// <summary>Only a pending request can be approved.</summary>
-        public static bool CanApprove(RequestState state) => state == RequestState.Pending;
-
-        /// <summary>Only a pending request can be declined.</summary>
-        public static bool CanDecline(RequestState state) => state == RequestState.Pending;
     }
 
     /// <summary>
@@ -97,8 +91,10 @@ namespace WhisperSubs.Controller
     /// </summary>
     public class SubtitleRequestStore
     {
-        private static SubtitleRequestStore? _instance;
-        public static SubtitleRequestStore Instance => _instance ??= new SubtitleRequestStore();
+        // Lazy<T> so concurrent first-time callers can't each construct a separate instance and split the
+        // in-memory dedup/quota state this singleton exists to centralize.
+        private static readonly Lazy<SubtitleRequestStore> _lazy = new(() => new SubtitleRequestStore());
+        public static SubtitleRequestStore Instance => _lazy.Value;
 
         private readonly object _gate = new();
         private readonly List<SubtitleRequest> _requests = new();
@@ -204,6 +200,28 @@ namespace WhisperSubs.Controller
                 r.UpdatedTicks = nowTicks;
                 Persist();
                 return r;
+            }
+        }
+
+        /// <summary>
+        /// Atomic compare-and-swap transition: moves a request from <paramref name="expected"/> to
+        /// <paramref name="next"/> only if it is currently in <paramref name="expected"/>, all under the
+        /// lock — so concurrent approve/decline calls can't both act on the same pending request. Returns
+        /// false (with the current request in <paramref name="request"/>, or null if unknown) when the
+        /// state didn't match.
+        /// </summary>
+        public bool TryTransition(string id, RequestState expected, RequestState next, long nowTicks, out SubtitleRequest? request)
+        {
+            lock (_gate)
+            {
+                EnsureRestoredLocked();
+                request = _requests.FirstOrDefault(x => x.Id == id);
+                if (request == null) return false;
+                if (request.State != expected) return false;
+                request.State = next;
+                request.UpdatedTicks = nowTicks;
+                Persist();
+                return true;
             }
         }
 

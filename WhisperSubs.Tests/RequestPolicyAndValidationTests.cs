@@ -23,17 +23,6 @@ public class RequestPolicyTests
     [InlineData(RequestState.Failed, true)]
     public void IsTerminal_TrueOnlyForFinalStates(RequestState state, bool expected)
         => Assert.Equal(expected, RequestPolicy.IsTerminal(state));
-
-    [Theory]
-    [InlineData(RequestState.Pending, true)]
-    [InlineData(RequestState.Queued, false)]
-    [InlineData(RequestState.Completed, false)]
-    [InlineData(RequestState.Declined, false)]
-    public void CanApprove_And_CanDecline_OnlyFromPending(RequestState state, bool expected)
-    {
-        Assert.Equal(expected, RequestPolicy.CanApprove(state));
-        Assert.Equal(expected, RequestPolicy.CanDecline(state));
-    }
 }
 
 public class RequestValidationTests

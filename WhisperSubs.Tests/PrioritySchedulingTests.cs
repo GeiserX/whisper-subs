@@ -43,6 +43,14 @@ public class PrioritySchedulingTests
             PriorityScheduling.ResolveTier(RequesterKind.Admin, PriorityTier.Critical, PriorityTier.Medium, PriorityTier.Background));
     }
 
+    [Fact]
+    public void ResolveTier_UnknownRequester_FallsBackToMedium()
+    {
+        // Defensive default arm — an out-of-range requester kind maps to a safe middle tier.
+        Assert.Equal(PriorityTier.Medium,
+            PriorityScheduling.ResolveTier((RequesterKind)99, PriorityTier.High, PriorityTier.Low, PriorityTier.Background));
+    }
+
     // ── NormalizeRestoredTier (legacy migration) ─────────────────────────────
 
     [Fact]

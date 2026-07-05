@@ -343,43 +343,69 @@ namespace WhisperSubs.Api
         [HttpPost("Requests/{requestId}/Approve")]
         public ActionResult ApproveRequest([FromRoute] string requestId)
         {
-            var store = SubtitleRequestStore.Instance;
-            var req = store.GetById(requestId);
-            if (req == null)
+            try
             {
-                return NotFound(new { error = "Request not found" });
-            }
-            if (!RequestPolicy.CanApprove(req.State))
-            {
-                return Conflict(new { error = $"Request is {req.State}, not Pending." });
-            }
+                var store = SubtitleRequestStore.Instance;
+                var existing = store.GetById(requestId);
+                if (existing == null)
+                {
+                    return NotFound(new { error = "Request not found" });
+                }
 
-            var config = Plugin.Instance.Configuration;
-            store.SetState(requestId, RequestState.Queued, DateTime.UtcNow.Ticks);
-            var queued = SubtitleRequestService.EnqueueRequest(
-                req.ItemId, req.Language, req.Tier, config, _libraryManager, _loggerFactory, _logger);
-            _logger.LogInformation("Approved request {Id} for {Item} → queued {Queued} item(s)", requestId, req.ItemName, queued);
-            return Ok(new { message = "Request approved and queued", queued });
+                // Atomic Pending→Queued so two concurrent approvals can't both enqueue the same request.
+                if (!store.TryTransition(requestId, RequestState.Pending, RequestState.Queued, DateTime.UtcNow.Ticks, out var req))
+                {
+                    return Conflict(new { error = $"Request is {existing.State}, not Pending." });
+                }
+
+                try
+                {
+                    var config = Plugin.Instance.Configuration;
+                    var queued = SubtitleRequestService.EnqueueRequest(
+                        req!.ItemId, req.Language, req.Tier, config, _libraryManager, _loggerFactory, _logger);
+                    _logger.LogInformation("Approved request {Id} for {Item} → queued {Queued} item(s)", requestId, req.ItemName, queued);
+                    return Ok(new { message = "Request approved and queued", queued });
+                }
+                catch
+                {
+                    // Roll the request out of Queued so it isn't stuck showing queued with nothing enqueued.
+                    store.TryTransition(requestId, RequestState.Queued, RequestState.Failed, DateTime.UtcNow.Ticks, out _);
+                    throw;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error approving request {Id}", requestId);
+                return StatusCode(500, new { error = ex.Message });
+            }
         }
 
         /// <summary>Declines a pending user request. (Issue #112.)</summary>
         [HttpPost("Requests/{requestId}/Decline")]
         public ActionResult DeclineRequest([FromRoute] string requestId)
         {
-            var store = SubtitleRequestStore.Instance;
-            var req = store.GetById(requestId);
-            if (req == null)
+            try
             {
-                return NotFound(new { error = "Request not found" });
-            }
-            if (!RequestPolicy.CanDecline(req.State))
-            {
-                return Conflict(new { error = $"Request is {req.State}, not Pending." });
-            }
+                var store = SubtitleRequestStore.Instance;
+                var existing = store.GetById(requestId);
+                if (existing == null)
+                {
+                    return NotFound(new { error = "Request not found" });
+                }
 
-            store.SetState(requestId, RequestState.Declined, DateTime.UtcNow.Ticks);
-            _logger.LogInformation("Declined request {Id} for {Item}", requestId, req.ItemName);
-            return Ok(new { message = "Request declined" });
+                if (!store.TryTransition(requestId, RequestState.Pending, RequestState.Declined, DateTime.UtcNow.Ticks, out _))
+                {
+                    return Conflict(new { error = $"Request is {existing.State}, not Pending." });
+                }
+
+                _logger.LogInformation("Declined request {Id} for {Item}", requestId, existing.ItemName);
+                return Ok(new { message = "Request declined" });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error declining request {Id}", requestId);
+                return StatusCode(500, new { error = ex.Message });
+            }
         }
 
         /// <summary>

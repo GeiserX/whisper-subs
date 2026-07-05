@@ -53,8 +53,9 @@ namespace WhisperSubs.Controller
 
     public class SubtitleQueueService
     {
-        private static SubtitleQueueService? _instance;
-        public static SubtitleQueueService Instance => _instance ??= new SubtitleQueueService();
+        // Lazy<T> so concurrent first-time callers all get the same instance (thread-safe init).
+        private static readonly System.Lazy<SubtitleQueueService> _lazy = new(() => new SubtitleQueueService());
+        public static SubtitleQueueService Instance => _lazy.Value;
 
         // Multi-lane priority queue (#112): one FIFO lane per tier, strongest tier drained first.
         // Replaces the former single ConcurrentQueue. De-dup identity is (item, language) — force and
@@ -174,7 +175,8 @@ namespace WhisperSubs.Controller
 
         // Merge two work items for the same identity: keep the item/language, OR the force flag, promote
         // to the stronger tier, and keep whichever completion source exists (an awaited priority request).
-        private static SubtitleWorkItem MergeWork(SubtitleWorkItem existing, SubtitleWorkItem incoming) =>
+        // Internal (not private) so the merge logic is directly unit-testable.
+        internal static SubtitleWorkItem MergeWork(SubtitleWorkItem existing, SubtitleWorkItem incoming) =>
             new SubtitleWorkItem
             {
                 Item = existing.Item,

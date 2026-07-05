@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using Jellyfin.Data.Enums;
 using MediaBrowser.Controller.Entities;
@@ -13,6 +14,9 @@ namespace WhisperSubs.Controller
     /// by both the admin Generate-all path and the user-request path so a container (Series/Season) fans
     /// out to exactly the same set — the fan-out that the user quota / caps count.
     /// </summary>
+    // Excluded from coverage: a thin resolver over the ILibraryManager runtime + Jellyfin item types
+    // (ResolveLeafItems queries the live library); the only pure bit is trivial enum-name parsing.
+    [ExcludeFromCodeCoverage(Justification = "Thin resolver over ILibraryManager + Jellyfin runtime item types")]
     public static class MediaItemResolver
     {
         /// <summary>A top-level library container that must never be enqueued wholesale.</summary>
