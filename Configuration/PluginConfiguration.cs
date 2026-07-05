@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using MediaBrowser.Model.Plugins;
+using WhisperSubs.Controller;
 
 namespace WhisperSubs.Configuration
 {
@@ -217,6 +218,56 @@ namespace WhisperSubs.Configuration
         public int SkipCacheExpiryDays { get; set; } = 30;
 
         public List<string> EnabledLibraries { get; set; } = new List<string>();
+
+        // ── Subtitle request queue & named-tier priority (issue #112) ──────────────
+        // The whole user-request path is OFF by default: an admin who never enables it keeps today's
+        // exact admin-only behaviour, so an auto-update never changes an existing server. Tiers are
+        // named labels (Critical > High > Medium > Low > Background) and the requester→tier mapping is
+        // fully configurable; the tier of a job is ALWAYS assigned server-side from the requester's
+        // role, never sent by the client.
+
+        /// <summary>
+        /// Master switch. When true, non-admin users may request subtitles from the item UI (gated by
+        /// approval, quota and de-dup below). Default false — existing installs stay admin-only.
+        /// </summary>
+        public bool AllowUserRequests { get; set; } = false;
+
+        /// <summary>
+        /// When true, a user request is enqueued immediately at <see cref="UserRequestTier"/>. When
+        /// false (default), it lands as Pending and spends no CPU until an admin approves it — the
+        /// safe default. Flip this on for a trusted server where requests should "just enqueue below me".
+        /// </summary>
+        public bool AutoApproveUserRequests { get; set; } = false;
+
+        /// <summary>Priority tier assigned to an ADMIN Generate / Generate-all request. Default High.</summary>
+        [JsonConverter(typeof(JsonStringEnumConverter))]
+        public PriorityTier AdminRequestTier { get; set; } = PriorityTier.High;
+
+        /// <summary>Priority tier assigned to a USER request. Default Medium (below the admin tier).</summary>
+        [JsonConverter(typeof(JsonStringEnumConverter))]
+        public PriorityTier UserRequestTier { get; set; } = PriorityTier.Medium;
+
+        /// <summary>
+        /// Priority tier of the background auto-generation sweep (informational). The sweep runs
+        /// whenever the request queue is idle — i.e. effectively the lowest priority. Default Background.
+        /// </summary>
+        [JsonConverter(typeof(JsonStringEnumConverter))]
+        public PriorityTier BackgroundSweepTier { get; set; } = PriorityTier.Background;
+
+        /// <summary>Max user requests per rolling window (see <see cref="UserRequestQuotaWindowHours"/>). 0 = unlimited. Default 5.</summary>
+        public int UserRequestDailyQuota { get; set; } = 5;
+
+        /// <summary>Rolling quota window in hours for <see cref="UserRequestDailyQuota"/>. Default 24.</summary>
+        public int UserRequestQuotaWindowHours { get; set; } = 24;
+
+        /// <summary>Max simultaneously-active (pending + queued) requests a single user may have. 0 = unlimited. Default 3.</summary>
+        public int UserRequestActiveCap { get; set; } = 3;
+
+        /// <summary>Safety cap on how many leaf items a single user request may expand to (a season/show fan-out). Default 200.</summary>
+        public int UserRequestMaxItemsPerRequest { get; set; } = 200;
+
+        /// <summary>Global cap on total user-originated requests that are pending or queued at once. 0 = unlimited. Default 500.</summary>
+        public int UserRequestGlobalCap { get; set; } = 500;
 
         public PluginConfiguration()
         {

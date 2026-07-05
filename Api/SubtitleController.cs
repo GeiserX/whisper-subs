@@ -186,7 +186,8 @@ namespace WhisperSubs.Api
 
                 // Manual request → force: an explicit user action bypasses the "skip if a usable
                 // subtitle already exists" checks (#82) so the user always gets fresh generation.
-                queue.Enqueue(item, targetLanguage, force: true);
+                // Admin requests carry the configured admin tier (#112).
+                queue.Enqueue(item, targetLanguage, config.AdminRequestTier, force: true);
                 _logger.LogInformation("Queued {Action} generation for {ItemName} [{Language}]. Queue size: {Count}",
                     isAudio ? "lyrics" : "subtitle", item.Name, targetLanguage, queue.PriorityCount);
 
@@ -228,9 +229,7 @@ namespace WhisperSubs.Api
                 }
 
                 // Guard against enqueuing an entire library: only specific media or season/series containers.
-                if (parent is MediaBrowser.Controller.Entities.CollectionFolder
-                    || parent is MediaBrowser.Controller.Entities.UserView
-                    || parent is MediaBrowser.Controller.Entities.AggregateFolder)
+                if (MediaItemResolver.IsWholeLibraryContainer(parent))
                 {
                     return BadRequest(new { error = "Select a specific movie, episode, season, or series." });
                 }
@@ -238,21 +237,9 @@ namespace WhisperSubs.Api
                 var config = Plugin.Instance.Configuration;
                 var targetLanguage = language ?? config.DefaultLanguage;
 
-                // Resolve leaf items (Video / Audio) from the container
-                var typeStr = config.EnableLyricsGeneration ? "Movie,Episode,Video,Audio" : "Movie,Episode,Video";
-                var includeTypes = GetBaseItemKinds(typeStr);
-                var children = _libraryManager.GetItemList(new InternalItemsQuery
-                {
-                    ParentId = parent.Id,
-                    IncludeItemTypes = includeTypes,
-                    Recursive = true
-                }).Where(item => !string.IsNullOrEmpty(item.Path)).ToList();
-
-                // If this IS a leaf item itself, include it directly
-                if (children.Count == 0 && !string.IsNullOrEmpty(parent.Path) && (parent is Video || (parent is MediaBrowser.Controller.Entities.Audio.Audio && config.EnableLyricsGeneration)))
-                {
-                    children = new List<BaseItem> { parent };
-                }
+                // Resolve leaf items (Video / Audio) from the container — shared with the user-request
+                // path so a Series/Season fans out to exactly the same set (#112).
+                var children = MediaItemResolver.ResolveLeafItems(parent, config.EnableLyricsGeneration, _libraryManager);
 
                 if (children.Count == 0)
                 {
@@ -267,7 +254,7 @@ namespace WhisperSubs.Api
                     // SkipIfSubtitleExists toggle and the original-language / translation toggles so a
                     // library-wide request fills only the gaps the user actually wants (unlike
                     // single-item Generate, which forces a specific item). See #82/#83.
-                    if (queue.Enqueue(child, targetLanguage)) queued++;
+                    if (queue.Enqueue(child, targetLanguage, config.AdminRequestTier)) queued++;
                     else skipped++;
                 }
 
@@ -321,8 +308,104 @@ namespace WhisperSubs.Api
                 fileProgress = queue.CurrentFileProgress,
                 phase = queue.CurrentPhase,
                 itemType = queue.TaskCurrentItemType,
-                library = queue.TaskCurrentItemLibrary
+                library = queue.TaskCurrentItemLibrary,
+                // Named-tier breakdown of what's queued + how many user requests await approval (#112).
+                tiers = queue.CountsByTier().ToDictionary(kv => kv.Key.ToString(), kv => kv.Value),
+                pendingRequests = SubtitleRequestStore.Instance.GetAll().Count(r => r.State == RequestState.Pending)
             });
+        }
+
+        /// <summary>
+        /// Lists all user subtitle requests (admin), newest first — for the config-page approval panel.
+        /// Returns item names + state only; never a filesystem path. (Issue #112.)
+        /// </summary>
+        [HttpGet("Requests")]
+        public ActionResult GetAllRequests()
+        {
+            var requests = SubtitleRequestStore.Instance.GetAll();
+            return Ok(requests.Select(r => new
+            {
+                requestId = r.Id,
+                itemId = r.ItemId,
+                itemName = r.ItemName,
+                itemType = r.ItemType,
+                language = r.Language,
+                userName = r.UserName,
+                tier = r.Tier.ToString(),
+                state = r.State.ToString(),
+                itemCount = r.ItemCount,
+                created = new DateTime(r.CreatedTicks, DateTimeKind.Utc),
+                updated = new DateTime(r.UpdatedTicks, DateTimeKind.Utc)
+            }));
+        }
+
+        /// <summary>Approves a pending user request → enqueues its items at the user tier. (Issue #112.)</summary>
+        [HttpPost("Requests/{requestId}/Approve")]
+        public ActionResult ApproveRequest([FromRoute] string requestId)
+        {
+            try
+            {
+                var store = SubtitleRequestStore.Instance;
+                var existing = store.GetById(requestId);
+                if (existing == null)
+                {
+                    return NotFound(new { error = "Request not found" });
+                }
+
+                // Atomic Pending→Queued so two concurrent approvals can't both enqueue the same request.
+                if (!store.TryTransition(requestId, RequestState.Pending, RequestState.Queued, DateTime.UtcNow.Ticks, out var req))
+                {
+                    return Conflict(new { error = $"Request is {existing.State}, not Pending." });
+                }
+
+                try
+                {
+                    var config = Plugin.Instance.Configuration;
+                    var queued = SubtitleRequestService.EnqueueRequest(
+                        req!.ItemId, req.Language, req.Tier, config, _libraryManager, _loggerFactory, _logger);
+                    _logger.LogInformation("Approved request {Id} for {Item} → queued {Queued} item(s)", requestId, req.ItemName, queued);
+                    return Ok(new { message = "Request approved and queued", queued });
+                }
+                catch
+                {
+                    // Roll the request out of Queued so it isn't stuck showing queued with nothing enqueued.
+                    store.TryTransition(requestId, RequestState.Queued, RequestState.Failed, DateTime.UtcNow.Ticks, out _);
+                    throw;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error approving request {Id}", requestId);
+                return StatusCode(500, new { error = ex.Message });
+            }
+        }
+
+        /// <summary>Declines a pending user request. (Issue #112.)</summary>
+        [HttpPost("Requests/{requestId}/Decline")]
+        public ActionResult DeclineRequest([FromRoute] string requestId)
+        {
+            try
+            {
+                var store = SubtitleRequestStore.Instance;
+                var existing = store.GetById(requestId);
+                if (existing == null)
+                {
+                    return NotFound(new { error = "Request not found" });
+                }
+
+                if (!store.TryTransition(requestId, RequestState.Pending, RequestState.Declined, DateTime.UtcNow.Ticks, out _))
+                {
+                    return Conflict(new { error = $"Request is {existing.State}, not Pending." });
+                }
+
+                _logger.LogInformation("Declined request {Id} for {Item}", requestId, existing.ItemName);
+                return Ok(new { message = "Request declined" });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error declining request {Id}", requestId);
+                return StatusCode(500, new { error = ex.Message });
+            }
         }
 
         /// <summary>
