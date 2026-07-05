@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -23,6 +25,13 @@ namespace WhisperSubs.Controller
         /// forced request survives a restart; scheduled items default to false.
         /// </summary>
         public bool Force { get; init; }
+
+        /// <summary>
+        /// Priority tier assigned by the server from the requester's role (#112). Drives dequeue order
+        /// — the queue serves the strongest tier first. Every enqueue path sets this explicitly; the
+        /// default is only a safe fallback.
+        /// </summary>
+        public PriorityTier Tier { get; init; } = PriorityTier.Medium;
     }
 
     public class QueueEntry
@@ -33,15 +42,30 @@ namespace WhisperSubs.Controller
         /// <summary>Whether this was a forced (manual) request — preserved across restarts so an
         /// explicit "regenerate" survives a restore instead of silently respecting the skip checks.</summary>
         public bool Force { get; set; }
+
+        /// <summary>
+        /// Persisted priority tier (#112). Nullable so a queue.json written before this feature (no
+        /// tier field) deserializes to null and is normalised to <see cref="PriorityTier.High"/> on
+        /// restore — NOT Critical(0), which a non-nullable int default would wrongly imply.
+        /// </summary>
+        public int? Tier { get; set; }
     }
 
     public class SubtitleQueueService
     {
-        private static SubtitleQueueService? _instance;
-        public static SubtitleQueueService Instance => _instance ??= new SubtitleQueueService();
+        // Lazy<T> so concurrent first-time callers all get the same instance (thread-safe init).
+        private static readonly System.Lazy<SubtitleQueueService> _lazy = new(() => new SubtitleQueueService());
+        public static SubtitleQueueService Instance => _lazy.Value;
 
-        private readonly ConcurrentQueue<SubtitleWorkItem> _priorityQueue = new();
+        // Multi-lane priority queue (#112): one FIFO lane per tier, strongest tier drained first.
+        // Replaces the former single ConcurrentQueue. De-dup identity is (item, language) — force and
+        // tier are merged onto the existing entry rather than queued twice.
+        private readonly PriorityLanes<SubtitleWorkItem> _lanes = new();
+
+        // Keys currently being PROCESSED (dequeued, transcription running). Kept separate from the
+        // queued set so a re-request while an item is mid-transcription does not double-queue it.
         private readonly ConcurrentDictionary<string, byte> _inFlight = new();
+
         private int _isDraining;
         private string? _currentItemName;
         private int _processedCount;
@@ -62,7 +86,7 @@ namespace WhisperSubs.Controller
         private int _taskFailed;
         private int _taskIsRunning;
 
-        public int PriorityCount => _priorityQueue.Count;
+        public int PriorityCount => _lanes.Count;
         public string? CurrentItemName => _currentItemName ?? _taskCurrentItemName;
         public bool IsDraining => _isDraining == 1;
         public int ProcessedCount => _processedCount;
@@ -73,6 +97,10 @@ namespace WhisperSubs.Controller
         /// <summary>Last error message from a failed manual-queue item, for surfacing in the UI.</summary>
         public string? LastError => _lastError;
 
+        /// <summary>Queued item counts by named tier (#112) — for the admin queue view.</summary>
+        public Dictionary<PriorityTier, int> CountsByTier()
+            => _lanes.CountsByTier().ToDictionary(kv => (PriorityTier)kv.Key, kv => kv.Value);
+
         // ── Per-file progress (updated by WhisperProvider stderr) ──
         private int _currentFileProgress;
 
@@ -82,7 +110,7 @@ namespace WhisperSubs.Controller
         /// <summary>Updates the current file's transcription progress.</summary>
         public void ReportFileProgress(int percent)
         {
-            Interlocked.Exchange(ref _currentFileProgress, Math.Clamp(percent, 0, 100));
+            Interlocked.Exchange(ref _currentFileProgress, System.Math.Clamp(percent, 0, 100));
         }
 
         /// <summary>Resets file progress to 0 (call when starting a new item).</summary>
@@ -138,12 +166,27 @@ namespace WhisperSubs.Controller
             Interlocked.Exchange(ref _taskIsRunning, 0);
         }
 
-        // De-dup key for a queued unit of work. Same item + language + force collapses to one entry,
-        // so double-clicks and overlapping season-bulk requests don't queue the same work twice.
-        internal static string DedupKey(Guid itemId, string language, bool force) =>
-            $"{itemId:N}|{(language ?? string.Empty).ToLowerInvariant()}|{(force ? "1" : "0")}";
+        // De-dup identity for a queued unit of work: same item + language collapses to one entry,
+        // regardless of force or tier (#112). Force is OR-merged and tier promoted onto the existing
+        // entry, so a user request at Medium followed by an admin request at Critical becomes one
+        // Critical, forced job — never two competing jobs. Language is lowercased so "EN"/"en" match.
+        internal static string IdentityKey(System.Guid itemId, string language) =>
+            $"{itemId:N}|{(language ?? string.Empty).ToLowerInvariant()}";
 
-        // Reserve a key before enqueuing; returns false if an identical unit is already queued/in-flight.
+        // Merge two work items for the same identity: keep the item/language, OR the force flag, promote
+        // to the stronger tier, and keep whichever completion source exists (an awaited priority request).
+        // Internal (not private) so the merge logic is directly unit-testable.
+        internal static SubtitleWorkItem MergeWork(SubtitleWorkItem existing, SubtitleWorkItem incoming) =>
+            new SubtitleWorkItem
+            {
+                Item = existing.Item,
+                Language = existing.Language,
+                Completion = existing.Completion ?? incoming.Completion,
+                Force = existing.Force || incoming.Force,
+                Tier = PriorityScheduling.Stronger(existing.Tier, incoming.Tier)
+            };
+
+        // Reserve a key as in-flight (being processed); returns false if already reserved.
         internal bool TryReserve(string key) => _inFlight.TryAdd(key, 0);
 
         // Release after processing (or on failure/cancel) so the same work can be requested again later.
@@ -162,48 +205,42 @@ namespace WhisperSubs.Controller
         }
 
         [ExcludeFromCodeCoverage(Justification = "Requires BaseItem + Plugin.Instance for persistence")]
-        public bool Enqueue(BaseItem item, string language, bool force = false)
+        public bool Enqueue(BaseItem item, string language, PriorityTier tier = PriorityTier.High, bool force = false)
         {
-            var key = DedupKey(item.Id, language, force);
-            if (!TryReserve(key)) return false; // identical work already queued / in flight
-            _priorityQueue.Enqueue(new SubtitleWorkItem
+            var key = IdentityKey(item.Id, language);
+
+            // If the same unit is mid-transcription, don't queue a duplicate — the running pass covers it.
+            if (_inFlight.ContainsKey(key)) return false;
+
+            var outcome = _lanes.Enqueue(key, (int)tier, new SubtitleWorkItem
             {
                 Item = item,
                 Language = language,
                 Completion = null,
-                Force = force
-            });
-            PersistQueue();
-            return true;
-        }
+                Force = force,
+                Tier = tier
+            }, MergeWork);
 
-        [ExcludeFromCodeCoverage(Justification = "Requires BaseItem + Plugin.Instance for persistence")]
-        public Task EnqueuePriorityAsync(BaseItem item, string language)
-        {
-            var tcs = new TaskCompletionSource<bool>();
-            // De-dup parity with Enqueue: priority items are non-forced. If identical work is already
-            // in flight, don't queue a duplicate — complete with false so an awaiter isn't left hanging.
-            if (!TryReserve(DedupKey(item.Id, language, false)))
-            {
-                tcs.SetResult(false);
-                return tcs.Task;
-            }
-            _priorityQueue.Enqueue(new SubtitleWorkItem
-            {
-                Item = item,
-                Language = language,
-                Completion = tcs
-            });
+            // Always persist: even a Duplicate outcome can have OR-merged Force or promoted the tier onto
+            // the existing entry via MergeWork, so queue.json must be rewritten to survive a restart —
+            // otherwise an explicit forced re-request could silently revert to non-forced on restore (#112).
             PersistQueue();
-            return tcs.Task;
+            return outcome == LaneEnqueueOutcome.Added;
         }
 
         [ExcludeFromCodeCoverage(Justification = "Requires Plugin.Instance for persistence")]
         public bool TryDequeuePriority(out SubtitleWorkItem? item)
         {
-            var result = _priorityQueue.TryDequeue(out item);
-            if (result) PersistQueue();
-            return result;
+            if (_lanes.TryDequeue(out var dequeued) && dequeued != null)
+            {
+                // Mark in-flight so a concurrent re-request doesn't double-queue while it transcribes.
+                TryReserve(IdentityKey(dequeued.Item.Id, dequeued.Language));
+                PersistQueue();
+                item = dequeued;
+                return true;
+            }
+            item = null;
+            return false;
         }
 
         /// <summary>
@@ -224,27 +261,31 @@ namespace WhisperSubs.Controller
                 int restored = 0;
                 foreach (var entry in entries)
                 {
-                    if (!Guid.TryParse(entry.ItemId, out var guid)) continue;
+                    if (!System.Guid.TryParse(entry.ItemId, out var guid)) continue;
                     var item = libraryManager.GetItemById(guid);
                     if (item == null) continue;
 
-                    // Skip duplicates: a queue.json containing the same (item, language, force) more
-                    // than once must not restore and re-run every copy — de-dup the restored set too.
-                    if (!TryReserve(DedupKey(item.Id, entry.Language, entry.Force))) continue;
-                    _priorityQueue.Enqueue(new SubtitleWorkItem
+                    var tier = PriorityScheduling.NormalizeRestoredTier(entry.Tier);
+                    var key = IdentityKey(item.Id, entry.Language);
+
+                    // A queue.json with the same (item, language) more than once must not re-run every
+                    // copy — de-dup the restored set too, keeping the strongest tier / OR'd force.
+                    var outcome = _lanes.Enqueue(key, (int)tier, new SubtitleWorkItem
                     {
                         Item = item,
                         Language = entry.Language,
                         Completion = null,
-                        Force = entry.Force
-                    });
-                    restored++;
+                        Force = entry.Force,
+                        Tier = tier
+                    }, MergeWork);
+
+                    if (outcome == LaneEnqueueOutcome.Added) restored++;
                 }
 
                 logger.LogInformation("[Queue] Restored {Count} items from disk (of {Total} saved)", restored, entries.Count);
                 return restored;
             }
-            catch (Exception ex)
+            catch (System.Exception ex)
             {
                 logger.LogWarning(ex, "[Queue] Failed to restore queue from {Path}", path);
                 return 0;
@@ -259,11 +300,12 @@ namespace WhisperSubs.Controller
 
             try
             {
-                var entries = _priorityQueue.Select(item => new QueueEntry
+                var entries = _lanes.Snapshot().Select(e => new QueueEntry
                 {
-                    ItemId = item.Item.Id.ToString("N"),
-                    Language = item.Language,
-                    Force = item.Force
+                    ItemId = e.Value.Item.Id.ToString("N"),
+                    Language = e.Value.Language,
+                    Force = e.Value.Force,
+                    Tier = e.Tier
                 }).ToList();
 
                 var json = JsonSerializer.Serialize(entries);
@@ -303,9 +345,10 @@ namespace WhisperSubs.Controller
                         _currentItemName = null;
                         Interlocked.Exchange(ref _isDraining, 0);
 
-                        // Re-check: if items were enqueued during the finally block,
-                        // restart the drain to avoid stuck items.
-                        if (!_priorityQueue.IsEmpty)
+                        // Re-check: if items were enqueued during the finally block, restart the drain to
+                        // avoid stuck items — but never on an already-cancelled token, which would set
+                        // _isDraining=1 while Task.Run skips the delegate, wedging the queue forever (#112).
+                        if (!_lanes.IsEmpty && !cancellationToken.IsCancellationRequested)
                         {
                             EnsureDraining(manager, provider, logger, cancellationToken);
                         }
@@ -323,13 +366,13 @@ namespace WhisperSubs.Controller
         {
             while (TryDequeuePriority(out var workItem) && workItem != null)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-
                 try
                 {
+                    // Inside the try so the finally still releases the in-flight reservation on cancel (#112).
+                    cancellationToken.ThrowIfCancellationRequested();
                     _currentItemName = workItem.Item.Name;
-                    logger.LogInformation("[Queue] Processing {ItemName} ({Remaining} remaining)",
-                        workItem.Item.Name, _priorityQueue.Count);
+                    logger.LogInformation("[Queue] Processing {ItemName} [{Tier}] ({Remaining} remaining)",
+                        workItem.Item.Name, workItem.Tier, _lanes.Count);
 
                     await TranscriptionLock.WaitAsync(cancellationToken);
                     try
@@ -345,12 +388,12 @@ namespace WhisperSubs.Controller
                     Interlocked.Increment(ref _processedCount);
                     workItem.Completion?.TrySetResult(true);
                 }
-                catch (OperationCanceledException)
+                catch (System.OperationCanceledException)
                 {
                     workItem.Completion?.TrySetCanceled();
                     throw;
                 }
-                catch (Exception ex)
+                catch (System.Exception ex)
                 {
                     Interlocked.Increment(ref _processedCount);
                     Interlocked.Increment(ref _failedCount);
@@ -360,7 +403,7 @@ namespace WhisperSubs.Controller
                 }
                 finally
                 {
-                    Release(DedupKey(workItem.Item.Id, workItem.Language, workItem.Force));
+                    Release(IdentityKey(workItem.Item.Id, workItem.Language));
                 }
             }
             logger.LogInformation("[Queue] Drain complete. Processed {Count} items total ({Failed} failed).",
@@ -379,11 +422,12 @@ namespace WhisperSubs.Controller
         {
             while (TryDequeuePriority(out var workItem) && workItem != null)
             {
-                cancellationToken.ThrowIfCancellationRequested();
                 try
                 {
+                    // Inside the try so the finally still releases the in-flight reservation on cancel (#112).
+                    cancellationToken.ThrowIfCancellationRequested();
                     _currentItemName = workItem.Item.Name;
-                    logger.LogInformation("[Priority] Processing {ItemName}", workItem.Item.Name);
+                    logger.LogInformation("[Priority] Processing {ItemName} [{Tier}]", workItem.Item.Name, workItem.Tier);
 
                     await TranscriptionLock.WaitAsync(cancellationToken);
                     try
@@ -398,12 +442,12 @@ namespace WhisperSubs.Controller
 
                     workItem.Completion?.TrySetResult(true);
                 }
-                catch (OperationCanceledException)
+                catch (System.OperationCanceledException)
                 {
                     workItem.Completion?.TrySetCanceled();
                     throw;
                 }
-                catch (Exception ex)
+                catch (System.Exception ex)
                 {
                     Interlocked.Increment(ref _failedCount);
                     _lastError = $"{workItem.Item.Name}: {ex.Message}";
@@ -412,7 +456,7 @@ namespace WhisperSubs.Controller
                 }
                 finally
                 {
-                    Release(DedupKey(workItem.Item.Id, workItem.Language, workItem.Force));
+                    Release(IdentityKey(workItem.Item.Id, workItem.Language));
                 }
             }
             _currentItemName = null;
