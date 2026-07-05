@@ -448,10 +448,135 @@
                         </div>
                     </details>
 
+                    <!-- ── Subtitle Requests & Priority (issue #112) ─────────────── -->
+                    <h2>Subtitle Requests &amp; Priority</h2>
+                    <div class="fieldDescription" style="margin-bottom:0.75em;">
+                        Let your users request subtitles from the item page, and control the order the queue works
+                        through everything. Priority is expressed as named tiers &mdash;
+                        <strong>Critical &rsaquo; High &rsaquo; Medium &rsaquo; Low &rsaquo; Background</strong> &mdash;
+                        and the tier is always assigned by the server from <em>who</em> asked, never from the browser.
+                    </div>
+
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label>
+                            <input is="emby-checkbox" type="checkbox" id="chkAllowUserRequests" name="AllowUserRequests" />
+                            <span>Allow users to request subtitles</span>
+                        </label>
+                        <div class="fieldDescription">
+                            Adds a &ldquo;Request Subtitles&rdquo; entry to the item menu for non-admin users. <strong>Off by default</strong> &mdash;
+                            when off, nothing changes and the plugin stays admin-only. Requests are de-duplicated, rate-limited and (unless auto-approved) held for your approval.
+                        </div>
+                    </div>
+
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label>
+                            <input is="emby-checkbox" type="checkbox" id="chkAutoApproveUserRequests" name="AutoApproveUserRequests" />
+                            <span>Auto-approve user requests (skip my approval)</span>
+                        </label>
+                        <div class="fieldDescription">
+                            When on, a user request goes straight onto the queue at the user tier. When <strong>off (default)</strong>,
+                            requests wait as <em>Pending</em> and spend no CPU until you approve them below.
+                            With auto-approve on, size the limits below together &mdash; a single user's worst case is
+                            <em>Max active requests &times; Max items per request</em> transcriptions queued at once.
+                        </div>
+                    </div>
+
+                    <div class="selectContainer">
+                        <label class="selectLabel" for="selectAdminRequestTier">Admin request priority</label>
+                        <select is="emby-select" id="selectAdminRequestTier" name="AdminRequestTier">
+                            <option value="Critical">Critical</option>
+                            <option value="High">High</option>
+                            <option value="Medium">Medium</option>
+                            <option value="Low">Low</option>
+                            <option value="Background">Background</option>
+                        </select>
+                        <div class="fieldDescription">Priority for what <strong>you</strong> queue with Generate / Generate-all. Default High.</div>
+                    </div>
+
+                    <div class="selectContainer">
+                        <label class="selectLabel" for="selectUserRequestTier">User request priority</label>
+                        <select is="emby-select" id="selectUserRequestTier" name="UserRequestTier">
+                            <option value="Critical">Critical</option>
+                            <option value="High">High</option>
+                            <option value="Medium">Medium</option>
+                            <option value="Low">Low</option>
+                            <option value="Background">Background</option>
+                        </select>
+                        <div class="fieldDescription">Priority for what your users request. Default Medium (above the background sweep, below your admin requests).</div>
+                    </div>
+
+                    <div class="selectContainer">
+                        <label class="selectLabel" for="selectBackgroundSweepTier">Background sweep priority</label>
+                        <select is="emby-select" id="selectBackgroundSweepTier" name="BackgroundSweepTier">
+                            <option value="Critical">Critical</option>
+                            <option value="High">High</option>
+                            <option value="Medium">Medium</option>
+                            <option value="Low">Low</option>
+                            <option value="Background">Background</option>
+                        </select>
+                        <div class="fieldDescription">Priority of the &ldquo;fill every gap&rdquo; auto-generation sweep. Default Background &mdash; it runs whenever the request queue is idle.</div>
+                    </div>
+
+                    <details style="margin-top:0.5em;">
+                        <summary style="cursor:pointer; font-weight:600;">User request limits (anti-abuse)</summary>
+                        <div style="margin-top:0.75em;">
+                            <div class="inputContainer">
+                                <label class="inputLabel inputLabelUnfocused" for="numUserRequestDailyQuota">Requests per user per window</label>
+                                <input type="number" id="numUserRequestDailyQuota" name="UserRequestDailyQuota" class="emby-input" min="0" max="100000" step="1" />
+                                <div class="fieldDescription">How many requests one user may make within the rolling window below. 0 = unlimited. Default 5.</div>
+                            </div>
+                            <div class="inputContainer">
+                                <label class="inputLabel inputLabelUnfocused" for="numUserRequestQuotaWindowHours">Rolling window (hours)</label>
+                                <input type="number" id="numUserRequestQuotaWindowHours" name="UserRequestQuotaWindowHours" class="emby-input" min="1" max="8760" step="1" />
+                                <div class="fieldDescription">The window the quota above is measured over. Default 24.</div>
+                            </div>
+                            <div class="inputContainer">
+                                <label class="inputLabel inputLabelUnfocused" for="numUserRequestActiveCap">Max active requests per user</label>
+                                <input type="number" id="numUserRequestActiveCap" name="UserRequestActiveCap" class="emby-input" min="0" max="100000" step="1" />
+                                <div class="fieldDescription">How many pending + queued requests a user may have at once. 0 = unlimited. Default 3.</div>
+                            </div>
+                            <div class="inputContainer">
+                                <label class="inputLabel inputLabelUnfocused" for="numUserRequestMaxItemsPerRequest">Max items per request</label>
+                                <input type="number" id="numUserRequestMaxItemsPerRequest" name="UserRequestMaxItemsPerRequest" class="emby-input" min="1" max="100000" step="1" />
+                                <div class="fieldDescription">Cap on how many episodes a single season/show request may expand to. Default 200.</div>
+                            </div>
+                            <div class="inputContainer">
+                                <label class="inputLabel inputLabelUnfocused" for="numUserRequestGlobalCap">Global active request cap</label>
+                                <input type="number" id="numUserRequestGlobalCap" name="UserRequestGlobalCap" class="emby-input" min="0" max="1000000" step="1" />
+                                <div class="fieldDescription">Cap on total user requests pending/queued across everyone. 0 = unlimited. Default 500.</div>
+                            </div>
+                        </div>
+                    </details>
+
                     <button is="emby-button" type="submit" class="raised button-submit block" style="margin-top:1.5em;">
                         <span>Save</span>
                     </button>
                 </form>
+
+                <!-- ── Pending user requests (admin approval panel; issue #112) ── -->
+                <br />
+                <h2>User Requests</h2>
+                <p class="fieldDescription" id="requestsPanelHint">
+                    Requests your users have submitted. Approve to queue at the user priority, or decline.
+                </p>
+                <div id="requestsPanel" style="margin-bottom:1em;">
+                    <div id="requestsEmpty" class="fieldDescription" style="display:none;">No requests yet.</div>
+                    <table id="requestsTable" style="width:100%; border-collapse:collapse; display:none;">
+                        <thead>
+                            <tr style="text-align:left; border-bottom:1px solid rgba(255,255,255,0.15);">
+                                <th style="padding:0.4em 0.6em;">Item</th>
+                                <th style="padding:0.4em 0.6em;">User</th>
+                                <th style="padding:0.4em 0.6em;">State</th>
+                                <th style="padding:0.4em 0.6em;">Items</th>
+                                <th style="padding:0.4em 0.6em;"></th>
+                            </tr>
+                        </thead>
+                        <tbody id="requestsTableBody"></tbody>
+                    </table>
+                </div>
+                <button is="emby-button" type="button" id="btnRefreshRequests" class="raised block" style="max-width:220px;">
+                    <span>Refresh requests</span>
+                </button>
 
                 <br />
                 <h2>Subtitle Management</h2>
@@ -1197,6 +1322,17 @@
                             page.querySelector('#numVadSpeechPadMs').value = (config.VadSpeechPadMs >= 0) ? config.VadSpeechPadMs : '';
                             page.querySelector('#numVadSamplesOverlap').value = (config.VadSamplesOverlap >= 0) ? config.VadSamplesOverlap : '';
                             page.querySelector('#chkCompensateAudioOffset').checked = config.CompensateAudioOffset !== false;
+                            // ── Requests & priority (#112) ──
+                            page.querySelector('#chkAllowUserRequests').checked = config.AllowUserRequests === true;
+                            page.querySelector('#chkAutoApproveUserRequests').checked = config.AutoApproveUserRequests === true;
+                            page.querySelector('#selectAdminRequestTier').value = WhisperSubsConfig.tierName(config.AdminRequestTier, 'High');
+                            page.querySelector('#selectUserRequestTier').value = WhisperSubsConfig.tierName(config.UserRequestTier, 'Medium');
+                            page.querySelector('#selectBackgroundSweepTier').value = WhisperSubsConfig.tierName(config.BackgroundSweepTier, 'Background');
+                            page.querySelector('#numUserRequestDailyQuota').value = (config.UserRequestDailyQuota != null && config.UserRequestDailyQuota >= 0) ? config.UserRequestDailyQuota : 5;
+                            page.querySelector('#numUserRequestQuotaWindowHours').value = (config.UserRequestQuotaWindowHours != null && config.UserRequestQuotaWindowHours >= 1) ? config.UserRequestQuotaWindowHours : 24;
+                            page.querySelector('#numUserRequestActiveCap').value = (config.UserRequestActiveCap != null && config.UserRequestActiveCap >= 0) ? config.UserRequestActiveCap : 3;
+                            page.querySelector('#numUserRequestMaxItemsPerRequest').value = (config.UserRequestMaxItemsPerRequest != null && config.UserRequestMaxItemsPerRequest >= 1) ? config.UserRequestMaxItemsPerRequest : 200;
+                            page.querySelector('#numUserRequestGlobalCap').value = (config.UserRequestGlobalCap != null && config.UserRequestGlobalCap >= 0) ? config.UserRequestGlobalCap : 500;
                             updateTranslationVisibility();
                         }
                             WhisperSubsConfig.loadLibraries();
@@ -1247,6 +1383,23 @@
                         config.VadSamplesOverlap = vadNumField('#numVadSamplesOverlap', false);
                         config.CompensateAudioOffset = page.querySelector('#chkCompensateAudioOffset').checked;
 
+                        // ── Requests & priority (#112) ──
+                        config.AllowUserRequests = page.querySelector('#chkAllowUserRequests').checked;
+                        config.AutoApproveUserRequests = page.querySelector('#chkAutoApproveUserRequests').checked;
+                        config.AdminRequestTier = page.querySelector('#selectAdminRequestTier').value || 'High';
+                        config.UserRequestTier = page.querySelector('#selectUserRequestTier').value || 'Medium';
+                        config.BackgroundSweepTier = page.querySelector('#selectBackgroundSweepTier').value || 'Background';
+                        var reqIntField = function (sel, def, min) {
+                            var raw = (page.querySelector(sel).value || '').trim();
+                            var n = parseInt(raw, 10);
+                            return (raw === '' || isNaN(n) || n < min) ? def : n;
+                        };
+                        config.UserRequestDailyQuota = reqIntField('#numUserRequestDailyQuota', 5, 0);
+                        config.UserRequestQuotaWindowHours = reqIntField('#numUserRequestQuotaWindowHours', 24, 1);
+                        config.UserRequestActiveCap = reqIntField('#numUserRequestActiveCap', 3, 0);
+                        config.UserRequestMaxItemsPerRequest = reqIntField('#numUserRequestMaxItemsPerRequest', 200, 1);
+                        config.UserRequestGlobalCap = reqIntField('#numUserRequestGlobalCap', 500, 0);
+
                         // Collect enabled libraries from checkboxes
                         var libraryCheckboxes = page.querySelectorAll('.chkLibrary');
                         config.EnabledLibraries = [];
@@ -1266,6 +1419,100 @@
                                 }).catch(function () {});
                             }
                         });
+                    });
+                },
+
+                // Config tiers serialize as their enum NAME ("High"); tolerate a numeric value too. (#112)
+                tierName: function (value, fallback) {
+                    var names = ['Critical', 'High', 'Medium', 'Low', 'Background'];
+                    if (typeof value === 'number' && value >= 0 && value < names.length) return names[value];
+                    if (typeof value === 'string' && names.indexOf(value) !== -1) return value;
+                    return fallback;
+                },
+
+                // Admin approval panel (#112). All server strings are rendered via textContent — item
+                // titles and usernames can contain markup, and this page loads for the admin.
+                loadRequests: function () {
+                    var body = document.querySelector('#requestsTableBody');
+                    var table = document.querySelector('#requestsTable');
+                    var empty = document.querySelector('#requestsEmpty');
+                    if (!body) return;
+                    WhisperSubsConfig.ajaxGet(ApiClient.getUrl('Plugins/WhisperSubs/Requests')).then(function (requests) {
+                        body.innerHTML = '';
+                        if (!requests || !Array.isArray(requests) || requests.length === 0) {
+                            if (table) table.style.display = 'none';
+                            if (empty) { empty.textContent = 'No requests yet.'; empty.style.display = ''; }
+                            return;
+                        }
+                        if (empty) empty.style.display = 'none';
+                        if (table) table.style.display = '';
+                        requests.forEach(function (r) {
+                            var tr = document.createElement('tr');
+                            tr.style.borderBottom = '1px solid rgba(255,255,255,0.07)';
+
+                            var tdItem = document.createElement('td');
+                            tdItem.style.padding = '0.4em 0.6em';
+                            tdItem.textContent = (r.itemName || r.itemId || '') + (r.language ? ' [' + r.language + ']' : '');
+                            tr.appendChild(tdItem);
+
+                            var tdUser = document.createElement('td');
+                            tdUser.style.padding = '0.4em 0.6em';
+                            tdUser.textContent = r.userName || '';
+                            tr.appendChild(tdUser);
+
+                            var tdState = document.createElement('td');
+                            tdState.style.padding = '0.4em 0.6em';
+                            tdState.textContent = (r.state || '') + (r.tier ? ' · ' + r.tier : '');
+                            tr.appendChild(tdState);
+
+                            var tdCount = document.createElement('td');
+                            tdCount.style.padding = '0.4em 0.6em';
+                            tdCount.textContent = r.itemCount != null ? String(r.itemCount) : '1';
+                            tr.appendChild(tdCount);
+
+                            var tdActions = document.createElement('td');
+                            tdActions.style.padding = '0.4em 0.6em';
+                            tdActions.style.whiteSpace = 'nowrap';
+                            if (r.state === 'Pending') {
+                                var approve = document.createElement('button');
+                                approve.setAttribute('is', 'emby-button');
+                                approve.type = 'button';
+                                approve.className = 'raised';
+                                approve.style.marginRight = '0.4em';
+                                approve.textContent = 'Approve';
+                                approve.addEventListener('click', function () { WhisperSubsConfig.actOnRequest(r.requestId, 'Approve'); });
+                                tdActions.appendChild(approve);
+
+                                var decline = document.createElement('button');
+                                decline.setAttribute('is', 'emby-button');
+                                decline.type = 'button';
+                                decline.className = 'raised';
+                                decline.textContent = 'Decline';
+                                decline.addEventListener('click', function () { WhisperSubsConfig.actOnRequest(r.requestId, 'Decline'); });
+                                tdActions.appendChild(decline);
+                            }
+                            tr.appendChild(tdActions);
+                            body.appendChild(tr);
+                        });
+                    }).catch(function (err) {
+                        console.error('WhisperSubs: error loading requests', err);
+                        // Reset panel state so a failed (or first) load never leaves it stale/blank.
+                        if (body) body.innerHTML = '';
+                        if (table) table.style.display = 'none';
+                        if (empty) { empty.textContent = 'Could not load requests. Click Refresh to retry.'; empty.style.display = ''; }
+                    });
+                },
+
+                actOnRequest: function (requestId, action) {
+                    ApiClient.ajax({
+                        type: 'POST',
+                        url: ApiClient.getUrl('Plugins/WhisperSubs/Requests/' + requestId + '/' + action)
+                    }).then(function () {
+                        Dashboard.alert('Request ' + (action === 'Approve' ? 'approved and queued.' : 'declined.'));
+                        WhisperSubsConfig.loadRequests();
+                        if (action === 'Approve') WhisperSubsConfig.startQueuePolling();
+                    }).catch(function () {
+                        Dashboard.alert('Could not ' + action.toLowerCase() + ' the request.');
                     });
                 },
 
@@ -1638,6 +1885,7 @@
                 WhisperSubsConfig.loadConfiguration(this);
                 WhisperSubsConfig.loadEngine();
                 WhisperSubsConfig.loadInjectionStatus();
+                WhisperSubsConfig.loadRequests();
                 // Check if transcription is already running and show banner
                 WhisperSubsConfig.pollQueueStatus();
                 WhisperSubsConfig.ajaxGet(ApiClient.getUrl('Plugins/WhisperSubs/Queue'))
@@ -1666,6 +1914,10 @@
                 }).catch(function () {
                     Dashboard.alert('Could not clear the skip cache.');
                 });
+            });
+
+            document.querySelector('#btnRefreshRequests').addEventListener('click', function () {
+                WhisperSubsConfig.loadRequests();
             });
 
             document.querySelector('#btnEngineDownloadModel').addEventListener('click', function () {

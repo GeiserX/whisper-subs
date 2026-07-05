@@ -134,35 +134,26 @@ public class SubtitleQueueServiceTests
         Assert.True(true);
     }
 
-    // ── Enqueue de-dup (#94): same item + language + force collapses to one queued entry ──
+    // ── Enqueue de-dup (#94/#112): same item + language collapses to one queued entry, regardless of
+    //    force or tier — those are OR-merged / promoted onto the existing entry (see PriorityLanesTests). ──
 
     [Fact]
-    public void DedupKey_SameInputs_AreEqual_AndCaseInsensitiveLanguage()
+    public void IdentityKey_SameInputs_AreEqual_AndCaseInsensitiveLanguage()
     {
         // Language is normalized to lowercase so "EN" and "en" map to the same unit of work.
         var id = Guid.NewGuid();
         Assert.Equal(
-            SubtitleQueueService.DedupKey(id, "EN", false),
-            SubtitleQueueService.DedupKey(id, "en", false));
+            SubtitleQueueService.IdentityKey(id, "EN"),
+            SubtitleQueueService.IdentityKey(id, "en"));
     }
 
     [Fact]
-    public void DedupKey_DiffersByForce()
-    {
-        // A forced (manual) request is a distinct unit from a non-forced one.
-        var id = Guid.NewGuid();
-        Assert.NotEqual(
-            SubtitleQueueService.DedupKey(id, "en", true),
-            SubtitleQueueService.DedupKey(id, "en", false));
-    }
-
-    [Fact]
-    public void DedupKey_DiffersByItem()
+    public void IdentityKey_DiffersByItem()
     {
         // Different items never collapse onto each other.
         Assert.NotEqual(
-            SubtitleQueueService.DedupKey(Guid.NewGuid(), "en", false),
-            SubtitleQueueService.DedupKey(Guid.NewGuid(), "en", false));
+            SubtitleQueueService.IdentityKey(Guid.NewGuid(), "en"),
+            SubtitleQueueService.IdentityKey(Guid.NewGuid(), "en"));
     }
 
     [Fact]
@@ -171,7 +162,7 @@ public class SubtitleQueueServiceTests
         // Reserve once, the duplicate is rejected; after Release the key is requestable again.
         // Unique GUID keeps this isolated from the shared singleton's other in-flight keys.
         var queue = SubtitleQueueService.Instance;
-        var k = SubtitleQueueService.DedupKey(Guid.NewGuid(), "en", false);
+        var k = SubtitleQueueService.IdentityKey(Guid.NewGuid(), "en");
 
         Assert.True(queue.TryReserve(k));
         Assert.False(queue.TryReserve(k));
@@ -234,6 +225,37 @@ public class QueueEntryTests
         Assert.Equal("abc", restored.ItemId);
         Assert.Equal("en", restored.Language);
     }
+
+    // ── Tier (#112): persisted priority, nullable so a legacy queue.json (no tier) migrates cleanly ──
+
+    [Fact]
+    public void QueueEntry_Tier_DefaultsNull()
+    {
+        // A missing tier must be distinguishable from Critical(0) — hence int?, not int.
+        var entry = new QueueEntry();
+        Assert.Null(entry.Tier);
+    }
+
+    [Fact]
+    public void QueueEntry_Tier_SerializationRoundTrip()
+    {
+        var original = new QueueEntry { ItemId = "abc", Language = "en", Force = false, Tier = (int)PriorityTier.Critical };
+        var json = JsonSerializer.Serialize(original);
+        var restored = JsonSerializer.Deserialize<QueueEntry>(json);
+
+        Assert.NotNull(restored);
+        Assert.Equal((int)PriorityTier.Critical, restored!.Tier);
+    }
+
+    [Fact]
+    public void QueueEntry_LegacyJson_WithoutTier_DeserializesToNull()
+    {
+        // A queue.json written before #112 has no "Tier" field — it must NOT default to 0 (Critical).
+        var restored = JsonSerializer.Deserialize<QueueEntry>("{\"ItemId\":\"abc\",\"Language\":\"en\",\"Force\":true}");
+        Assert.NotNull(restored);
+        Assert.Null(restored!.Tier);
+        Assert.True(restored.Force);
+    }
 }
 
 // SubtitleWorkItem is a plain record-like type that does not touch the queue singleton,
@@ -252,5 +274,20 @@ public class SubtitleWorkItemForceTests
     {
         var workItem = new SubtitleWorkItem { Item = new Video { Name = "T" }, Language = "en", Force = true };
         Assert.True(workItem.Force);
+    }
+
+    [Fact]
+    public void SubtitleWorkItem_Tier_DefaultsMedium()
+    {
+        // #112: an unset tier is a safe middle default (every real enqueue path sets it explicitly).
+        var workItem = new SubtitleWorkItem { Item = new Video { Name = "T" }, Language = "en" };
+        Assert.Equal(PriorityTier.Medium, workItem.Tier);
+    }
+
+    [Fact]
+    public void SubtitleWorkItem_Tier_CanBeSet()
+    {
+        var workItem = new SubtitleWorkItem { Item = new Video { Name = "T" }, Language = "en", Tier = PriorityTier.Critical };
+        Assert.Equal(PriorityTier.Critical, workItem.Tier);
     }
 }

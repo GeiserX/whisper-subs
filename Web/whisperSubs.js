@@ -1,10 +1,13 @@
 // WhisperSubs -- context menu integration
-// Adds "Generate Subtitles" to the three-dot menu on item detail pages and cards (admin only).
-// Loaded via script injection into Jellyfin's index.html.
+// Admins get "Generate Subtitles"; non-admins get "Request Subtitles" when the admin has enabled user
+// requests (issue #112). Loaded via script injection into Jellyfin's index.html. This script is served
+// anonymously and is trusted for NOTHING — every check (who you are, what you can see, quota) is enforced
+// server-side; the UI here only decides which label to show.
 (function () {
     'use strict';
 
     var isAdmin = null;
+    var caps = null;          // { enabled, autoApprove } from Requests/Capabilities (non-admins only)
     var pendingItemId = null;
     var menuObserver = null;
 
@@ -14,6 +17,33 @@
             isAdmin = user && user.Policy && user.Policy.IsAdministrator;
             return isAdmin;
         }).catch(function () { return false; });
+    }
+
+    function getCapabilities() {
+        if (caps !== null) return Promise.resolve(caps);
+        try {
+            var url = ApiClient.getUrl('Plugins/WhisperSubs/Requests/Capabilities');
+            return ApiClient.ajax({ type: 'GET', url: url }).then(function (resp) {
+                caps = typeof resp === 'string' ? JSON.parse(resp) : resp;
+                return caps;
+            }).catch(function () { caps = { enabled: false }; return caps; });
+        } catch (e) {
+            caps = { enabled: false };
+            return Promise.resolve(caps);
+        }
+    }
+
+    // Decide what this user can do with the WhisperSubs entry:
+    //   'admin' → Generate Subtitles (drives generation directly)
+    //   'user'  → Request Subtitles (submits a request, subject to approval/quota)
+    //   'none'  → nothing to show
+    function resolveMode() {
+        return checkAdmin().then(function (admin) {
+            if (admin) return { mode: 'admin' };
+            return getCapabilities().then(function (c) {
+                return { mode: (c && c.enabled) ? 'user' : 'none' };
+            });
+        }).catch(function () { return { mode: 'none' }; });
     }
 
     function showToast(message) {
@@ -39,8 +69,63 @@
         return ApiClient.ajax({ type: 'POST', url: url });
     }
 
-    function createMenuItem(itemId) {
-        // Match Jellyfin's exact action sheet button structure
+    function requestSubtitles(itemId) {
+        var url = ApiClient.getUrl('Plugins/WhisperSubs/Items/' + itemId + '/Request', { language: 'auto' });
+        return ApiClient.ajax({ type: 'POST', url: url });
+    }
+
+    function getItemRequestStatus(itemId) {
+        try {
+            var url = ApiClient.getUrl('Plugins/WhisperSubs/Items/' + itemId + '/RequestStatus');
+            return ApiClient.ajax({ type: 'GET', url: url }).then(function (resp) {
+                return typeof resp === 'string' ? JSON.parse(resp) : resp;
+            }).catch(function () { return null; });
+        } catch (e) {
+            return Promise.resolve(null);
+        }
+    }
+
+    // Client-side result text for a user request. Branches on the server's state ENUM name only (a
+    // constant), never echoing server free-text — keeps this XSS-safe even though titles/usernames can
+    // contain markup.
+    function userRequestResultText(data) {
+        var state = data && data.state;
+        if (state === 'Queued') return 'WhisperSubs: Requested — added to the queue';
+        if (state === 'Pending') return 'WhisperSubs: Requested — pending admin approval';
+        return 'WhisperSubs: Subtitle request submitted';
+    }
+
+    function userRequestErrorText(xhr) {
+        var status = xhr && xhr.status;
+        if (status === 429) return 'WhisperSubs: You have reached your request limit — try again later';
+        if (status === 503) return 'WhisperSubs: The request queue is full — try again later';
+        return 'WhisperSubs: Could not submit request';
+    }
+
+    function runAction(mode, itemId) {
+        if (mode === 'admin') {
+            showToast('WhisperSubs: Queuing...');
+            return generateSubtitles(itemId).then(function (response) {
+                var data = typeof response === 'string' ? JSON.parse(response) : response;
+                var count = data && data.queued != null ? data.queued : (data && data.count) || 1;
+                showToast('WhisperSubs: Queued ' + count + ' item(s) for subtitle generation');
+            }).catch(function () {
+                showToast('WhisperSubs: Failed to queue generation');
+            });
+        }
+        showToast('WhisperSubs: Requesting...');
+        return requestSubtitles(itemId).then(function (response) {
+            var data = typeof response === 'string' ? JSON.parse(response) : response;
+            showToast(userRequestResultText(data));
+        }).catch(function (xhr) {
+            showToast(userRequestErrorText(xhr));
+        });
+    }
+
+    function createMenuItem(itemId, mode) {
+        var label = mode === 'admin' ? 'Generate Subtitles' : 'Request Subtitles';
+
+        // Match Jellyfin's exact action sheet button structure.
         var btn = document.createElement('button');
         btn.setAttribute('is', 'emby-button');
         btn.type = 'button';
@@ -50,19 +135,14 @@
         btn.innerHTML =
             '<span class="actionsheetMenuItemIcon listItemIcon listItemIcon-transparent material-icons subtitles" aria-hidden="true"></span>' +
             '<div class="listItemBody actionsheetListItemBody">' +
-                '<div class="listItemBodyText actionSheetItemText">Generate Subtitles</div>' +
+                '<div class="listItemBodyText actionSheetItemText"></div>' +
             '</div>';
+        // Label via textContent (never innerHTML) so the injected payload stays static/safe.
+        btn.querySelector('.actionSheetItemText').textContent = label;
 
         btn.addEventListener('click', function () {
             closeDialog(btn);
-            showToast('WhisperSubs: Queuing...');
-            generateSubtitles(itemId).then(function (response) {
-                var data = typeof response === 'string' ? JSON.parse(response) : response;
-                var count = data && data.queued != null ? data.queued : (data && data.count) || 1;
-                showToast('WhisperSubs: Queued ' + count + ' item(s) for subtitle generation');
-            }).catch(function () {
-                showToast('WhisperSubs: Failed to queue generation');
-            });
+            runAction(mode, itemId);
         });
 
         return btn;
@@ -72,12 +152,13 @@
         if (!pendingItemId) return;
         if (sheet.querySelector('.btnWhisperSubs')) return;
 
-        checkAdmin().then(function (admin) {
-            if (!admin) return;
+        resolveMode().then(function (info) {
+            if (info.mode === 'none') return;
+            if (sheet.querySelector('.btnWhisperSubs')) return; // re-check after async to avoid a double-inject
 
             var scroller = sheet.querySelector('.actionSheetScroller') || sheet;
             var cancelDiv = scroller.querySelector('.buttons');
-            var menuItem = createMenuItem(pendingItemId);
+            var menuItem = createMenuItem(pendingItemId, info.mode);
 
             if (cancelDiv) {
                 scroller.insertBefore(menuItem, cancelDiv);
@@ -155,7 +236,7 @@
         }
     }, true); // capture phase to run before Jellyfin's handler
 
-    // Inject a visible "Generate Subtitles" button onto the item detail page (issue #94),
+    // Inject a visible "Generate/Request Subtitles" button onto the item detail page (issue #94/#112),
     // in addition to the three-dot context-menu item above. Fail-silent: never throw into the host page.
     function injectDetailButton() {
         try {
@@ -175,38 +256,46 @@
 
             if (row.querySelector('.btnWhisperSubsDetail')) return;
 
-            checkAdmin().then(function (admin) {
-                if (!admin) return;
+            resolveMode().then(function (info) {
+                if (info.mode === 'none') return;
                 if (row.querySelector('.btnWhisperSubsDetail')) return; // re-check after async
+
+                var label = info.mode === 'admin' ? 'Subtitles' : 'Request Subs';
 
                 var btn = document.createElement('button');
                 btn.setAttribute('is', 'emby-button');
                 btn.type = 'button';
                 btn.className = 'button-flat detailButton emby-button btnWhisperSubsDetail';
-                btn.title = 'Generate subtitles';
+                btn.title = info.mode === 'admin' ? 'Generate subtitles' : 'Request subtitles';
                 btn.innerHTML =
                     '<div class="detailButton-content">' +
                         '<span class="material-icons detailButton-icon subtitles" aria-hidden="true"></span>' +
-                        '<span class="detailButton-icon-text">Subtitles</span>' +
+                        '<span class="detailButton-icon-text"></span>' +
                     '</div>';
+                // Label via textContent (never innerHTML) so the injected payload stays static/safe.
+                btn.querySelector('.detailButton-icon-text').textContent = label;
 
                 btn.addEventListener('click', function (e) {
                     e.preventDefault();
                     if (btn.disabled) return;
                     btn.disabled = true;
-                    showToast('WhisperSubs: Queuing...');
-                    generateSubtitles(itemId).then(function (response) {
-                        var data = typeof response === 'string' ? JSON.parse(response) : response;
-                        var n = data && data.queued != null ? data.queued : (data && data.count) || 1;
-                        showToast('WhisperSubs: Queued ' + n + ' item(s) for subtitle generation');
-                    }).catch(function () {
-                        showToast('WhisperSubs: Failed to queue generation');
-                    }).then(function () {
+                    runAction(info.mode, itemId).then(function () {
                         setTimeout(function () { btn.disabled = false; }, 3000); // debounce double-clicks
                     });
                 });
 
                 row.appendChild(btn);
+
+                // For a user, reflect any existing active request on the button (persistent feedback).
+                if (info.mode === 'user') {
+                    getItemRequestStatus(itemId).then(function (st) {
+                        if (st && st.state) {
+                            btn.querySelector('.detailButton-icon-text').textContent = (st.state === 'Pending') ? 'Requested' : 'Queued';
+                            btn.title = (st.state === 'Pending') ? 'Subtitle request pending approval' : 'Subtitle request queued';
+                            btn.disabled = true;
+                        }
+                    });
+                }
             });
         } catch (err) {
             console.debug('[WhisperSubs] injectDetailButton error', err);
@@ -231,12 +320,15 @@
     scheduleDetailInject(); // initial attempt
 
     // Visible (console.log, not console.debug which browsers hide by default) so an admin can confirm
-    // in DevTools that the injected script actually loaded — and see the admin-gate result, since the
-    // "Generate Subtitles" button + menu item are admin-only. (Issue #94.)
+    // in DevTools that the injected script actually loaded — and see which mode applies. (Issue #94/#112.)
     console.log('[WhisperSubs] client script loaded');
-    checkAdmin().then(function (admin) {
-        console.log(admin
-            ? '[WhisperSubs] administrator confirmed — Generate Subtitles button + menu enabled'
-            : '[WhisperSubs] current user is NOT an administrator — the Generate Subtitles button and menu are admin-only and will not appear');
+    resolveMode().then(function (info) {
+        if (info.mode === 'admin') {
+            console.log('[WhisperSubs] administrator — "Generate Subtitles" button + menu enabled');
+        } else if (info.mode === 'user') {
+            console.log('[WhisperSubs] user requests enabled — "Request Subtitles" button + menu enabled');
+        } else {
+            console.log('[WhisperSubs] no WhisperSubs entry: you are not an administrator and user requests are disabled by the admin');
+        }
     });
 })();
