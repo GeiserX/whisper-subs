@@ -199,6 +199,23 @@ namespace WhisperSubs.Configuration
         /// </summary>
         public bool CountImageSubtitlesAsPresent { get; set; } = false;
 
+        /// <summary>
+        /// Issue #110: cache the per-item "already has subtitles" verdict so repeat scheduled runs skip
+        /// the filesystem re-check for unchanged items (a large library can otherwise take many minutes
+        /// just to re-confirm existing subtitles every run). The cache keys on the item's change token
+        /// (Jellyfin <c>DateLastSaved</c>) plus a signature of the skip-related settings, so any content
+        /// or config change re-checks that item. Scheduled task only.
+        /// </summary>
+        public bool CacheSkippedItems { get; set; } = true;
+
+        /// <summary>
+        /// Backstop for <see cref="CacheSkippedItems"/>: re-verify a cached "complete" item after this
+        /// many days even if its change token is unchanged, so a subtitle deleted OUTSIDE Jellyfin
+        /// (which does not bump the token until a library scan) is eventually re-generated. 0 disables
+        /// the time backstop (rely purely on the change token). Default 30.
+        /// </summary>
+        public int SkipCacheExpiryDays { get; set; } = 30;
+
         public List<string> EnabledLibraries { get; set; } = new List<string>();
 
         public PluginConfiguration()

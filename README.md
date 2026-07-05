@@ -28,7 +28,7 @@
 - **Real-time Progress** -- Live progress banner in the admin UI showing current item, phase (extracting audio, transcribing), per-file progress, and overall stats.
 - **Subtitle Resume** -- If transcription is interrupted, it resumes from the last timestamp rather than starting over.
 - **Admin Dashboard UI** -- Browse libraries, view items, manage the whisper engine, and trigger subtitle generation directly from the Jellyfin admin panel.
-- **Scheduled Tasks** -- Enable automatic scanning so new media gets subtitles without manual intervention. Runs daily at 2:00 AM and on startup by default.
+- **Scheduled Tasks** -- Enable automatic scanning so new media gets subtitles without manual intervention. Runs daily at 2:00 AM and on startup by default. On large libraries, repeat runs are fast: a **skip cache** remembers which items already have subtitles and skips re-checking unchanged files, re-checking an item only when Jellyfin re-saves it or you change a skip setting (configurable, on by default; a "Clear skip cache" button forces a full re-check).
 - **Per-Library Control** -- Choose which libraries are monitored for automatic subtitle generation.
 - **Multiple Output Formats** -- Generates `.srt` subtitles, `.forced.generated.srt` forced subtitles, and `.lrc` lyrics, all placed alongside your media and auto-detected by Jellyfin.
 

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -14,6 +15,12 @@ using Microsoft.Extensions.Logging;
 
 namespace WhisperSubs.ScheduledTasks
 {
+    // Orchestration over Jellyfin runtime services (library manager, session manager, live filesystem)
+    // + the whisper pipeline; the unit-testable decision logic lives in pure helpers
+    // (SubtitleManager.IsSubtitleSetComplete, SubtitleSkipCache, SubtitleInventory). Excluded from
+    // coverage as a whole — coverlet.runsettings excludes this type locally, but CI's --collect ignores
+    // runsettings, so the attribute is what makes the exclusion effective in both places.
+    [ExcludeFromCodeCoverage(Justification = "Scheduled-task orchestration over Jellyfin runtime; logic lives in unit-tested pure helpers")]
     public class SubtitleGenerationTask : IScheduledTask
     {
         private readonly ILibraryManager _libraryManager;
@@ -157,6 +164,24 @@ namespace WhisperSubs.ScheduledTasks
             var failed = 0;
             queue.ReportTaskProgress(null, 0, allItems.Count, 0);
 
+            // Issue #110: the skip-cache lets repeat runs skip the per-item filesystem probe for
+            // unchanged, already-satisfied items. Keyed on the item change token (DateLastSaved) + a
+            // settings signature; persisted in the finally below so an interrupted run keeps the
+            // progress it made (each entry is independently valid — no global high-water mark).
+            var cachePath = SubtitleSkipCache.DefaultPath();
+            var cacheSignature = SubtitleSkipCache.ComputeSignature(config);
+            var skipCache = (config.CacheSkippedItems && !string.IsNullOrEmpty(cachePath))
+                ? SubtitleSkipCache.Load(cachePath, cacheSignature, _logger)
+                : null;
+            var nowTicks = DateTime.UtcNow.Ticks;
+            var candidateIds = new HashSet<Guid>(allItems.Select(a => a.Item.Id));
+            if (skipCache != null)
+            {
+                _logger.LogInformation("Skip cache active: {Count} remembered item(s)", skipCache.Count);
+            }
+
+            try
+            {
             for (int i = 0; i < allItems.Count; i++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -176,6 +201,22 @@ namespace WhisperSubs.ScheduledTasks
 
                 var (item, libName) = allItems[i];
                 var itemType = item.GetType().Name;
+
+                // Issue #110 fast-path: if a previous run recorded this (unchanged) video as already
+                // satisfied under the current settings, skip the filesystem/stream probe entirely.
+                if (skipCache != null && item is Video cacheVideo)
+                {
+                    var token = cacheVideo.DateLastSaved.Ticks;
+                    if (SubtitleSkipCache.CanSkip(skipCache.TryGet(item.Id), token, nowTicks, config.SkipCacheExpiryDays))
+                    {
+                        _logger.LogInformation("[{Current}/{Total}] Skipping {ItemName}: already satisfied (cached)",
+                            completed + 1, allItems.Count, item.Name);
+                        completed++;
+                        queue.ReportTaskProgress(null, completed, allItems.Count, failed);
+                        progress.Report((double)completed / allItems.Count * 100);
+                        continue;
+                    }
+                }
 
                 // For Audio items (lyrics), skip if .lrc already exists
                 if (item is MediaBrowser.Controller.Entities.Audio.Audio)
@@ -279,14 +320,31 @@ namespace WhisperSubs.ScheduledTasks
                             }
                         }
 
-                        bool alreadyComplete = config.SubtitleMode switch
+                        bool alreadyComplete = SubtitleManager.IsSubtitleSetComplete(
+                            config.SubtitleMode, needsTranslation, hasFullSrt, hasForcedSrt, hasTranslatedSrt);
+
+                        // Issue #110: remember the verdict for unchanged future runs. Record only a
+                        // positive (complete) result; a not-complete video is removed so it is always
+                        // re-evaluated until generated (bias toward generating). Videos only — audio
+                        // lyrics keep their own cheap .lrc fast-path above.
+                        if (skipCache != null && item is Video)
                         {
-                            Configuration.SubtitleMode.Full => hasFullSrt && (!needsTranslation || hasTranslatedSrt),
-                            Configuration.SubtitleMode.ForcedOnly => hasForcedSrt,
-                            Configuration.SubtitleMode.FullAndForced => hasFullSrt && hasForcedSrt && (!needsTranslation || hasTranslatedSrt),
-                            Configuration.SubtitleMode.TranslationOnly => hasTranslatedSrt,
-                            _ => hasFullSrt
-                        };
+                            if (alreadyComplete)
+                            {
+                                skipCache.Record(item.Id, new SubtitleSkipCache.Entry
+                                {
+                                    Token = item.DateLastSaved.Ticks,
+                                    Full = hasFullSrt,
+                                    Forced = hasForcedSrt,
+                                    Translated = hasTranslatedSrt,
+                                    CachedAtTicks = nowTicks
+                                });
+                            }
+                            else
+                            {
+                                skipCache.Remove(item.Id);
+                            }
+                        }
 
                         if (alreadyComplete)
                         {
@@ -347,6 +405,18 @@ namespace WhisperSubs.ScheduledTasks
             queue.ReportTaskComplete();
             _logger.LogInformation("Subtitle generation task complete. Processed: {Processed}, Failed: {Failed}",
                 completed, failed);
+            }
+            finally
+            {
+                // Persist even on cancellation / pause-timeout so the run keeps the progress it made.
+                // Prune to the enumerated candidate set (not the reached set) so items not yet visited
+                // this run keep their prior entry — the reason per-item state beats a global watermark.
+                if (skipCache != null)
+                {
+                    skipCache.PruneTo(candidateIds);
+                    skipCache.Save(cachePath, cacheSignature, _logger);
+                }
+            }
         }
 
         /// <summary>

@@ -316,6 +316,24 @@ namespace WhisperSubs.Controller
         }
 
         /// <summary>
+        /// Pure: given the observed on-disk/stream facts for an item, is its subtitle set already
+        /// complete for the current mode? Extracted from the scheduled task's skip loop so both the
+        /// task and the skip-cache (issue #110) share one definition, and so it is unit-testable.
+        /// <paramref name="needsTranslation"/> is the task's precomputed "a translation pass is wanted
+        /// in this mode" flag (TranslationOnly, or EnableTranslation in Full/FullAndForced).
+        /// </summary>
+        internal static bool IsSubtitleSetComplete(
+            SubtitleMode mode, bool needsTranslation, bool hasFull, bool hasForced, bool hasTranslated)
+            => mode switch
+            {
+                SubtitleMode.Full => hasFull && (!needsTranslation || hasTranslated),
+                SubtitleMode.ForcedOnly => hasForced,
+                SubtitleMode.FullAndForced => hasFull && hasForced && (!needsTranslation || hasTranslated),
+                SubtitleMode.TranslationOnly => hasTranslated,
+                _ => hasFull
+            };
+
+        /// <summary>
         /// Single source of truth for the issue #82 "skip because a usable subtitle in this
         /// language already exists" decision. Reads the item's embedded+external subtitle streams
         /// and applies the SkipIfSubtitleExists / IgnoreForcedSubtitles config. The plugin's own

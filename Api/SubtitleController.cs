@@ -487,6 +487,28 @@ namespace WhisperSubs.Api
             }
         }
 
+        /// <summary>
+        /// Clears the issue #110 skip cache so the next scheduled run re-checks every item from
+        /// scratch. Escape hatch for the one case the change token can't see — a subtitle deleted
+        /// outside Jellyfin — when a user doesn't want to wait for the backstop re-verify.
+        /// </summary>
+        [HttpPost("Setup/ClearSkipCache")]
+        public ActionResult ClearSkipCache()
+        {
+            try
+            {
+                var path = WhisperSubs.Controller.SubtitleSkipCache.DefaultPath();
+                var existed = !string.IsNullOrEmpty(path) && System.IO.File.Exists(path);
+                if (existed) System.IO.File.Delete(path);
+                return Ok(new { cleared = existed });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error clearing skip cache");
+                return StatusCode(500, new { error = ex.Message });
+            }
+        }
+
         // ── Setup endpoints ──────────────────────────────────────────────
 
         private WhisperSetupService GetSetupService()

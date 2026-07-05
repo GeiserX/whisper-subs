@@ -244,6 +244,28 @@
                         </div>
                     </div>
 
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label>
+                            <input is="emby-checkbox" type="checkbox" id="chkCacheSkippedItems" name="CacheSkippedItems" />
+                            <span>Remember already-subtitled items between runs</span>
+                        </label>
+                        <div class="fieldDescription">
+                            Speeds up the scheduled scan on large libraries: repeat runs skip the per-file re-check for items already known to have subtitles, instead of re-scanning every title each run. An item is automatically re-checked whenever Jellyfin re-saves it (a metadata or subtitle change) or you change a skip setting above. <strong>On by default.</strong>
+                        </div>
+                    </div>
+
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="numSkipCacheExpiryDays">Skip-cache re-verify (days)</label>
+                        <input type="number" id="numSkipCacheExpiryDays" name="SkipCacheExpiryDays" class="emby-input" min="0" max="3650" step="1" />
+                        <div class="fieldDescription">
+                            Backstop: re-check a remembered item after this many days even if unchanged, so a subtitle deleted outside Jellyfin is eventually regenerated. 0 = rely only on change detection. Default 30.
+                        </div>
+                        <button is="emby-button" type="button" id="btnClearSkipCache" class="raised block" style="margin-top:0.5em;">
+                            <span>Clear skip cache now</span>
+                        </button>
+                        <div class="fieldDescription">Forces the next scheduled run to re-check every item from scratch.</div>
+                    </div>
+
                     <div id="translationSection">
                         <h3 style="margin-bottom:0.25em;">Translation to English</h3>
                         <div class="fieldDescription" style="margin-bottom:0.5em;">
@@ -1162,6 +1184,8 @@
                             page.querySelector('#chkIgnoreForcedSubtitles').checked = config.IgnoreForcedSubtitles !== false;
                             page.querySelector('#chkGenerateOriginalLanguageSubtitles').checked = config.GenerateOriginalLanguageSubtitles !== false;
                             page.querySelector('#chkCountImageSubtitlesAsPresent').checked = config.CountImageSubtitlesAsPresent === true;
+                            page.querySelector('#chkCacheSkippedItems').checked = config.CacheSkippedItems !== false;
+                            page.querySelector('#numSkipCacheExpiryDays').value = (config.SkipCacheExpiryDays != null && config.SkipCacheExpiryDays >= 0) ? config.SkipCacheExpiryDays : 30;
                             page.querySelector('#chkEnableVad').checked = config.EnableVad !== false;
                             page.querySelector('#chkAlignSubtitlesToSpeech').checked = config.AlignSubtitlesToSpeech !== false;
                             page.querySelector('#chkAlignSubtitlesToSpeechWithVad').checked = config.AlignSubtitlesToSpeechWithVad === true;
@@ -1201,6 +1225,10 @@
                         config.IgnoreForcedSubtitles = page.querySelector('#chkIgnoreForcedSubtitles').checked;
                         config.GenerateOriginalLanguageSubtitles = page.querySelector('#chkGenerateOriginalLanguageSubtitles').checked;
                         config.CountImageSubtitlesAsPresent = page.querySelector('#chkCountImageSubtitlesAsPresent').checked;
+                        config.CacheSkippedItems = page.querySelector('#chkCacheSkippedItems').checked;
+                        var skipDaysRaw = (page.querySelector('#numSkipCacheExpiryDays').value || '').trim();
+                        var skipDays = parseInt(skipDaysRaw, 10);
+                        config.SkipCacheExpiryDays = (skipDaysRaw === '' || isNaN(skipDays) || skipDays < 0) ? 30 : skipDays;
                         config.EnableVad = page.querySelector('#chkEnableVad').checked;
                         config.AlignSubtitlesToSpeech = page.querySelector('#chkAlignSubtitlesToSpeech').checked;
                         config.AlignSubtitlesToSpeechWithVad = page.querySelector('#chkAlignSubtitlesToSpeechWithVad').checked;
@@ -1627,6 +1655,17 @@
 
             document.querySelector('#btnReinjectScript').addEventListener('click', function () {
                 WhisperSubsConfig.reinjectScript();
+            });
+
+            document.querySelector('#btnClearSkipCache').addEventListener('click', function () {
+                ApiClient.ajax({
+                    type: 'POST',
+                    url: ApiClient.getUrl('Plugins/WhisperSubs/Setup/ClearSkipCache')
+                }).then(function () {
+                    Dashboard.alert('Skip cache cleared. The next scheduled run will re-check all items.');
+                }).catch(function () {
+                    Dashboard.alert('Could not clear the skip cache.');
+                });
             });
 
             document.querySelector('#btnEngineDownloadModel').addEventListener('click', function () {
