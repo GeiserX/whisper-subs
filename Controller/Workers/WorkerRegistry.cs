@@ -29,7 +29,8 @@ namespace WhisperSubs.Controller.Workers
             switch (plan.Source)
             {
                 case WorkerSource.ExplicitList:
-                    foreach (var w in config.Workers.Where(x => x.Enabled && !string.IsNullOrWhiteSpace(x.ApiUrl)))
+                    // ExplicitList is only returned by WorkerPlan.Decide when Workers.Count > 0, so it is non-null here.
+                    foreach (var w in config.Workers!.Where(x => x.Enabled && !string.IsNullOrWhiteSpace(x.ApiUrl)))
                     {
                         workers.Add(BuildRemote(
                             id: string.IsNullOrWhiteSpace(w.Id) ? w.ApiUrl : w.Id,

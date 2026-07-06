@@ -5,6 +5,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using WhisperSubs.Controller;
+using WhisperSubs.Controller.Workers;
 using WhisperSubs.Providers;
 using Jellyfin.Data.Enums;
 using MediaBrowser.Controller.Entities;
@@ -79,16 +80,23 @@ namespace WhisperSubs.ScheduledTasks
             }
 
             var manager = new SubtitleManager(_libraryManager, _loggerFactory.CreateLogger<SubtitleManager>());
-            var provider = SubtitleProviderFactory.Create(config, _loggerFactory);
             var language = config.DefaultLanguage;
             var queue = SubtitleQueueService.Instance;
+
+            // Mark the task running up front so the shared worker pool isn't rebuilt underneath it, then
+            // build the pool + the per-job worker requirements once for the whole run (v4.0). Both the
+            // priority drain and this task's own swept items go through the SAME pool as any background
+            // dispatcher, so the global concurrency limit holds across every path.
+            queue.MarkTaskStarted();
+            var pool = queue.GetPool(config, _loggerFactory, forTask: true);
+            var requirements = WorkerJob.Requirements(config.SubtitleMode, config.EnableTranslation);
 
             // Restore persisted queue from disk (survives restarts)
             var restored = queue.RestoreQueue(_libraryManager, _logger);
             if (restored > 0)
             {
                 _logger.LogInformation("Draining {Count} restored priority items before auto-generation", restored);
-                await queue.DrainPriorityAsync(manager, provider, _logger, cancellationToken);
+                await queue.DrainPriorityAsync(manager, pool, requirements, _logger, cancellationToken);
             }
 
             // Collect items — the query is fast (DB lookup), no bulk in-memory storage needed
@@ -196,7 +204,7 @@ namespace WhisperSubs.ScheduledTasks
                 if (queue.PriorityCount > 0)
                 {
                     _logger.LogInformation("Pausing auto-generation to process {Count} priority request(s)", queue.PriorityCount);
-                    await queue.DrainPriorityAsync(manager, provider, _logger, cancellationToken);
+                    await queue.DrainPriorityAsync(manager, pool, requirements, _logger, cancellationToken);
                 }
 
                 var (item, libName) = allItems[i];
@@ -369,21 +377,32 @@ namespace WhisperSubs.ScheduledTasks
                     queue.ResetFileProgress();
                     queue.ReportTaskProgress(item.Name, completed, allItems.Count, failed, itemType, libName);
 
-                    await SubtitleQueueService.TranscriptionLock.WaitAsync(cancellationToken);
+                    // No worker can serve this job's requirements (e.g. translation enabled but every
+                    // configured worker is transcribe-only) — surface it via the same failure path below.
+                    if (!pool.HasCapableWorker(requirements))
+                    {
+                        throw new InvalidOperationException("No configured worker can serve this job");
+                    }
+
+                    // Acquire a slot on the shared worker pool (the global concurrency gate that replaced the
+                    // old TranscriptionLock) and run this swept item on the chosen worker. With the default
+                    // one local worker this serialises exactly like the old lock; with N workers the sweep
+                    // shares the pool with the background dispatcher up to ΣMaxConcurrency.
+                    var lease = await pool.AcquireAsync(requirements, cancellationToken);
                     try
                     {
                         if (config.PauseOnPlayback)
                         {
-                            await TranscribeWithPlaybackMonitorAsync(manager, item, provider, language, cancellationToken);
+                            await TranscribeWithPlaybackMonitorAsync(manager, item, lease.Worker.Provider, language, cancellationToken);
                         }
                         else
                         {
-                            await manager.GenerateSubtitleAsync(item, provider, language, cancellationToken);
+                            await manager.GenerateSubtitleAsync(item, lease.Worker.Provider, language, cancellationToken);
                         }
                     }
                     finally
                     {
-                        SubtitleQueueService.TranscriptionLock.Release();
+                        pool.Release(lease.Key);
                     }
                 }
                 catch (OperationCanceledException)
@@ -408,6 +427,11 @@ namespace WhisperSubs.ScheduledTasks
             }
             finally
             {
+                // Always clear the task-running flag (even on cancellation / exception) so the shared worker
+                // pool can be rebuilt for the next run — MarkTaskStarted set it, and the success path's
+                // ReportTaskComplete is skipped when the run throws.
+                queue.ReportTaskComplete();
+
                 // Persist even on cancellation / pause-timeout so the run keeps the progress it made.
                 // Prune to the enumerated candidate set (not the reached set) so items not yet visited
                 // this run keep their prior entry — the reason per-item state beats a global watermark.
