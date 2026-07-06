@@ -120,6 +120,20 @@ namespace WhisperSubs.Controller
         /// </summary>
         public void MarkTaskStarted() => Interlocked.CompareExchange(ref _taskIsRunning, 1, 0);
 
+        /// <summary>
+        /// A live snapshot of the current worker pool for the admin status panel (v4.0), or an empty list
+        /// when no pool has been built yet (nothing has dispatched since startup). Thin accessor over the
+        /// unit-tested <see cref="WorkerPool.Snapshot"/>.
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Thin accessor over the unit-tested WorkerPool.Snapshot; depends on live pool state")]
+        public IReadOnlyList<WorkerStatus> SnapshotWorkers()
+        {
+            lock (_poolGate)
+            {
+                return _pool?.Snapshot() ?? (IReadOnlyList<WorkerStatus>)System.Array.Empty<WorkerStatus>();
+            }
+        }
+
         // ── Scheduled task progress tracking ─────────────────────
         private string? _taskCurrentItemName;
         private int _taskTotal;
@@ -141,6 +155,19 @@ namespace WhisperSubs.Controller
         /// <summary>Queued item counts by named tier (#112) — for the admin queue view.</summary>
         public Dictionary<PriorityTier, int> CountsByTier()
             => _lanes.CountsByTier().ToDictionary(kv => (PriorityTier)kv.Key, kv => kv.Value);
+
+        /// <summary>
+        /// The waiting ("inbound") queue for the admin panel, in the exact order it will run (strongest tier
+        /// first, then FIFO): each item's name, tier and language. Capped at <paramref name="max"/> so a
+        /// library-wide Generate-All doesn't return thousands of names to a polled endpoint — the full total
+        /// is <see cref="PriorityCount"/>. (v4.0.)
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Reads BaseItem.Name off queued items; the lane ordering it projects is unit-tested in PriorityLanesTests")]
+        public IReadOnlyList<(string Name, PriorityTier Tier, string Language)> PendingItems(int max = 200)
+            => _lanes.Snapshot()
+                     .Take(max < 0 ? 0 : max)
+                     .Select(e => (e.Value.Item.Name, (PriorityTier)e.Tier, e.Value.Language))
+                     .ToList();
 
         // ── Per-file progress (updated by WhisperProvider stderr) ──
         private int _currentFileProgress;
@@ -487,6 +514,7 @@ namespace WhisperSubs.Controller
                     var wi = workItem;
                     var l = lease;
                     _currentItemName = wi.Item.Name;
+                    pool.SetCurrent(l.Key, wi.Item.Name);   // "what's running where" — surfaced in the status panel
                     logger.LogInformation("[Dispatch] Processing {ItemName} [{Tier}] on {Worker} ({Remaining} remaining)",
                         wi.Item.Name, wi.Tier, l.Worker.Name, _lanes.Count);
 
@@ -517,7 +545,7 @@ namespace WhisperSubs.Controller
                         finally
                         {
                             Release(IdentityKey(wi.Item.Id, wi.Language));
-                            pool.Release(l.Key);
+                            pool.Release(l.Key, wi.Item.Name);
                         }
                     }));
 

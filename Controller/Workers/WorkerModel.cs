@@ -33,6 +33,16 @@ namespace WhisperSubs.Controller.Workers
     /// <summary>A live routing snapshot of one worker — a pure value (no Jellyfin/HTTP types), so selection is unit-testable.</summary>
     public readonly record struct WorkerSlot(string Id, bool Healthy, int InFlight, WorkerCapabilities Capabilities);
 
+    /// <summary>
+    /// A display snapshot of one worker for the admin queue/status panel (v4.0): identity + live load + the
+    /// item(s) it is currently transcribing ("what's running where") + the static facts the UI shows.
+    /// Distinct from <see cref="WorkerSlot"/> (routing) so the surfaced shape is stable and independent of
+    /// the scheduler's internal value.
+    /// </summary>
+    public readonly record struct WorkerStatus(
+        string Id, string Name, bool Healthy, int InFlight, int MaxConcurrency, bool IsLocal, double CostWeight,
+        IReadOnlyList<string> CurrentItems);
+
     /// <summary>What a specific job needs from a worker (drives the hard capability filter).</summary>
     public readonly record struct JobRequirements(bool Translate, string? RequiredModel);
 }

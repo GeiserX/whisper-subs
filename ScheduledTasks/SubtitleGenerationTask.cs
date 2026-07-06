@@ -405,6 +405,7 @@ namespace WhisperSubs.ScheduledTasks
                     // one local worker this serialises exactly like the old lock; with N workers the sweep
                     // shares the pool with the background dispatcher up to ΣMaxConcurrency.
                     var lease = await pool.AcquireAsync(requirements, cancellationToken);
+                    pool.SetCurrent(lease.Key, item.Name);   // "what's running where" — surfaced in the status panel
                     try
                     {
                         if (config.PauseOnPlayback)
@@ -418,7 +419,7 @@ namespace WhisperSubs.ScheduledTasks
                     }
                     finally
                     {
-                        pool.Release(lease.Key);
+                        pool.Release(lease.Key, item.Name);
                     }
                 }
                 catch (OperationCanceledException)
