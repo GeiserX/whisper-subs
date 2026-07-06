@@ -54,6 +54,19 @@ services:
       # Model cache -- survives restarts so the model is downloaded only once.
       - whisper-models:/models
 
+    # Container hardening. The image already runs non-root (uid 1000); these drop the
+    # rest of the ambient privilege so an exposed/compromised worker is contained.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # Read-only root filesystem: only the model cache (/models volume) and a small tmpfs
+    # need to be writable. Comment this pair out if a model download ever needs to write
+    # elsewhere on first run.
+    read_only: true
+    tmpfs:
+      - /tmp
+
     # Cap RAM. large-v3-turbo-q5_0 is light; raise to ~10g for full large-v3.
     mem_limit: 6g
 

@@ -46,6 +46,7 @@
 # We therefore launch it with `--language auto`; an explicit `language` field in a
 # request still overrides per-call. (See entrypoint / adapter spawn below.)
 
+import hmac
 import http.client
 import os
 import shlex
@@ -88,6 +89,15 @@ WHISPER_CONVERT = _env("CONVERT", "false").lower() in ("1", "true", "yes", "y")
 WHISPER_EXTRA_ARGS = _env("WHISPER_EXTRA_ARGS", "")
 
 READY_TIMEOUT = int(_env("WHISPER_READY_TIMEOUT", "600"))  # seconds to first-ready
+
+# Drop a stalled-but-open client after this many seconds so one slow/silent
+# connection can't hold the single whisper-server inference slot forever (M2).
+SOCKET_TIMEOUT = float(_env("WHISPER_SOCKET_TIMEOUT", "120"))
+
+# Reject an absurd Content-Length outright (M2). A 2h film's 16 kHz mono WAV is
+# ~260 MB; the default 8 GiB ceiling is generous but bounds a memory/disk-abuse
+# upload. Set WHISPER_MAX_BODY_BYTES=0 to disable the cap.
+MAX_BODY_BYTES = int(_env("WHISPER_MAX_BODY_BYTES", str(8 * 1024 * 1024 * 1024)))
 
 CHUNK = 256 * 1024
 
@@ -185,6 +195,8 @@ def wait_until_ready(timeout):
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "whisper-subs-worker"
+    # Drop a stalled socket (slow-loris / silent client) so it can't wedge the GPU slot (M2).
+    timeout = SOCKET_TIMEOUT
 
     # Quieter, single-line access log.
     def log_message(self, fmt, *args):
@@ -214,7 +226,8 @@ class Handler(BaseHTTPRequestHandler):
     def _authorized(self):
         if not API_KEY:
             return True
-        return self.headers.get("Authorization", "") == "Bearer " + API_KEY
+        # Constant-time compare so the key can't be recovered byte-by-byte via response timing (L1).
+        return hmac.compare_digest(self.headers.get("Authorization", ""), "Bearer " + API_KEY)
 
     # -- verbs ------------------------------------------------------------- #
     def do_HEAD(self):
@@ -257,18 +270,29 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         content_type = self.headers.get("Content-Type", "")
-        content_length = self.headers.get("Content-Length")
 
-        if content_length is None:
-            # We stream by Content-Length; the plugin always sends one. Chunked
-            # uploads are rejected rather than silently buffered.
-            self._send_json(411, '{"error":"length required"}', close=True)
+        # This adapter frames the body strictly by Content-Length. Reject Transfer-Encoding outright
+        # (501) so a `Content-Length` + `Transfer-Encoding: chunked` pair can't desync a front proxy
+        # against this origin (TE.CL request smuggling, M3).
+        if self.headers.get("Transfer-Encoding"):
+            self._send_json(501, '{"error":"transfer-encoding not supported"}', close=True)
             return
 
-        try:
-            body_len = int(content_length)
-        except ValueError:
-            self._send_json(400, '{"error":"bad content-length"}', close=True)
+        # Exactly one Content-Length, strictly a non-negative decimal. int() is too lenient (it accepts
+        # " 10 ", "+10", "-5", "1_000"); reject duplicates/garbage to avoid a CL.CL desync (M3).
+        cl_values = self.headers.get_all("Content-Length") or []
+        if len(cl_values) != 1 or not cl_values[0].strip().isdigit():
+            self._send_json(
+                400 if cl_values else 411,
+                '{"error":"a single non-negative Content-Length is required"}',
+                close=True,
+            )
+            return
+        body_len = int(cl_values[0].strip())
+
+        # Reject an absurd upload before streaming it anywhere (M2).
+        if MAX_BODY_BYTES and body_len > MAX_BODY_BYTES:
+            self._send_json(413, '{"error":"request body too large"}', close=True)
             return
 
         prefix = b""
@@ -293,6 +317,7 @@ class Handler(BaseHTTPRequestHandler):
             ).encode("latin-1")
             total_len = body_len + len(prefix)
 
+        conn = None
         try:
             conn = http.client.HTTPConnection(
                 BACKEND_HOST, BACKEND_PORT, timeout=BACKEND_TIMEOUT
@@ -319,21 +344,23 @@ class Handler(BaseHTTPRequestHandler):
                 remaining -= len(chunk)
 
             if aborted:
-                # We promised Content-Length bytes we can no longer deliver. Reset
-                # the upstream connection so whisper-server stops waiting and frees
-                # its context instead of blocking the next request.
-                conn.close()
+                # We promised Content-Length bytes we can no longer deliver. The finally resets the
+                # upstream connection so whisper-server stops waiting and frees its context.
                 self._send_json(400, '{"error":"client closed request body"}', close=True)
                 return
 
             resp = conn.getresponse()
             payload = resp.read()  # SRT / JSON responses are small text bodies
             resp_ctype = resp.getheader("Content-Type", "text/plain; charset=utf-8")
-            conn.close()
         except (socket.timeout, ConnectionError, OSError, http.client.HTTPException) as exc:
             log("upstream error: %r" % exc)
             self._send_json(502, '{"error":"upstream whisper-server unavailable"}', close=True)
             return
+        finally:
+            # Always release the upstream socket — including the exception path, which previously
+            # relied on GC to close it (L4). close() is safe to call more than once.
+            if conn is not None:
+                conn.close()
 
         # Relay upstream status + body back to the plugin verbatim.
         self.send_response(resp.status)
@@ -379,6 +406,11 @@ def main():
         log("upstream not ready within %ds; continuing to serve (readiness=503 until loaded)" % READY_TIMEOUT)
     else:
         log("upstream ready; model loaded")
+
+    if not API_KEY and LISTEN_HOST not in ("127.0.0.1", "localhost", "::1"):
+        log("WARNING: serving on %s with NO API_KEY — this transcription endpoint is UNAUTHENTICATED. "
+            "Run it only on a trusted network; set API_KEY (and put TLS in front) before exposing it "
+            "to any untrusted network or the internet (M1)." % LISTEN_HOST)
 
     httpd = ThreadingHTTPServer((LISTEN_HOST, LISTEN_PORT), Handler)
     httpd.daemon_threads = True

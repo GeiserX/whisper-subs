@@ -264,14 +264,26 @@ docker build -t drumsergio/whisper-subs-worker:0.1.0 worker/
 
 ## Security notes
 
-- The upstream `whisper-server` binds to `127.0.0.1` only; the adapter is the sole
-  public listener. Set `API_KEY` to require a Bearer token on the transcription and
-  translation routes (the readiness probe stays open so healthchecks work).
-- For traffic that leaves the host, terminate **TLS** at a reverse proxy in front of
-  the worker and use an `https://` endpoint in the plugin (it warns when a key is
-  sent over plain HTTP).
-- The container runs as a non-root user; GPU access is granted only via `/dev/dri`
-  plus the host `render` group.
+> **Run this on a trusted network only, unless you set `API_KEY` *and* put TLS in front.**
+> With no `API_KEY` (the default) the worker is an **unauthenticated** transcription/translation
+> endpoint — anyone who can reach the published port can drive your GPU/CPU. The adapter listens on
+> `0.0.0.0` (it must, so the plugin can reach it from another host) and logs a loud warning at startup
+> when it is serving without a key. Do **not** port-forward it or run it on a public VPS unprotected.
+
+- Set `API_KEY` to require a `Bearer` token on the transcription and translation routes (the readiness
+  probe stays open so Docker healthchecks work). The check is constant-time. The upstream
+  `whisper-server` binds to `127.0.0.1` only; the adapter is the sole public listener.
+- For traffic that leaves the host, terminate **TLS** at a reverse proxy in front of the worker and use
+  an `https://` endpoint in the plugin (it warns when a key is sent over plain HTTP).
+- The adapter frames requests strictly by a single non-negative `Content-Length`, rejects
+  `Transfer-Encoding` and oversized bodies (`WHISPER_MAX_BODY_BYTES`, default 8 GiB), and drops a
+  stalled socket after `WHISPER_SOCKET_TIMEOUT` (default 120 s) so one slow client can't wedge the GPU
+  slot. It is still wise to bound total connections at a reverse proxy for an exposed deployment.
+- The container runs as a non-root user; the example compose adds `no-new-privileges`, `cap_drop: ALL`,
+  and a read-only root filesystem. GPU access is granted only via `/dev/dri` plus the host `render` group.
+- **`CONVERT=true`** (with an `INSTALL_FFMPEG=true` image) makes `whisper-server` shell out to FFmpeg on
+  the uploaded media — a much larger parser attack surface. Leave it off unless you need non-WAV input,
+  and never enable it on an exposed worker.
 
 ---
 
