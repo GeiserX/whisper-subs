@@ -377,7 +377,7 @@ namespace WhisperSubs.Controller
                 {
                     try
                     {
-                        await DispatchDrainAsync(manager, pool, requirements, logger, cancellationToken);
+                        await DispatchDrainAsync(manager, pool, requirements, countProcessed: true, logger, cancellationToken);
                     }
                     finally
                     {
@@ -410,6 +410,7 @@ namespace WhisperSubs.Controller
             SubtitleManager manager,
             WorkerPool pool,
             JobRequirements requirements,
+            bool countProcessed,
             ILogger logger,
             CancellationToken cancellationToken)
         {
@@ -421,7 +422,9 @@ namespace WhisperSubs.Controller
             {
                 while (TryDequeuePriority(out var unservable) && unservable != null)
                 {
-                    Interlocked.Increment(ref _processedCount);
+                    // Match the old counting: the background loop counted a failure toward `processed`,
+                    // the scheduled task's priority drain did not (countProcessed distinguishes them).
+                    if (countProcessed) Interlocked.Increment(ref _processedCount);
                     Interlocked.Increment(ref _failedCount);
                     _lastError = $"{unservable.Item.Name}: no configured worker can serve this job";
                     unservable.Completion?.TrySetException(
@@ -467,7 +470,7 @@ namespace WhisperSubs.Controller
                         {
                             await manager.GenerateSubtitleAsync(
                                 wi.Item, l.Worker.Provider, wi.Language, cancellationToken, wi.Force);
-                            Interlocked.Increment(ref _processedCount);
+                            if (countProcessed) Interlocked.Increment(ref _processedCount);
                             wi.Completion?.TrySetResult(true);
                         }
                         catch (System.OperationCanceledException)
@@ -476,7 +479,7 @@ namespace WhisperSubs.Controller
                         }
                         catch (System.Exception ex)
                         {
-                            Interlocked.Increment(ref _processedCount);
+                            if (countProcessed) Interlocked.Increment(ref _processedCount);
                             Interlocked.Increment(ref _failedCount);
                             _lastError = $"{wi.Item.Name}: {ex.Message}";
                             wi.Completion?.TrySetException(ex);
@@ -519,7 +522,9 @@ namespace WhisperSubs.Controller
             ILogger logger,
             CancellationToken cancellationToken)
         {
-            await DispatchDrainAsync(manager, pool, requirements, logger, cancellationToken);
+            // countProcessed:false — the old priority drain did not add to _processedCount (only the
+            // background loop did), so the /Queue `processed` stat stays byte-identical to pre-v4.
+            await DispatchDrainAsync(manager, pool, requirements, countProcessed: false, logger, cancellationToken);
             _currentItemName = null;
         }
     }

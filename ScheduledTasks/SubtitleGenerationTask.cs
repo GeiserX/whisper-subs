@@ -79,15 +79,31 @@ namespace WhisperSubs.ScheduledTasks
                 return;
             }
 
-            var manager = new SubtitleManager(_libraryManager, _loggerFactory.CreateLogger<SubtitleManager>());
-            var language = config.DefaultLanguage;
             var queue = SubtitleQueueService.Instance;
 
-            // Mark the task running up front so the shared worker pool isn't rebuilt underneath it, then
-            // build the pool + the per-job worker requirements once for the whole run (v4.0). Both the
-            // priority drain and this task's own swept items go through the SAME pool as any background
-            // dispatcher, so the global concurrency limit holds across every path.
+            // Mark the task running up front so the shared worker pool isn't rebuilt underneath it (v4.0),
+            // then run the generation inside a try/finally that ALWAYS clears the flag — even if setup
+            // (GetPool, library enumeration, the restored-items drain) throws before the main loop — so a
+            // stuck flag never freezes the pool-rebuild gate or the queue UI. ReportTaskComplete is idempotent.
             queue.MarkTaskStarted();
+            try
+            {
+                await RunGenerationAsync(config, queue, progress, cancellationToken);
+            }
+            finally
+            {
+                queue.ReportTaskComplete();
+            }
+        }
+
+        private async Task RunGenerationAsync(
+            Configuration.PluginConfiguration config,
+            SubtitleQueueService queue,
+            IProgress<double> progress,
+            CancellationToken cancellationToken)
+        {
+            var manager = new SubtitleManager(_libraryManager, _loggerFactory.CreateLogger<SubtitleManager>());
+            var language = config.DefaultLanguage;
             var pool = queue.GetPool(config, _loggerFactory, forTask: true);
             var requirements = WorkerJob.Requirements(config.SubtitleMode, config.EnableTranslation);
 
@@ -427,14 +443,10 @@ namespace WhisperSubs.ScheduledTasks
             }
             finally
             {
-                // Always clear the task-running flag (even on cancellation / exception) so the shared worker
-                // pool can be rebuilt for the next run — MarkTaskStarted set it, and the success path's
-                // ReportTaskComplete is skipped when the run throws.
-                queue.ReportTaskComplete();
-
                 // Persist even on cancellation / pause-timeout so the run keeps the progress it made.
                 // Prune to the enumerated candidate set (not the reached set) so items not yet visited
                 // this run keep their prior entry — the reason per-item state beats a global watermark.
+                // (The task-running flag is cleared by ExecuteAsync's outer finally.)
                 if (skipCache != null)
                 {
                     skipCache.PruneTo(candidateIds);
