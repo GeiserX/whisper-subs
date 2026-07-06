@@ -92,7 +92,7 @@ namespace WhisperSubs.Controller.Workers
                     var w = _byKey[key];
                     var caps = w.Capabilities;
                     list.Add(new WorkerStatus(
-                        w.Id, w.Name, Healthy: true, _inFlight[key],
+                        w.Id, w.Name, _inFlight[key],
                         caps.MaxConcurrency < 1 ? 1 : caps.MaxConcurrency, caps.IsLocal, caps.CostWeight,
                         new List<string>(_current[key])));
                 }

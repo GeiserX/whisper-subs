@@ -14,16 +14,17 @@
 
 ---
 
-**WhisperSubs** is a Jellyfin plugin that automatically generates subtitles for your media library using local AI models. All transcription runs entirely on your server -- no audio data ever leaves your network. Your media stays private.
+**WhisperSubs** is a Jellyfin plugin that automatically generates subtitles for your media library using local AI models. Transcription runs on hardware you control -- this Jellyfin server by default, plus any transcription workers you choose to add -- so your media stays on your own network and is never sent to a third-party cloud unless you deliberately configure one. Your media stays private.
 
 ## Features
 
-- **Fully Local Processing** -- Audio is transcribed on your hardware using [whisper.cpp](https://github.com/ggerganov/whisper.cpp). No cloud APIs, no external services, no data exfiltration.
+- **Self-Hosted Processing** -- Audio is transcribed on hardware you control using [whisper.cpp](https://github.com/ggerganov/whisper.cpp) -- this server by default, or a pool of your own workers. No third-party cloud is involved unless you deliberately add a cloud worker.
 - **Built-in Engine Setup** -- Download whisper-cli binaries and models directly from the plugin settings page on Linux. No manual installation needed for most users.
 - **Automatic Language Detection** -- Reads audio stream metadata to detect the spoken language and generate matching subtitles. Falls back to whisper's built-in language detection when tags are absent.
 - **Forced Subtitles** -- Detect and transcribe only foreign-language dialogue (e.g., French lines in an English movie) via VAD-based speech segmentation and per-chunk language detection.
 - **Lyrics Generation (Experimental)** -- Generate `.lrc` lyrics files for music libraries via whisper transcription. Jellyfin picks up `.lrc` files automatically.
 - **GPU Acceleration** -- Supports CUDA (NVIDIA), Vulkan (Intel / AMD / NVIDIA), and ROCm (AMD) for significantly faster transcription.
+- **Distributed Transcription (Worker Pool)** -- Optionally pool several machines, GPUs, a NAS, or a cloud endpoint and transcribe your backlog in parallel across all of them. Additive and off by default: with no workers configured, everything runs on this server exactly as before, and the plugin always prefers your free local workers before bursting to a paid one. See [`worker/`](worker/README.md) for a ready-to-run worker image.
 - **Priority Queue** -- Manual requests are queued with priority and processed before scheduled items. Queue persists across restarts.
 - **Real-time Progress** -- Live progress banner in the admin UI showing current item, phase (extracting audio, transcribing), per-file progress, and overall stats.
 - **Subtitle Resume** -- If transcription is interrupted, it resumes from the last timestamp rather than starting over.
@@ -358,6 +359,25 @@ If you see `no GPU found` or `using CPU backend`, the binary was not built with 
 
 The Q5 quantized models offer nearly identical quality to their F16 counterparts at a fraction of the size. `ggml-large-v3-turbo-q5_0` is the default when downloading from the plugin settings page.
 
+## Distributed Transcription (Worker Pool)
+
+By default WhisperSubs transcribes on this Jellyfin server, one job at a time. If you have more than one machine -- a second box with a GPU, a NAS, or a cloud endpoint -- you can pool them and transcribe your backlog **in parallel**.
+
+This is entirely optional and off by default. With no workers configured, nothing changes: the plugin runs exactly as before, on this server. When you add workers, the plugin still extracts audio locally and then farms transcription out over HTTP to any OpenAI-compatible Whisper endpoint you point it at. It always prefers your **free local** workers and only "bursts" to a worker with a non-zero **cost weight** when the local ones are all busy.
+
+**Set it up in the plugin settings:**
+
+1. Open **Dashboard** > **Plugins** > **WhisperSubs** and expand **Worker Pool (Optional / Advanced)**.
+2. Leave **Also use this server as a worker** on to keep transcribing here too, or turn it off to offload entirely (e.g. a weak NAS handing all work to a beefier box).
+3. Click **+ Add worker** for each endpoint. Give it an endpoint URL (base URL, no `/v1` suffix), an optional API key/model, a **max concurrency** (keep `1` per single GPU), and a **cost weight** (`0` = free/local, preferred; `>0` = only used to burst).
+4. Use each row's **Test** button (`POST /Workers/TestConnection`) to confirm the endpoint is reachable and transcribes before saving.
+
+The live queue view shows which worker is transcribing which item, so you can see the pool working.
+
+> **Need a worker to point at?** [`worker/`](worker/README.md) is a ready-to-run whisper.cpp + Vulkan worker image (with notes for CPU/NVIDIA/AMD backends). Any server that implements the OpenAI `/v1/audio/transcriptions` and `/v1/audio/translations` endpoints -- e.g. [Speaches](https://github.com/speaches-ai/speaches) -- also works.
+
+> **Note:** the automatic scheduled sweep currently processes its backlog one item at a time; manual **Generate** / **Generate All** already fan out across the whole pool. Parallelizing the scheduled sweep is on the [roadmap](ROADMAP.md).
+
 ## Configuration
 
 After installation, navigate to **Dashboard** > **Plugins** > **WhisperSubs** to configure:
@@ -365,13 +385,18 @@ After installation, navigate to **Dashboard** > **Plugins** > **WhisperSubs** to
 | Setting | Description |
 |---|---|
 | **Default Language** | `Auto-detect` reads the language from each file's audio stream metadata and generates matching subtitles. Choose a specific language to force it for all transcriptions. |
-| **Subtitle Mode** | Full, Forced Only, or Full + Forced. See [Subtitle Modes](#subtitle-modes) below. |
+| **Subtitle Mode** | Full, Forced Only, Full + Forced, or Translation Only. See [Subtitle Modes](#subtitle-modes) below. |
 | **Enable Auto-Generation** | When enabled, the scheduled task will scan selected libraries and generate subtitles for items that lack them. |
 | **Enabled Libraries** | Select which libraries should be monitored for automatic subtitle generation. |
 | **Enable Lyrics Generation** | When enabled, music libraries are scanned and audio tracks receive `.lrc` lyrics files (experimental -- whisper is optimized for speech, not singing). |
 | **Whisper Binary Path** | *(Advanced)* Absolute path to the `whisper-cli` binary. Leave empty to use the auto-downloaded binary or search `PATH`. |
 | **Whisper Model Path** | *(Advanced)* Absolute path to the GGML model file. Leave empty to use the auto-downloaded model. |
 | **Whisper Thread Count** | *(Advanced)* Number of CPU threads for whisper inference. `0` = whisper default (4). Set to your CPU core count for faster transcription. |
+| **Also use this server as a worker** (`EnableLocalWorker`) | *(Worker Pool)* Whether this Jellyfin host's own whisper participates in the pool. On by default. Turn it off to transcribe **only** on the remote workers below -- e.g. a weak NAS offloading entirely to a beefier box. |
+| **Workers** | *(Worker Pool)* A list of extra OpenAI-compatible transcription endpoints to pool alongside (or instead of) this server. Empty by default. Each row has an endpoint URL, optional API key, optional model, max concurrency, cost weight, and a "can translate" flag. See [Distributed Transcription](#distributed-transcription-worker-pool). |
+| **Job timeout -- real-time factor** (`JobTimeoutRealtimeFactor`) | *(Advanced)* Upper bound on how much slower than real-time a remote worker may run before a single call is presumed hung and cancelled. Per-call deadline = audio length x this factor (clamped by the min/max below). Default `6`. A slow-but-working pass is never cut off; a dead endpoint is. |
+| **Job timeout -- minimum seconds** (`JobMinTimeoutSeconds`) | *(Advanced)* Floor for the per-call deadline, so a tiny detection clip still gets a sane minimum. Default `60`. |
+| **Job timeout -- maximum hours** (`JobMaxTimeoutHours`) | *(Advanced)* Absolute cap for the per-call deadline; a genuinely long film's worst case still fits under it. Default `12`. |
 
 ### Subtitle Modes
 
@@ -380,6 +405,7 @@ After installation, navigate to **Dashboard** > **Plugins** > **WhisperSubs** to
 | **Full** (default) | Complete transcription of all speech | Fast -- single whisper run per audio track |
 | **Forced Only** | Only foreign-language dialogue (e.g., French lines in an English movie) | Slow -- see below |
 | **Full + Forced** | Both files per track | Slowest -- runs both pipelines |
+| **Translation Only** | Only an English translated subtitle (skips native-language transcription) | Fast -- single `--translate` pass; medium/large models recommended |
 
 > **Performance warning for Forced / Full + Forced modes:**
 > Forced subtitle generation uses a multi-step pipeline: audio extraction, VAD-based speech segmentation, then **per-chunk language detection** on every ~30-second segment of the movie. For a 2-hour film this means ~240 individual whisper calls just for detection, before any transcription begins. On CPU, this phase alone can take **10--20+ minutes per movie**. GPU acceleration helps significantly.
@@ -450,7 +476,8 @@ All endpoints require Jellyfin admin authentication. Setup endpoints additionall
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/Plugins/WhisperSubs/Queue` | Queue status: current item, progress, phase, remaining count |
+| `GET` | `/Plugins/WhisperSubs/Queue` | Queue status: current item, progress, phase, remaining count. Also returns `pending` (inbound items in the order they will run) and `workers` (live per-worker load -- which endpoint is transcribing what) for the worker pool. |
+| `POST` | `/Plugins/WhisperSubs/Workers/TestConnection` | Test a worker endpoint: POSTs a tiny silent clip to confirm reachability, auth, and a working transcribe path before you save it. Returns `{ok, latencyMs, message}`. |
 | `POST` | `/Plugins/WhisperSubs/RunTask` | Trigger the scheduled subtitle generation task |
 | `GET` | `/Plugins/WhisperSubs/Models` | List downloaded models with active/size info |
 

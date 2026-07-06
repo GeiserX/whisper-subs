@@ -51,26 +51,43 @@ RUN cmake -B build \
 FROM ${RUNTIME_IMAGE} AS runtime
 
 ARG INSTALL_FFMPEG=false
+# Vulkan loader + Mesa ICDs (Intel ANV / AMD RADV) are the shipped default backend, so
+# ON by default. CPU-only and CUDA/ROCm builds don't use them and can slim the runtime
+# image with --build-arg INSTALL_VULKAN=false (N2).
+ARG INSTALL_VULKAN=true
+# uid for the non-root `whisper` user. Override when the base image already ships a
+# uid-1000 account: nvidia/cuda:*-ubuntu24.04 has a uid-1000 `ubuntu` user, so a plain
+# useradd --uid 1000 collides -- build the CUDA variant with --build-arg APP_UID=1001 (M1).
+ARG APP_UID=1000
 
 # Runtime deps:
 #   python3        -> the adapter (standard library only)
 #   tini           -> PID 1, reaps the whisper-server child, forwards signals
 #   curl           -> Docker healthcheck + the model downloader
 #   ca-certificates-> HTTPS to Hugging Face for model download
-#   libvulkan1     -> Vulkan loader (dlopens the ICD driver)
-#   mesa-vulkan-drivers -> Intel (ANV) + AMD (RADV) Vulkan drivers + ICD JSONs
 #   libgomp1       -> OpenMP runtime used by the whisper.cpp CPU paths
+#   libvulkan1 + mesa-vulkan-drivers (INSTALL_VULKAN=true) -> Vulkan loader + Intel
+#                     (ANV) / AMD (RADV) drivers + ICD JSONs
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3 tini curl ca-certificates \
-        libvulkan1 libgomp1 mesa-vulkan-drivers \
+        python3 tini curl ca-certificates libgomp1 \
+    && if [ "$INSTALL_VULKAN" = "true" ]; then \
+           apt-get install -y --no-install-recommends libvulkan1 mesa-vulkan-drivers; \
+       fi \
     && if [ "$INSTALL_FFMPEG" = "true" ]; then \
            apt-get install -y --no-install-recommends ffmpeg; \
        fi \
     && rm -rf /var/lib/apt/lists/*
 
 # Non-root user; own the model cache so a named volume is writable on first run.
-# (Debian base has no uid-1000 user; on an Ubuntu-based CUDA build, pick a free uid.)
-RUN useradd --uid 1000 --create-home --shell /usr/sbin/nologin whisper \
+#   groupadd -f -r render : create the `render` group so the compose's `group_add`
+#     resolves the NAME on this Debian base (which otherwise has no such group, making
+#     `docker compose up` hard-fail with "unable to find group render"). The GID here
+#     does NOT match the host's /dev/dri owner -- the compose still must pin the host's
+#     numeric render GID for actual GPU access (H1). -f => no-op if the base image
+#     (e.g. a CUDA/Ubuntu runtime) already ships a `render` group.
+#   --uid ${APP_UID} : avoid the uid-1000 collision on Ubuntu/CUDA bases (M1).
+RUN groupadd -f -r render \
+    && useradd --uid ${APP_UID} --create-home --shell /usr/sbin/nologin whisper \
     && mkdir -p /models /opt/whisper-adapter \
     && chown -R whisper:whisper /models
 
