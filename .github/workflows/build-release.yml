@@ -28,42 +28,42 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: [self-hosted, Linux, X64]
+          - os: ubuntu-latest
             variant: cpu
             asset_name: whisper-cli-linux-x64
             cmake_flags: "-DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_BMI2=ON"
             pre_install: ""
-          - os: [self-hosted, Linux, X64]
+          - os: ubuntu-latest
             variant: cpu-noavx
             asset_name: whisper-cli-linux-x64-noavx
             cmake_flags: "-DGGML_NATIVE=OFF -DGGML_AVX=OFF -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_BMI2=OFF -DGGML_SSE42=ON -DGGML_OPENMP=OFF"
             pre_install: ""
-          - os: [self-hosted, Linux, X64]
+          - os: ubuntu-latest
             variant: cpu-arm64
             asset_name: whisper-cli-linux-arm64
             cmake_flags: "-DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=aarch64 -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ -DGGML_NATIVE=OFF"
             pre_install: "arm64"
-          - os: [self-hosted, Linux, X64]
+          - os: ubuntu-latest
             variant: cpu-arm64-noavx
             asset_name: whisper-cli-linux-arm64-noavx
             cmake_flags: "-DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=aarch64 -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF"
             pre_install: "arm64"
-          - os: [self-hosted, Linux, X64]
+          - os: ubuntu-latest
             variant: cuda12
             asset_name: whisper-cli-linux-x64-cuda12
             cmake_flags: "-DGGML_CUDA=ON -DGGML_STATIC=ON -DCMAKE_CUDA_ARCHITECTURES='61;70;75;80;86;89;90' -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_BMI2=ON"
             pre_install: "cuda"
-          - os: [self-hosted, Linux, X64]
+          - os: ubuntu-latest
             variant: cuda12-noavx
             asset_name: whisper-cli-linux-x64-cuda12-noavx
             cmake_flags: "-DGGML_CUDA=ON -DGGML_STATIC=ON -DCMAKE_CUDA_ARCHITECTURES='61;70;75;80;86;89;90' -DGGML_NATIVE=OFF -DGGML_AVX=OFF -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_BMI2=OFF -DGGML_SSE42=ON -DGGML_OPENMP=OFF"
             pre_install: "cuda"
-          - os: [self-hosted, Linux, X64]
+          - os: ubuntu-latest
             variant: vulkan
             asset_name: whisper-cli-linux-x64-vulkan
             cmake_flags: "-DGGML_VULKAN=ON -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_BMI2=ON"
             pre_install: "vulkan"
-          - os: [self-hosted, Linux, X64]
+          - os: ubuntu-latest
             variant: vulkan-noavx
             asset_name: whisper-cli-linux-x64-vulkan-noavx
             cmake_flags: "-DGGML_VULKAN=ON -DGGML_NATIVE=OFF -DGGML_AVX=OFF -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_BMI2=OFF -DGGML_SSE42=ON -DGGML_OPENMP=OFF"
