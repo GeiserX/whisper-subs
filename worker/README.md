@@ -79,6 +79,20 @@ native to `whisper-server`, so no response rewriting is needed.
 
 ## Quick start — Intel / AMD iGPU (Vulkan)
 
+**One-time GPU setup (required).** The container runs as a non-root user, so it must join
+the host group that owns `/dev/dri/renderD128` to use the GPU. Find that group's numeric
+GID on the host:
+
+```bash
+getent group render | cut -d: -f3      # prints your host's render GID (often 993, 104, or 44)
+```
+
+Put that number under `group_add:` in `worker/docker-compose.example.yml` (it ships as
+`"993"`, a common default that is **not** guaranteed to match your host). Use the
+**numeric GID**, not the name `render`: the name resolves inside the image but its GID
+won't match the host's device owner, so the GPU open fails silently and whisper falls
+back to (very slow) CPU. Then start it:
+
 ```bash
 # from the repo root
 docker compose -f worker/docker-compose.example.yml up -d
@@ -109,9 +123,10 @@ another host) and add each to the pool.
 | `API_KEY` | *(empty)* | If set, `Authorization: Bearer <key>` is required on the POST routes |
 | `LISTEN_PORT` | `8080` | Adapter listen port (inside the container) |
 | `CONVERT` | `false` | `true` runs FFmpeg to accept non-WAV audio (needs `INSTALL_FFMPEG=true` image) |
-| `WHISPER_THREADS` | *(whisper default)* | CPU threads (`--threads`) |
+| `WHISPER_THREADS` | *(whisper default)* | CPU threads (`--threads`). Set to your CPU core count on CPU-only workers for best throughput |
 | `WHISPER_LANGUAGE` | `auto` | Upstream default language; per-request `language` still overrides |
-| `WHISPER_EXTRA_ARGS` | *(empty)* | Extra `whisper-server` flags, e.g. `--flash-attn` or `--vad --vad-model /models/ggml-silero-v5.1.2.bin` |
+| `WHISPER_EXTRA_ARGS` | *(empty)* | Extra `whisper-server` flags. Flash attention is already **on by default** (v1.8.4), so `--flash-attn` is a no-op — pass `--no-flash-attn` only if a buggy Vulkan driver miscomputes with it. Other examples: `--vad --vad-model /models/ggml-silero-v5.1.2.bin` |
+| `WHISPER_TMP_DIR` | `/tmp` | Temp dir for `CONVERT=true` ffmpeg WAVs. whisper-server's own default (`.`) is the read-only rootfs, so the adapter passes `--tmp-dir` here; the compose mounts a tmpfs at `/tmp` |
 | `WHISPER_BACKEND_PORT` | `8081` | Internal `whisper-server` port (localhost only) |
 | `WHISPER_READY_TIMEOUT` | `600` | Seconds to wait for the model to load before serving |
 
@@ -121,8 +136,10 @@ another host) and add each to the pool.
 
 ### Intel iGPU (Vulkan) — the default
 
-The shipped image already targets Vulkan. Pass `/dev/dri` and add the host
-`render` group (see the compose file). Leave `VK_ICD_FILENAMES` **unset** to let
+The shipped image already targets Vulkan. Pass `/dev/dri` and set `group_add:` to your
+host's **numeric** `render` GID (see **Quick start** above and the compose file — the
+name `render` resolves in the image but its GID won't match the host's device owner, so
+you must use the number). Leave `VK_ICD_FILENAMES` **unset** to let
 the Vulkan loader auto-discover the Mesa **ANV** driver; only pin it if multiple
 GPUs are present and you need a specific one. On Debian/Mesa the Intel ICD is
 usually `/usr/share/vulkan/icd.d/intel_icd.x86_64.json` (verify with
@@ -152,12 +169,16 @@ self-heals a wrong pin by unsetting it and falling back to auto-discovery.
     --build-arg BUILD_IMAGE=nvidia/cuda:12.6.3-devel-ubuntu24.04 \
     --build-arg RUNTIME_IMAGE=nvidia/cuda:12.6.3-runtime-ubuntu24.04 \
     --build-arg WHISPER_CMAKE_FLAGS="-DGGML_CUDA=ON -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON" \
+    --build-arg APP_UID=1001 \
+    --build-arg INSTALL_VULKAN=false \
     worker/
   ```
-  Run with the NVIDIA Container Toolkit: `docker run --gpus all ...` (or compose
-  `deploy.resources.reservations.devices` / `runtime: nvidia`). The CUDA runtime
-  base already provides the NVIDIA userspace libs; `mesa-vulkan-drivers` is
-  unnecessary for this variant.
+  `--build-arg APP_UID=1001` is **required** here: `nvidia/cuda:*-ubuntu24.04` already
+  ships a uid-1000 `ubuntu` user, so the default `useradd --uid 1000` collides and the
+  build fails. `--build-arg INSTALL_VULKAN=false` skips the Mesa Vulkan drivers this
+  variant doesn't use. Run with the NVIDIA Container Toolkit: `docker run --gpus all ...`
+  (or compose `deploy.resources.reservations.devices` / `runtime: nvidia`). The CUDA
+  runtime base already provides the NVIDIA userspace libs.
 - **Vulkan on NVIDIA:** also possible with the default image if the NVIDIA Vulkan
   ICD is exposed to the container, but CUDA is the better-supported path.
 
@@ -166,10 +187,13 @@ self-heals a wrong pin by unsetting it and falling back to auto-discovery.
 ```bash
 docker build -t whisper-subs-worker:cpu \
   --build-arg WHISPER_CMAKE_FLAGS="-DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON" \
+  --build-arg INSTALL_VULKAN=false \
   worker/
 ```
 
-Drop the `devices:` / `group_add:` lines from the compose file. Expect real-time
+`--build-arg INSTALL_VULKAN=false` skips the Mesa Vulkan drivers a CPU build never uses,
+slimming the image. Drop the `devices:` / `group_add:` lines from the compose file, and
+set `WHISPER_THREADS` to your CPU core count for best throughput. Expect real-time
 factors well above 1 on large models — prefer a smaller model (see below) or a GPU.
 
 ---
@@ -241,11 +265,19 @@ curl -fsS http://<worker-host>:9010/v1/audio/translations \
   -F file=@/tmp/silence.wav -F model=whisper-1 -F response_format=srt
 ```
 
+> **Silence transcribes to an _empty_ SRT — that is expected here.** This smoke test
+> proves the HTTP contract (a `200` with a well-formed body and the translate-route
+> injection), **not** transcription content: silent input has no speech, so whisper emits
+> no cues. The plugin itself treats an empty SRT as "no subtitles produced", so don't be
+> alarmed — feed a clip with real speech to see actual cues.
+
 ---
 
 ## Building & publishing
 
-The published image is built and pushed by CI, mirroring the repo's conventions:
+The published image is built and pushed by the
+[`.github/workflows/worker-image.yml`](../.github/workflows/worker-image.yml) GitHub
+Actions workflow, mirroring the repo's conventions:
 
 - **Registry:** Docker Hub, image `drumsergio/whisper-subs-worker`.
 - **Tags:** semantic version tags only — e.g. `0.1.0` — **never `:latest`**.
