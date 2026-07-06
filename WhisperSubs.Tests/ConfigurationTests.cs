@@ -8,6 +8,16 @@ namespace WhisperSubs.Tests;
 public class ConfigurationTests
 {
     [Fact]
+    public void JobTimeoutDefaults_AreSafe()
+    {
+        // v4.0 resilience: per-call deadline policy defaults (closes the 70h-stuck class).
+        var config = new PluginConfiguration();
+        Assert.Equal(6.0, config.JobTimeoutRealtimeFactor);
+        Assert.Equal(60, config.JobMinTimeoutSeconds);
+        Assert.Equal(12, config.JobMaxTimeoutHours);
+    }
+
+    [Fact]
     public void RequestQueueDefaults_AreSafeAndOptIn()
     {
         var config = new PluginConfiguration();
