@@ -3,9 +3,9 @@ name: CI
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, v4-dev]
   pull_request:
-    branches: [main]
+    branches: [main, v4-dev]
 
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
