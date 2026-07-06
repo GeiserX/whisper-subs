@@ -1,0 +1,84 @@
+# whisper-subs worker -- Intel / AMD iGPU (Vulkan) example.
+#
+# 1. Start it:            docker compose -f docker-compose.example.yml up -d
+#    (first boot downloads the model into the `whisper-models` volume; be patient.)
+# 2. Point the plugin at it: Dashboard > Plugins > WhisperSubs > Workers ->
+#    add a worker with Endpoint http://<this-host>:9010  (NO /v1 suffix),
+#    the API key below if set, and MaxConcurrency = 1 (one iGPU ~= one stream).
+#
+# NB: never use the :latest tag -- pin a semver image tag.
+
+services:
+  whisper-subs-worker:
+    image: drumsergio/whisper-subs-worker:0.1.0
+    # To build locally instead of pulling, comment out `image:` above and uncomment:
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
+    container_name: whisper-subs-worker
+    restart: unless-stopped
+
+    ports:
+      # host:container -- the plugin connects to http://<host>:9010
+      - "9010:8080"
+
+    environment:
+      # Served whisper model. whisper-server serves exactly ONE model; the plugin's
+      # per-worker "Model" field is sent but ignored by this backend -- set it HERE.
+      WHISPER_MODEL: large-v3-turbo-q5_0
+      # Optional Bearer token. If set, configure the SAME key on the plugin worker.
+      # API_KEY: "change-me-to-a-long-random-string"
+      # Accept non-WAV audio from other OpenAI clients (needs an image built with
+      # --build-arg INSTALL_FFMPEG=true). The plugin always sends 16kHz WAV, so off.
+      # CONVERT: "false"
+      # WHISPER_THREADS: "4"           # CPU threads for whisper.cpp (default: its own)
+      # WHISPER_EXTRA_ARGS: "--flash-attn"   # extra whisper-server flags
+      # Pin a specific Vulkan ICD only if auto-discovery picks the wrong GPU. The
+      # exact filename varies (Debian/Mesa often uses the *.x86_64.json form); leave
+      # UNSET to auto-discover. Verify with: docker exec ... ls /usr/share/vulkan/icd.d/
+      # VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/intel_icd.x86_64.json   # Intel
+      # VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/radeon_icd.x86_64.json  # AMD
+
+    devices:
+      # Intel/AMD iGPU passthrough.
+      - /dev/dri:/dev/dri
+
+    group_add:
+      # The non-root container user needs the host's `render` (and sometimes
+      # `video`) group to open /dev/dri/renderD128. Find the numeric GID with
+      #   getent group render     (e.g. 993, 104, ...)
+      # and replace "render" below with that number if the name does not resolve.
+      - "render"
+
+    volumes:
+      # Model cache -- survives restarts so the model is downloaded only once.
+      - whisper-models:/models
+
+    # Container hardening. The image already runs non-root (uid 1000); these drop the
+    # rest of the ambient privilege so an exposed/compromised worker is contained.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # Read-only root filesystem: only the model cache (/models volume) and a small tmpfs
+    # need to be writable. Comment this pair out if a model download ever needs to write
+    # elsewhere on first run.
+    read_only: true
+    tmpfs:
+      - /tmp
+
+    # Cap RAM. large-v3-turbo-q5_0 is light; raise to ~10g for full large-v3.
+    mem_limit: 6g
+
+    healthcheck:
+      # /health reports 200 only once the model is loaded (same backend that
+      # serves /v1/audio/transcriptions). Unauthenticated by design.
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      # Generous: the first start downloads the model before it can report healthy.
+      start_period: 600s
+
+volumes:
+  whisper-models:
