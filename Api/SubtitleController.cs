@@ -309,7 +309,25 @@ namespace WhisperSubs.Api
                 library = queue.TaskCurrentItemLibrary,
                 // Named-tier breakdown of what's queued + how many user requests await approval (#112).
                 tiers = queue.CountsByTier().ToDictionary(kv => kv.Key.ToString(), kv => kv.Value),
-                pendingRequests = SubtitleRequestStore.Instance.GetAll().Count(r => r.State == RequestState.Pending)
+                pendingRequests = SubtitleRequestStore.Instance.GetAll().Count(r => r.State == RequestState.Pending),
+                // Inbound: the items waiting, in the order they'll run (capped; the full total is `remaining`). (v4.0)
+                pending = queue.PendingItems().Select(p => new
+                {
+                    name = p.Name,
+                    tier = p.Tier.ToString(),
+                    language = p.Language
+                }),
+                // Outbound: which worker/endpoint is transcribing which item right now. (v4.0)
+                workers = queue.SnapshotWorkers().Select(w => new
+                {
+                    id = w.Id,
+                    name = w.Name,
+                    isLocal = w.IsLocal,
+                    inFlight = w.InFlight,
+                    maxConcurrency = w.MaxConcurrency,
+                    costWeight = w.CostWeight,
+                    current = w.CurrentItems
+                })
             });
         }
 

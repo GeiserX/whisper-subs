@@ -156,6 +156,19 @@ namespace WhisperSubs.Controller
         public Dictionary<PriorityTier, int> CountsByTier()
             => _lanes.CountsByTier().ToDictionary(kv => (PriorityTier)kv.Key, kv => kv.Value);
 
+        /// <summary>
+        /// The waiting ("inbound") queue for the admin panel, in the exact order it will run (strongest tier
+        /// first, then FIFO): each item's name, tier and language. Capped at <paramref name="max"/> so a
+        /// library-wide Generate-All doesn't return thousands of names to a polled endpoint — the full total
+        /// is <see cref="PriorityCount"/>. (v4.0.)
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Reads BaseItem.Name off queued items; the lane ordering it projects is unit-tested in PriorityLanesTests")]
+        public IReadOnlyList<(string Name, PriorityTier Tier, string Language)> PendingItems(int max = 200)
+            => _lanes.Snapshot()
+                     .Take(max < 0 ? 0 : max)
+                     .Select(e => (e.Value.Item.Name, (PriorityTier)e.Tier, e.Value.Language))
+                     .ToList();
+
         // ── Per-file progress (updated by WhisperProvider stderr) ──
         private int _currentFileProgress;
 
