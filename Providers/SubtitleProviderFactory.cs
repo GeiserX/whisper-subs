@@ -7,34 +7,12 @@ namespace WhisperSubs.Providers
 {
     internal static class SubtitleProviderFactory
     {
-        [ExcludeFromCodeCoverage(Justification = "Orchestration: news up providers and depends on Plugin.Instance, File.Exists and TryAcquire — not unit-testable, same rationale as the excluded download/process methods.")]
-        public static ISubtitleProvider Create(PluginConfiguration config, ILoggerFactory loggerFactory)
-        {
-            if (!string.IsNullOrWhiteSpace(config.RemoteWhisperApiUrl))
-            {
-                var model = string.IsNullOrWhiteSpace(config.RemoteWhisperModel)
-                    ? "Systran/faster-whisper-large-v3"
-                    : config.RemoteWhisperModel.Trim();
-                var apiKey = (config.RemoteWhisperApiKey ?? string.Empty).Trim();
-                return new RemoteWhisperProvider(
-                    loggerFactory.CreateLogger<RemoteWhisperProvider>(),
-                    config.RemoteWhisperApiUrl,
-                    model,
-                    apiKey,
-                    config.JobTimeoutRealtimeFactor,
-                    config.JobMinTimeoutSeconds,
-                    config.JobMaxTimeoutHours);
-            }
-
-            return CreateLocal(config, loggerFactory);
-        }
-
         /// <summary>
         /// Builds the host's local in-process whisper-cli provider (VAD + detection-model resolution).
-        /// Extracted from <see cref="Create"/> so the v4.0 worker pool can construct the local worker
-        /// directly, without the remote-vs-local switch.
+        /// The v4.0 worker pool (WorkerRegistry) constructs the local worker with this directly; remote
+        /// workers get their own RemoteWhisperProvider per configured endpoint in WorkerRegistry.
         /// </summary>
-        [ExcludeFromCodeCoverage(Justification = "Orchestration: news up WhisperProvider + WhisperSetupService, File.Exists, TryAcquire — same rationale as Create.")]
+        [ExcludeFromCodeCoverage(Justification = "Orchestration: news up WhisperProvider + WhisperSetupService and depends on Plugin.Instance, File.Exists and TryAcquire — not unit-testable, same rationale as the excluded download/process methods.")]
         public static ISubtitleProvider CreateLocal(PluginConfiguration config, ILoggerFactory loggerFactory)
         {
             var setup = new WhisperSetupService(
@@ -101,7 +79,7 @@ namespace WhisperSubs.Providers
 
         /// <summary>
         /// Maps the plugin's VAD tuning config fields onto a <see cref="VadTuning"/>. Extracted from
-        /// <see cref="Create"/> (excluded from coverage as untestable orchestration) so the field-by-field
+        /// <see cref="CreateLocal"/> (excluded from coverage as untestable orchestration) so the field-by-field
         /// mapping stays pure and unit-testable — a guard against a silent field transposition. (Issue #105.)
         /// </summary>
         internal static VadTuning BuildVadTuning(PluginConfiguration config)

@@ -396,7 +396,23 @@ namespace WhisperSubs.Controller
                 var json = JsonSerializer.Serialize(entries);
                 lock (_fileLock)
                 {
-                    File.WriteAllText(path, json);
+                    // Atomic write (v4.0.1): serialize to a unique temp file then File.Move(overwrite) so a
+                    // process kill / disk-full mid-write can't leave a truncated queue.json that fails to
+                    // deserialize on restart and silently drops the whole persisted queue. Mirrors the
+                    // temp+rename already used by SubtitleRequestStore and SubtitleSkipCache.
+                    var tmp = path + "." + System.Guid.NewGuid().ToString("N") + ".tmp";
+                    try
+                    {
+                        File.WriteAllText(tmp, json);
+                        File.Move(tmp, path, overwrite: true);
+                    }
+                    finally
+                    {
+                        if (File.Exists(tmp))
+                        {
+                            try { File.Delete(tmp); } catch { /* best effort cleanup */ }
+                        }
+                    }
                 }
             }
             catch
@@ -422,23 +438,35 @@ namespace WhisperSubs.Controller
         {
             if (Interlocked.CompareExchange(ref _isDraining, 1, 0) == 0)
             {
-                var pool = GetPool(config, loggerFactory, forTask: false);
-                var requirements = WorkerJob.Requirements(config.SubtitleMode, config.EnableTranslation);
                 _ = Task.Run(async () =>
                 {
+                    var started = false;
                     try
                     {
+                        // Build the pool + requirements INSIDE the try (v4.0.1): GetPool → WorkerRegistry →
+                        // SubtitleProviderFactory.CreateLocal parses user-configured model/VAD paths and CAN
+                        // throw (e.g. an invalid path → ArgumentException). If that threw before the finally
+                        // was in scope, _isDraining stayed 1 forever and wedged the background dispatcher until
+                        // a Jellyfin restart. Now a build failure is caught, _isDraining is reset, and — since
+                        // the config is broken — we do NOT re-fire (started stays false), avoiding a busy-loop.
+                        var pool = GetPool(config, loggerFactory, forTask: false);
+                        var requirements = WorkerJob.Requirements(config.SubtitleMode, config.EnableTranslation);
+                        started = true;
                         await DispatchDrainAsync(manager, pool, requirements, countProcessed: true, logger, cancellationToken);
+                    }
+                    catch (System.Exception ex)
+                    {
+                        logger.LogError(ex, "[Dispatch] Dispatcher failed to start or run");
                     }
                     finally
                     {
                         _currentItemName = null;
                         Interlocked.Exchange(ref _isDraining, 0);
 
-                        // Re-check: if items were enqueued during the finally block, restart the loop to
-                        // avoid stuck items — but never on an already-cancelled token, which would set
-                        // _isDraining=1 while Task.Run skips the delegate, wedging the queue forever (#112).
-                        if (!_lanes.IsEmpty && !cancellationToken.IsCancellationRequested)
+                        // Re-check: if items were enqueued during the finally block, restart the loop to avoid
+                        // stuck items — but never on an already-cancelled token, and never if the pool build
+                        // itself failed (a persistent bad-config throw must not busy-loop). (#112, v4.0.1)
+                        if (started && !_lanes.IsEmpty && !cancellationToken.IsCancellationRequested)
                         {
                             EnsureDispatching(manager, config, loggerFactory, logger, cancellationToken);
                         }
