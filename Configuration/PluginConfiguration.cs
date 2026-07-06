@@ -287,6 +287,24 @@ namespace WhisperSubs.Configuration
         /// <summary>Absolute cap for the per-call deadline in hours — a genuinely long film's worst case still fits under it. Default 12.</summary>
         public int JobMaxTimeoutHours { get; set; } = 12;
 
+        // ── Worker pool (v4.0; power-user feature, empty by default) ─────────
+        // Simple by default: a normal single-server install leaves Workers empty and EnableLocalWorker on,
+        // so the plugin behaves exactly as today (the host's own whisper, one job at a time). Power users
+        // add extra OpenAI-compatible endpoints below to transcribe in parallel across machines.
+
+        /// <summary>
+        /// Extra OpenAI-compatible transcription workers to pool alongside the local one. EMPTY for the
+        /// common single-server install. Power users add a second box, a NAS, or a cloud endpoint here.
+        /// </summary>
+        public List<WhisperWorker> Workers { get; set; } = new List<WhisperWorker>();
+
+        /// <summary>
+        /// Whether the Jellyfin host's own local whisper participates as a worker. Default true (the normal
+        /// case). Set false to transcribe ONLY on the configured remote workers — e.g. a weak NAS offloading
+        /// entirely to a beefier box (the pre-v4 behaviour when only a single remote URL was set).
+        /// </summary>
+        public bool EnableLocalWorker { get; set; } = true;
+
         public PluginConfiguration()
         {
         }

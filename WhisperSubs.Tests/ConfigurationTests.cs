@@ -18,6 +18,26 @@ public class ConfigurationTests
     }
 
     [Fact]
+    public void WorkerPoolDefaults_AreSimpleAndEmpty()
+    {
+        // Simple by default: no extra workers + local worker on ⇒ today's single-server behaviour (v4.0).
+        var config = new PluginConfiguration();
+        Assert.NotNull(config.Workers);
+        Assert.Empty(config.Workers);
+        Assert.True(config.EnableLocalWorker);
+    }
+
+    [Fact]
+    public void WhisperWorker_Defaults()
+    {
+        var w = new WhisperWorker();
+        Assert.True(w.Enabled);
+        Assert.Equal(1, w.MaxConcurrency);
+        Assert.Equal(0, w.CostWeight);
+        Assert.True(w.CanTranslate);
+    }
+
+    [Fact]
     public void RequestQueueDefaults_AreSafeAndOptIn()
     {
         var config = new PluginConfiguration();
