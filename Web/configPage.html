@@ -2069,7 +2069,11 @@
                             if (workersEl) {
                                 var wks = Array.isArray(q.workers) ? q.workers : [];
                                 workersEl.textContent = '';
-                                if (wks.length > 0) {
+                                // Only show "what's running where" for a REAL pool — a default single-server
+                                // install always has one local worker, so showing it just duplicates the
+                                // current-item line above (v4.0.1).
+                                var realPool = wks.length > 1 || (wks.length === 1 && !wks[0].isLocal);
+                                if (realPool) {
                                     wks.forEach(function (wk) {
                                         var inF = (wk.inFlight != null) ? wk.inFlight : 0;
                                         var maxC = (wk.maxConcurrency != null) ? wk.maxConcurrency : 1;

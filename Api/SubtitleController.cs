@@ -358,6 +358,26 @@ namespace WhisperSubs.Api
                 return Ok(new { ok = false, message = error });
             }
 
+            // SSRF hardening (v4.0.1): this admin endpoint makes the server POST to an arbitrary URL. Block
+            // the cloud-metadata link-local range (169.254.0.0/16 and IPv6 fe80::/10) — never a real worker,
+            // the highest-value SSRF target. Loopback/LAN stay allowed (legitimate worker locations).
+            static bool IsLinkLocal(System.Net.IPAddress ip)
+            {
+                if (ip.IsIPv6LinkLocal) return true;
+                if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+                {
+                    var b = ip.GetAddressBytes();
+                    return b[0] == 169 && b[1] == 254;
+                }
+                return false;
+            }
+            if (System.Uri.TryCreate(worker.ApiUrl.Trim(), System.UriKind.Absolute, out var probeUri)
+                && System.Net.IPAddress.TryParse(probeUri.Host, out var probeIp)
+                && IsLinkLocal(probeIp))
+            {
+                return Ok(new { ok = false, message = "Endpoint host is link-local (169.254.0.0/16), which is blocked." });
+            }
+
             var url = worker.ApiUrl.TrimEnd('/') + "/v1/audio/transcriptions";
             var model = string.IsNullOrWhiteSpace(worker.Model) ? "Systran/faster-whisper-large-v3" : worker.Model.Trim();
             var wav = Controller.Workers.SyntheticAudio.SilentWav16kMono(100);
@@ -375,8 +395,14 @@ namespace WhisperSubs.Api
                 probe.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", worker.ApiKey.Trim());
             }
 
-            var http = _httpClientFactory.CreateClient();
-            http.Timeout = TimeSpan.FromSeconds(20);
+            // Dedicated no-redirect client (v4.0.1): a real transcribe endpoint never 302s, so disabling
+            // auto-redirect blocks a redirect-based SSRF pivot to an arbitrary URL.
+            using var handler = new System.Net.Http.SocketsHttpHandler
+            {
+                AllowAutoRedirect = false,
+                ConnectTimeout = TimeSpan.FromSeconds(10)
+            };
+            using var http = new System.Net.Http.HttpClient(handler) { Timeout = TimeSpan.FromSeconds(20) };
 
             var sw = System.Diagnostics.Stopwatch.StartNew();
             try
@@ -394,14 +420,13 @@ namespace WhisperSubs.Api
                     });
                 }
 
-                var body = await resp.Content.ReadAsStringAsync();
-                var snippet = body.Length > 200 ? body.Substring(0, 200) : body;
+                // Do NOT echo the upstream response body (SSRF response-disclosure) — status + latency only.
                 return Ok(new
                 {
                     ok = false,
                     status = (int)resp.StatusCode,
                     latencyMs = sw.ElapsedMilliseconds,
-                    message = $"HTTP {(int)resp.StatusCode}: {snippet}"
+                    message = $"Endpoint responded HTTP {(int)resp.StatusCode} — not a working transcribe endpoint."
                 });
             }
             catch (Exception ex)
