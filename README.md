@@ -197,6 +197,8 @@ docker exec jellyfin /opt/whisper/whisper-cli --help
 
 whisper.cpp supports GPU offloading via **Vulkan** (Intel, AMD, and some NVIDIA GPUs), **CUDA** (NVIDIA), and **ROCm** (AMD). GPU acceleration dramatically reduces transcription time, especially with larger models.
 
+> **Offloading to another machine?** You can run transcription on a separate host as an OpenAI-compatible worker and point the plugin at it over HTTP — see [`worker/`](worker/README.md) for a ready-to-run whisper.cpp + Vulkan worker image (plus notes for CPU/NVIDIA/AMD backends).
+
 > **Docker users:** Passing the GPU device (e.g., `/dev/dri`) to a container is **not enough** -- the container also needs the matching userspace libraries installed. The auto-setup wizard detects both the device and the library and will fall back to CPU if the library is missing.
 >
 > | Backend | Device | Required library | Install command (Debian/Ubuntu) |
