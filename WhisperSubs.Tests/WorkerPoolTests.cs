@@ -131,9 +131,15 @@ public class WorkerPoolTests
 
         // Acquire one slot → the snapshot's InFlight reflects it (local is cheapest, so it's taken first).
         var lease = await pool.AcquireAsync(AnyJob, default);
-        Assert.Equal(1, pool.Snapshot().Single(s => s.Id == "local").InFlight);
-        pool.Release(lease.Key);
-        Assert.Equal(0, pool.Snapshot().Single(s => s.Id == "local").InFlight);
+        pool.SetCurrent(lease.Key, "The Movie S01E12");
+        var busy = pool.Snapshot().Single(s => s.Id == "local");
+        Assert.Equal(1, busy.InFlight);
+        Assert.Contains("The Movie S01E12", busy.CurrentItems);   // "what's running where"
+
+        pool.Release(lease.Key, "The Movie S01E12");
+        var freed = pool.Snapshot().Single(s => s.Id == "local");
+        Assert.Equal(0, freed.InFlight);
+        Assert.Empty(freed.CurrentItems);                          // cleared on release
     }
 
     [Fact]

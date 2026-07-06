@@ -28,6 +28,9 @@ namespace WhisperSubs.Controller.Workers
         private readonly List<string> _keys = new();
         private readonly Dictionary<string, ITranscriptionWorker> _byKey = new();
         private readonly Dictionary<string, int> _inFlight = new();
+        // The item name(s) each worker is transcribing right now — surfaced in the status panel so the admin
+        // sees "what's running where" (a worker with MaxConcurrency > 1 can hold several). (v4.0.)
+        private readonly Dictionary<string, List<string>> _current = new();
         private readonly SemaphoreSlim _slots;
 
         public WorkerPool(IReadOnlyList<ITranscriptionWorker> workers)
@@ -46,6 +49,7 @@ namespace WhisperSubs.Controller.Workers
                 _keys.Add(key);
                 _byKey[key] = w;
                 _inFlight[key] = 0;
+                _current[key] = new List<string>();
                 capacity += w.Capabilities.MaxConcurrency < 1 ? 1 : w.Capabilities.MaxConcurrency;
             }
 
@@ -89,7 +93,8 @@ namespace WhisperSubs.Controller.Workers
                     var caps = w.Capabilities;
                     list.Add(new WorkerStatus(
                         w.Id, w.Name, Healthy: true, _inFlight[key],
-                        caps.MaxConcurrency < 1 ? 1 : caps.MaxConcurrency, caps.IsLocal, caps.CostWeight));
+                        caps.MaxConcurrency < 1 ? 1 : caps.MaxConcurrency, caps.IsLocal, caps.CostWeight,
+                        new List<string>(_current[key])));
                 }
                 return list;
             }
@@ -154,11 +159,31 @@ namespace WhisperSubs.Controller.Workers
             }
         }
 
-        /// <summary>Releases a slot after a job completes or fails, by the <see cref="WorkerLease.Key"/>. Pair each <see cref="AcquireAsync"/> with exactly one Release.</summary>
-        public void Release(string leaseKey)
+        /// <summary>
+        /// Records the item a leased worker is now transcribing, for the "what's running where" status
+        /// panel. Call once after <see cref="AcquireAsync"/>, before the transcription runs; pass the same
+        /// <paramref name="itemName"/> to <see cref="Release"/> so it is cleared when the job finishes.
+        /// </summary>
+        public void SetCurrent(string leaseKey, string itemName)
         {
             lock (_gate)
             {
+                if (_current.TryGetValue(leaseKey, out var items)) items.Add(itemName);
+            }
+        }
+
+        /// <summary>
+        /// Releases a slot after a job completes or fails, by the <see cref="WorkerLease.Key"/>. Pass the
+        /// <paramref name="currentItem"/> given to <see cref="SetCurrent"/> to clear it from the status
+        /// panel (omit on paths that acquired a slot but never dispatched an item). Pair each
+        /// <see cref="AcquireAsync"/> with exactly one Release.
+        /// </summary>
+        public void Release(string leaseKey, string? currentItem = null)
+        {
+            lock (_gate)
+            {
+                if (currentItem != null && _current.TryGetValue(leaseKey, out var items))
+                    items.Remove(currentItem);
                 if (_inFlight.TryGetValue(leaseKey, out var n) && n > 0)
                     _inFlight[leaseKey] = n - 1;
             }

@@ -120,6 +120,20 @@ namespace WhisperSubs.Controller
         /// </summary>
         public void MarkTaskStarted() => Interlocked.CompareExchange(ref _taskIsRunning, 1, 0);
 
+        /// <summary>
+        /// A live snapshot of the current worker pool for the admin status panel (v4.0), or an empty list
+        /// when no pool has been built yet (nothing has dispatched since startup). Thin accessor over the
+        /// unit-tested <see cref="WorkerPool.Snapshot"/>.
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Thin accessor over the unit-tested WorkerPool.Snapshot; depends on live pool state")]
+        public IReadOnlyList<WorkerStatus> SnapshotWorkers()
+        {
+            lock (_poolGate)
+            {
+                return _pool?.Snapshot() ?? (IReadOnlyList<WorkerStatus>)System.Array.Empty<WorkerStatus>();
+            }
+        }
+
         // ── Scheduled task progress tracking ─────────────────────
         private string? _taskCurrentItemName;
         private int _taskTotal;
@@ -487,6 +501,7 @@ namespace WhisperSubs.Controller
                     var wi = workItem;
                     var l = lease;
                     _currentItemName = wi.Item.Name;
+                    pool.SetCurrent(l.Key, wi.Item.Name);   // "what's running where" — surfaced in the status panel
                     logger.LogInformation("[Dispatch] Processing {ItemName} [{Tier}] on {Worker} ({Remaining} remaining)",
                         wi.Item.Name, wi.Tier, l.Worker.Name, _lanes.Count);
 
@@ -517,7 +532,7 @@ namespace WhisperSubs.Controller
                         finally
                         {
                             Release(IdentityKey(wi.Item.Id, wi.Language));
-                            pool.Release(l.Key);
+                            pool.Release(l.Key, wi.Item.Name);
                         }
                     }));
 
