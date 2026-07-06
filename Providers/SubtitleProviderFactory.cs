@@ -20,7 +20,10 @@ namespace WhisperSubs.Providers
                     loggerFactory.CreateLogger<RemoteWhisperProvider>(),
                     config.RemoteWhisperApiUrl,
                     model,
-                    apiKey);
+                    apiKey,
+                    config.JobTimeoutRealtimeFactor,
+                    config.JobMinTimeoutSeconds,
+                    config.JobMaxTimeoutHours);
             }
 
             var setup = new WhisperSetupService(
