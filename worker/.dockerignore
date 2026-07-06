@@ -1,0 +1,7 @@
+# Keep the build context minimal -- only the Dockerfile + adapter + entrypoint
+# are needed by the build. Everything else is docs/examples.
+README.md
+docker-compose.example.yml
+*.md
+.git
+.gitignore

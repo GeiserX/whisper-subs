@@ -1,0 +1,396 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# whisper-subs worker adapter
+# ===========================
+#
+# A tiny, dependency-free (Python standard library only) HTTP adapter that makes
+# an upstream `whisper-server` (ggml-org/whisper.cpp, examples/server) speak the
+# exact OpenAI-audio dialect that the whisper-subs plugin's RemoteWhisperProvider
+# expects.
+#
+# WHY THIS EXISTS
+# ---------------
+# whisper.cpp's `whisper-server` exposes a SINGLE inference path (default
+# `/inference`, remappable with `--inference-path`). It cannot serve both
+# `/v1/audio/transcriptions` AND `/v1/audio/translations` at once, and it selects
+# translation via a `translate` multipart FIELD rather than a distinct path.
+#
+# The plugin (Providers/RemoteWhisperProvider.cs), by contrast, is hard-wired to:
+#   * POST /v1/audio/transcriptions   -> transcribe (or detect language)
+#   * POST /v1/audio/translations     -> translate to English
+# with multipart fields: file, model, response_format (srt | verbose_json),
+# and an optional language. Translation is chosen purely by the PATH.
+#
+# A pure reverse proxy (nginx/Caddy) can rewrite the path but cannot inject a new
+# multipart field into a streamed body, so the translations route could never be
+# mapped to whisper.cpp's `translate=true`. This adapter does exactly and only
+# that mapping, while STREAMING the (potentially very large) audio body straight
+# through so N concurrent workers never buffer whole films in RAM.
+#
+# WHAT IT DOES
+# ------------
+#   * POST /v1/audio/transcriptions  -> proxied verbatim to upstream /inference.
+#   * POST /v1/audio/translations    -> proxied to /inference with a `translate=true`
+#                                       multipart part PREPENDED to the body (no
+#                                       reparsing, fully streamed).
+#   * GET|HEAD /health and GET|HEAD on the two audio paths -> cheap readiness probe
+#     (200 when the upstream model is loaded, 503 while loading). Never runs
+#     inference, never requires the API key -> safe for Docker healthchecks.
+#   * Optional Bearer auth on the POST routes when API_KEY is set.
+#   * Spawns and supervises the upstream `whisper-server` child process; if it
+#     dies, the adapter exits non-zero so the container restarts.
+#
+# Language handling: whisper-server defaults `language` to "en" (server.cpp), which
+# would break auto-detect and the plugin's verbose_json language-detection call.
+# We therefore launch it with `--language auto`; an explicit `language` field in a
+# request still overrides per-call. (See entrypoint / adapter spawn below.)
+
+import http.client
+import os
+import shlex
+import signal
+import socket
+import subprocess
+import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+
+# --------------------------------------------------------------------------- #
+# Configuration (all via environment; sensible defaults for the shipped image)
+# --------------------------------------------------------------------------- #
+def _env(name, default):
+    v = os.environ.get(name)
+    return v if v is not None and v != "" else default
+
+
+LISTEN_HOST = _env("LISTEN_HOST", "0.0.0.0")
+LISTEN_PORT = int(_env("LISTEN_PORT", "8080"))
+
+BACKEND_HOST = _env("WHISPER_BACKEND_HOST", "127.0.0.1")
+BACKEND_PORT = int(_env("WHISPER_BACKEND_PORT", "8081"))
+BACKEND_INFERENCE_PATH = _env("WHISPER_INFERENCE_PATH", "/inference")
+
+# Long, finite ceiling. The plugin enforces its own per-call deadline and drops
+# the socket; we just must not guillotine a legitimately long film transcription.
+BACKEND_TIMEOUT = float(_env("WHISPER_BACKEND_TIMEOUT", str(24 * 60 * 60)))
+
+API_KEY = _env("API_KEY", "")  # empty -> no auth required
+
+WHISPER_BIN = _env("WHISPER_BIN", "/usr/local/bin/whisper-server")
+# entrypoint.sh resolves + downloads the model and exports the absolute path.
+MODEL_FILE = _env("WHISPER_MODEL_FILE", "")
+WHISPER_LANGUAGE = _env("WHISPER_LANGUAGE", "auto")
+WHISPER_THREADS = _env("WHISPER_THREADS", "")   # "" -> whisper.cpp default
+WHISPER_CONVERT = _env("CONVERT", "false").lower() in ("1", "true", "yes", "y")
+WHISPER_EXTRA_ARGS = _env("WHISPER_EXTRA_ARGS", "")
+
+READY_TIMEOUT = int(_env("WHISPER_READY_TIMEOUT", "600"))  # seconds to first-ready
+
+CHUNK = 256 * 1024
+
+TRANSCRIBE_PATH = "/v1/audio/transcriptions"
+TRANSLATE_PATH = "/v1/audio/translations"
+
+
+def log(msg):
+    sys.stdout.write("[adapter] %s\n" % msg)
+    sys.stdout.flush()
+
+
+# --------------------------------------------------------------------------- #
+# Upstream whisper-server lifecycle
+# --------------------------------------------------------------------------- #
+_child = None  # type: subprocess.Popen | None
+
+
+def spawn_whisper_server():
+    global _child
+    if not MODEL_FILE or not os.path.isfile(MODEL_FILE):
+        log("FATAL: model file not found: %r (set WHISPER_MODEL / WHISPER_MODEL_FILE)" % MODEL_FILE)
+        sys.exit(1)
+
+    cmd = [
+        WHISPER_BIN,
+        "--host", BACKEND_HOST,
+        "--port", str(BACKEND_PORT),
+        "--model", MODEL_FILE,
+        "--inference-path", BACKEND_INFERENCE_PATH,
+        # Default to auto-detect so a request WITHOUT a language field detects the
+        # spoken language instead of forcing English (whisper-server defaults to
+        # "en"). The plugin's verbose_json language-detection call relies on this.
+        "--language", WHISPER_LANGUAGE,
+    ]
+    if WHISPER_THREADS:
+        cmd += ["--threads", WHISPER_THREADS]
+    if WHISPER_CONVERT:
+        # Requires ffmpeg in the image (build with --build-arg INSTALL_FFMPEG=true).
+        cmd += ["--convert"]
+    if WHISPER_EXTRA_ARGS:
+        cmd += shlex.split(WHISPER_EXTRA_ARGS)
+
+    log("starting upstream: %s" % " ".join(shlex.quote(c) for c in cmd))
+    _child = subprocess.Popen(cmd)
+
+    # If the upstream dies, take the whole container down so it restarts cleanly
+    # (docker-compose `restart: unless-stopped`) rather than serving 502s forever.
+    def _watch():
+        code = _child.wait()
+        log("upstream whisper-server exited (code=%s); shutting down" % code)
+        os._exit(1 if code else 0)
+
+    threading.Thread(target=_watch, name="whisper-watch", daemon=True).start()
+
+
+def _terminate_child():
+    if _child and _child.poll() is None:
+        try:
+            _child.terminate()
+            try:
+                _child.wait(timeout=10)
+            except Exception:
+                _child.kill()
+        except Exception:
+            pass
+
+
+def backend_ready():
+    try:
+        c = http.client.HTTPConnection(BACKEND_HOST, BACKEND_PORT, timeout=5)
+        c.request("GET", "/health")
+        r = c.getresponse()
+        r.read()
+        c.close()
+        return r.status == 200
+    except Exception:
+        return False
+
+
+def wait_until_ready(timeout):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if backend_ready():
+            return True
+        if _child and _child.poll() is not None:
+            return False  # child already crashed; watcher will exit us
+        time.sleep(1.0)
+    return False
+
+
+# --------------------------------------------------------------------------- #
+# HTTP handler
+# --------------------------------------------------------------------------- #
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    server_version = "whisper-subs-worker"
+
+    # Quieter, single-line access log.
+    def log_message(self, fmt, *args):
+        log("%s - %s" % (self.address_string(), fmt % args))
+
+    # -- helpers ----------------------------------------------------------- #
+    def _send_json(self, status, payload, close=False):
+        body = payload.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        if close:
+            self.close_connection = True
+            self.send_header("Connection", "close")
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except Exception:
+            pass
+
+    def _readiness(self):
+        if backend_ready():
+            self._send_json(200, '{"status":"ok"}')
+        else:
+            self._send_json(503, '{"status":"loading model"}', close=True)
+
+    def _authorized(self):
+        if not API_KEY:
+            return True
+        return self.headers.get("Authorization", "") == "Bearer " + API_KEY
+
+    # -- verbs ------------------------------------------------------------- #
+    def do_HEAD(self):
+        if self.path in ("/health", TRANSCRIBE_PATH, TRANSLATE_PATH, "/"):
+            # HEAD readiness: status only, no body.
+            ok = backend_ready()
+            self.send_response(200 if ok else 503)
+            self.send_header("Content-Length", "0")
+            if not ok:
+                self.close_connection = True
+                self.send_header("Connection", "close")
+            self.end_headers()
+        else:
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.close_connection = True
+            self.end_headers()
+
+    def do_GET(self):
+        # GET on the audio paths is a lightweight readiness probe only; the real
+        # work is POST. This lets a healthcheck "hit the transcriptions endpoint"
+        # without spending a GPU inference and without needing the API key.
+        if self.path in ("/health", TRANSCRIBE_PATH, TRANSLATE_PATH, "/"):
+            self._readiness()
+        else:
+            self._send_json(404, '{"error":"not found"}', close=True)
+
+    def do_POST(self):
+        if self.path == TRANSCRIBE_PATH:
+            self._proxy_inference(inject_translate=False)
+        elif self.path == TRANSLATE_PATH:
+            self._proxy_inference(inject_translate=True)
+        else:
+            self._send_json(404, '{"error":"not found"}', close=True)
+
+    # -- core proxy -------------------------------------------------------- #
+    def _proxy_inference(self, inject_translate):
+        if not self._authorized():
+            self._send_json(401, '{"error":"unauthorized"}', close=True)
+            return
+
+        content_type = self.headers.get("Content-Type", "")
+        content_length = self.headers.get("Content-Length")
+
+        if content_length is None:
+            # We stream by Content-Length; the plugin always sends one. Chunked
+            # uploads are rejected rather than silently buffered.
+            self._send_json(411, '{"error":"length required"}', close=True)
+            return
+
+        try:
+            body_len = int(content_length)
+        except ValueError:
+            self._send_json(400, '{"error":"bad content-length"}', close=True)
+            return
+
+        prefix = b""
+        total_len = body_len
+        if inject_translate:
+            boundary = _extract_boundary(content_type)
+            if not boundary:
+                self._send_json(
+                    400,
+                    '{"error":"translations route requires multipart/form-data"}',
+                    close=True,
+                )
+                return
+            # Prepend a well-formed multipart part. The original body already
+            # starts with `--boundary...`, so `prefix + body` stays valid and the
+            # injected field is simply the first one parsed. No reparse, no buffer.
+            prefix = (
+                "--%s\r\n"
+                'Content-Disposition: form-data; name="translate"\r\n'
+                "\r\n"
+                "true\r\n" % boundary
+            ).encode("latin-1")
+            total_len = body_len + len(prefix)
+
+        try:
+            conn = http.client.HTTPConnection(
+                BACKEND_HOST, BACKEND_PORT, timeout=BACKEND_TIMEOUT
+            )
+            conn.putrequest(
+                "POST", BACKEND_INFERENCE_PATH, skip_host=True, skip_accept_encoding=True
+            )
+            conn.putheader("Host", "%s:%d" % (BACKEND_HOST, BACKEND_PORT))
+            conn.putheader("Content-Type", content_type)
+            conn.putheader("Content-Length", str(total_len))
+            conn.endheaders()
+
+            if prefix:
+                conn.send(prefix)
+
+            remaining = body_len
+            aborted = False
+            while remaining > 0:
+                chunk = self.rfile.read(min(CHUNK, remaining))
+                if not chunk:
+                    aborted = True  # client (plugin) closed the body early
+                    break
+                conn.send(chunk)
+                remaining -= len(chunk)
+
+            if aborted:
+                # We promised Content-Length bytes we can no longer deliver. Reset
+                # the upstream connection so whisper-server stops waiting and frees
+                # its context instead of blocking the next request.
+                conn.close()
+                self._send_json(400, '{"error":"client closed request body"}', close=True)
+                return
+
+            resp = conn.getresponse()
+            payload = resp.read()  # SRT / JSON responses are small text bodies
+            resp_ctype = resp.getheader("Content-Type", "text/plain; charset=utf-8")
+            conn.close()
+        except (socket.timeout, ConnectionError, OSError, http.client.HTTPException) as exc:
+            log("upstream error: %r" % exc)
+            self._send_json(502, '{"error":"upstream whisper-server unavailable"}', close=True)
+            return
+
+        # Relay upstream status + body back to the plugin verbatim.
+        self.send_response(resp.status)
+        self.send_header("Content-Type", resp_ctype)
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        try:
+            self.wfile.write(payload)
+        except Exception:
+            pass
+
+
+def _extract_boundary(content_type):
+    # e.g. 'multipart/form-data; boundary=----XYZ' (boundary may be quoted).
+    if "multipart/form-data" not in content_type.lower():
+        return None
+    for part in content_type.split(";"):
+        part = part.strip()
+        if part.lower().startswith("boundary="):
+            b = part[len("boundary="):].strip()
+            if len(b) >= 2 and b[0] == '"' and b[-1] == '"':
+                b = b[1:-1]
+            return b
+    return None
+
+
+# --------------------------------------------------------------------------- #
+# main
+# --------------------------------------------------------------------------- #
+def main():
+    def _term(signum, _frame):
+        log("received signal %s; stopping" % signum)
+        _terminate_child()
+        os._exit(0)
+
+    signal.signal(signal.SIGTERM, _term)
+    signal.signal(signal.SIGINT, _term)
+
+    spawn_whisper_server()
+
+    log("waiting for upstream model to load (timeout=%ds)..." % READY_TIMEOUT)
+    if not wait_until_ready(READY_TIMEOUT):
+        log("upstream not ready within %ds; continuing to serve (readiness=503 until loaded)" % READY_TIMEOUT)
+    else:
+        log("upstream ready; model loaded")
+
+    httpd = ThreadingHTTPServer((LISTEN_HOST, LISTEN_PORT), Handler)
+    httpd.daemon_threads = True
+    log("listening on %s:%d -> upstream %s:%d%s (auth=%s, convert=%s)" % (
+        LISTEN_HOST, LISTEN_PORT, BACKEND_HOST, BACKEND_PORT, BACKEND_INFERENCE_PATH,
+        "on" if API_KEY else "off", "on" if WHISPER_CONVERT else "off",
+    ))
+    try:
+        httpd.serve_forever()
+    finally:
+        _terminate_child()
+
+
+if __name__ == "__main__":
+    main()
