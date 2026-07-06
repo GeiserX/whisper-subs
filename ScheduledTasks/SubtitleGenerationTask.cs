@@ -204,6 +204,18 @@ namespace WhisperSubs.ScheduledTasks
                 _logger.LogInformation("Skip cache active: {Count} remembered item(s)", skipCache.Count);
             }
 
+            // v4.1: the sweep is a bounded-concurrency producer over the shared worker pool. The loop
+            // below dispatches each item that needs generation as a tracked task instead of awaiting it
+            // inline; AcquireAsync blocks while every slot is busy, so at most pool.TotalCapacity swept
+            // items are ever in flight. With the default one local worker (TotalCapacity 1) the producer
+            // cannot dispatch item k+1 until item k releases its slot — transcriptions stay strictly
+            // one-at-a-time in enumeration order, exactly like the old inline await.
+            var inFlight = new List<Task>();
+            if (pool.TotalCapacity > 1)
+            {
+                _logger.LogInformation("Worker pool allows up to {Capacity} concurrent transcription(s) — sweeping in parallel", pool.TotalCapacity);
+            }
+
             try
             {
             for (int i = 0; i < allItems.Count; i++)
@@ -233,11 +245,11 @@ namespace WhisperSubs.ScheduledTasks
                     var token = cacheVideo.DateLastSaved.Ticks;
                     if (SubtitleSkipCache.CanSkip(skipCache.TryGet(item.Id), token, nowTicks, config.SkipCacheExpiryDays))
                     {
+                        var done = Interlocked.Increment(ref completed);
                         _logger.LogInformation("[{Current}/{Total}] Skipping {ItemName}: already satisfied (cached)",
-                            completed + 1, allItems.Count, item.Name);
-                        completed++;
-                        queue.ReportTaskProgress(null, completed, allItems.Count, failed);
-                        progress.Report((double)completed / allItems.Count * 100);
+                            done, allItems.Count, item.Name);
+                        queue.ReportTaskProgress(null, done, allItems.Count, failed);
+                        progress.Report((double)done / allItems.Count * 100);
                         continue;
                     }
                 }
@@ -258,9 +270,9 @@ namespace WhisperSubs.ScheduledTasks
                                 var exactLrc = System.IO.Path.Combine(audioDir, audioBase + ".lrc");
                                 if (System.IO.File.Exists(exactLrc) || System.IO.Directory.GetFiles(audioDir, audioBase + ".*.lrc").Length > 0)
                                 {
-                                    completed++;
-                                    queue.ReportTaskProgress(null, completed, allItems.Count, failed);
-                                    progress.Report((double)completed / allItems.Count * 100);
+                                    var done = Interlocked.Increment(ref completed);
+                                    queue.ReportTaskProgress(null, done, allItems.Count, failed);
+                                    progress.Report((double)done / allItems.Count * 100);
                                     continue;
                                 }
                             }
@@ -372,13 +384,13 @@ namespace WhisperSubs.ScheduledTasks
 
                         if (alreadyComplete)
                         {
+                            var done = Interlocked.Increment(ref completed);
                             // Log WHY so users (esp. large libraries) can see skips aren't a no-op.
                             _logger.LogInformation(
                                 "[{Current}/{Total}] Skipping {ItemName}: already satisfied (full={Full}, forced={Forced}, translated={Translated})",
-                                completed + 1, allItems.Count, item.Name, hasFullSrt, hasForcedSrt, hasTranslatedSrt);
-                            completed++;
-                            queue.ReportTaskProgress(null, completed, allItems.Count, failed);
-                            progress.Report((double)completed / allItems.Count * 100);
+                                done, allItems.Count, item.Name, hasFullSrt, hasForcedSrt, hasTranslatedSrt);
+                            queue.ReportTaskProgress(null, done, allItems.Count, failed);
+                            progress.Report((double)done / allItems.Count * 100);
                             continue;
                         }
                     }
@@ -401,26 +413,18 @@ namespace WhisperSubs.ScheduledTasks
                     }
 
                     // Acquire a slot on the shared worker pool (the global concurrency gate that replaced the
-                    // old TranscriptionLock) and run this swept item on the chosen worker. With the default
-                    // one local worker this serialises exactly like the old lock; with N workers the sweep
-                    // shares the pool with the background dispatcher up to ΣMaxConcurrency.
+                    // old TranscriptionLock). This is the sweep's backpressure: it blocks while every slot is
+                    // busy, so with the default one local worker the dispatch below serialises exactly like
+                    // the old inline await; with N workers the sweep shares the pool with the background
+                    // dispatcher up to ΣMaxConcurrency.
                     var lease = await pool.AcquireAsync(requirements, cancellationToken);
                     pool.SetCurrent(lease.Key, item.Name);   // "what's running where" — surfaced in the status panel
-                    try
-                    {
-                        if (config.PauseOnPlayback)
-                        {
-                            await TranscribeWithPlaybackMonitorAsync(manager, item, lease.Worker.Provider, language, cancellationToken);
-                        }
-                        else
-                        {
-                            await manager.GenerateSubtitleAsync(item, lease.Worker.Provider, language, cancellationToken);
-                        }
-                    }
-                    finally
-                    {
-                        pool.Release(lease.Key, item.Name);
-                    }
+
+                    // v4.1: run the item on its leased worker WITHOUT awaiting it inline, so the producer
+                    // can line up the next item on another free worker. The task owns the lease release and
+                    // its own failure/progress accounting (Interlocked — it races the producer's skip paths).
+                    inFlight.Add(RunSweptItemAsync(item, lease));
+                    InFlightTasks.PruneCompleted(inFlight);
                 }
                 catch (OperationCanceledException)
                 {
@@ -428,14 +432,18 @@ namespace WhisperSubs.ScheduledTasks
                 }
                 catch (Exception ex)
                 {
-                    failed++;
+                    Interlocked.Increment(ref failed);
                     _logger.LogError(ex, "Failed to generate subtitle for {ItemName}", item.Name);
+                    var done = Interlocked.Increment(ref completed);
+                    queue.ReportTaskProgress(null, done, allItems.Count, failed);
+                    progress.Report((double)done / allItems.Count * 100);
                 }
-
-                completed++;
-                queue.ReportTaskProgress(null, completed, allItems.Count, failed);
-                progress.Report((double)completed / allItems.Count * 100);
             }
+
+            // Everything is dispatched — wait for the in-flight tail so the completion report below sees
+            // the final counts. WhenAll only settles after EVERY task completes, so a cancelled tail still
+            // reaches the finally with nothing orphaned (and its cancellation propagates from here).
+            await Task.WhenAll(inFlight);
 
             queue.ReportTaskProgress(null, completed, allItems.Count, failed);
             queue.ReportTaskComplete();
@@ -444,6 +452,19 @@ namespace WhisperSubs.ScheduledTasks
             }
             finally
             {
+                // A cancelled (or failed) producer can leave dispatched items still running — settle them
+                // FIRST, so the skip-cache save below happens after the last in-flight item is done (each
+                // one saves its partial SRT on cancel via its own token) and none is ever orphaned. The
+                // catch keeps the producer's own exception propagating; a no-op when the WhenAll above ran.
+                try
+                {
+                    await Task.WhenAll(inFlight);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Expected on cancellation — the in-flight items were cancelled with us.
+                }
+
                 // Persist even on cancellation / pause-timeout so the run keeps the progress it made.
                 // Prune to the enumerated candidate set (not the reached set) so items not yet visited
                 // this run keep their prior entry — the reason per-item state beats a global watermark.
@@ -452,6 +473,42 @@ namespace WhisperSubs.ScheduledTasks
                 {
                     skipCache.PruneTo(candidateIds);
                     skipCache.Save(cachePath, cacheSignature, _logger);
+                }
+            }
+
+            // The per-item transcription task the producer dispatches after leasing a worker slot. Mirrors
+            // the old inline body: same PauseOnPlayback branch (each in-flight item monitors playback
+            // independently via its own linked CTS), cancellation propagates (marking the task cancelled
+            // for the WhenAlls above), any other failure is logged + counted, and the slot is ALWAYS
+            // released. Counters/reports use Interlocked because N of these complete concurrently.
+            async Task RunSweptItemAsync(BaseItem item, WorkerLease lease)
+            {
+                try
+                {
+                    if (config.PauseOnPlayback)
+                    {
+                        await TranscribeWithPlaybackMonitorAsync(manager, item, lease.Worker.Provider, language, cancellationToken);
+                    }
+                    else
+                    {
+                        await manager.GenerateSubtitleAsync(item, lease.Worker.Provider, language, cancellationToken);
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    Interlocked.Increment(ref failed);
+                    _logger.LogError(ex, "Failed to generate subtitle for {ItemName}", item.Name);
+                }
+                finally
+                {
+                    pool.Release(lease.Key, item.Name);
+                    var done = Interlocked.Increment(ref completed);
+                    queue.ReportTaskProgress(null, done, allItems.Count, failed);
+                    progress.Report((double)done / allItems.Count * 100);
                 }
             }
         }
