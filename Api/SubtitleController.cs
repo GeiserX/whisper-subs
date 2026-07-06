@@ -193,8 +193,7 @@ namespace WhisperSubs.Api
 
                 // Ensure the background drain worker is running
                 var manager = GetSubtitleManager();
-                var provider = SubtitleProviderFactory.Create(config, _loggerFactory);
-                queue.EnsureDraining(manager, provider, _logger, CancellationToken.None);
+                queue.EnsureDispatching(manager, config, _loggerFactory, _logger, CancellationToken.None);
 
                 return Accepted(new
                 {
@@ -264,8 +263,7 @@ namespace WhisperSubs.Api
 
                 // Ensure the background drain worker is running
                 var manager = GetSubtitleManager();
-                var provider = SubtitleProviderFactory.Create(config, _loggerFactory);
-                queue.EnsureDraining(manager, provider, _logger, CancellationToken.None);
+                queue.EnsureDispatching(manager, config, _loggerFactory, _logger, CancellationToken.None);
 
                 return Accepted(new
                 {
