@@ -37,7 +37,12 @@ jobs:
 
       - name: Resolve tag
         id: meta
-        run: echo "tag=${{ github.event.inputs.tag || '0.1.0' }}" >> "$GITHUB_OUTPUT"
+        # Dispatch input wins; a push-to-main build reads worker/VERSION. Never a hardcoded
+        # default — that would silently re-push an existing tag with different content.
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          if [ -z "$TAG" ]; then TAG="$(tr -d '[:space:]' < worker/VERSION)"; fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Build and push (linux/amd64)
         uses: docker/build-push-action@v6
