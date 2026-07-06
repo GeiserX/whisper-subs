@@ -371,11 +371,34 @@ namespace WhisperSubs.Api
                 }
                 return false;
             }
-            if (System.Uri.TryCreate(worker.ApiUrl.Trim(), System.UriKind.Absolute, out var probeUri)
-                && System.Net.IPAddress.TryParse(probeUri.Host, out var probeIp)
-                && IsLinkLocal(probeIp))
+            if (System.Uri.TryCreate(worker.ApiUrl.Trim(), System.UriKind.Absolute, out var probeUri))
             {
-                return Ok(new { ok = false, message = "Endpoint host is link-local (169.254.0.0/16), which is blocked." });
+                if (System.Net.IPAddress.TryParse(probeUri.Host, out var probeIp))
+                {
+                    if (IsLinkLocal(probeIp))
+                    {
+                        return Ok(new { ok = false, message = "Endpoint host is link-local (169.254.0.0/16), which is blocked." });
+                    }
+                }
+                else
+                {
+                    // A hostname can resolve to the link-local range too (e.g. a DNS name pointing at
+                    // 169.254.169.254), so check what it actually resolves to — best-effort: the probe
+                    // client re-resolves at connect time, but this closes the plain-DNS bypass of the
+                    // literal check above. Resolution failure just fails the test (never throws).
+                    try
+                    {
+                        var resolved = await System.Net.Dns.GetHostAddressesAsync(probeUri.Host);
+                        if (resolved.Any(IsLinkLocal))
+                        {
+                            return Ok(new { ok = false, message = "Endpoint hostname resolves to a link-local address (169.254.0.0/16), which is blocked." });
+                        }
+                    }
+                    catch (System.Exception)
+                    {
+                        return Ok(new { ok = false, message = "Endpoint hostname did not resolve (DNS lookup failed)." });
+                    }
+                }
             }
 
             var url = worker.ApiUrl.TrimEnd('/') + "/v1/audio/transcriptions";
