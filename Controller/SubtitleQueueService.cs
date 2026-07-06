@@ -68,6 +68,13 @@ namespace WhisperSubs.Controller
         // queued set so a re-request while an item is mid-transcription does not double-queue it.
         private readonly ConcurrentDictionary<string, byte> _inFlight = new();
 
+        // Serialises the queue↔in-flight transition so the invariant "an identity is queued XOR in-flight"
+        // holds atomically: the dispatcher's dequeue+reserve and Enqueue's in-flight-check+lane-add run
+        // under this one lock. Without it (the two touch _lanes and _inFlight under different locks) a
+        // concurrent enqueue in the dequeue→reserve window could re-add an identity that is about to run,
+        // letting the pool dispatch the SAME (item,language) twice — two workers writing one .srt (v4.0).
+        private readonly object _dispatchGate = new();
+
         private int _isDraining;
         private string? _currentItemName;
         private int _processedCount;
@@ -243,35 +250,52 @@ namespace WhisperSubs.Controller
         {
             var key = IdentityKey(item.Id, language);
 
-            // If the same unit is mid-transcription, don't queue a duplicate — the running pass covers it.
-            if (_inFlight.ContainsKey(key)) return false;
-
-            var outcome = _lanes.Enqueue(key, (int)tier, new SubtitleWorkItem
+            // Under _dispatchGate so the in-flight check and the lane-add are atomic with the dispatcher's
+            // dequeue+reserve — otherwise a re-add landing in the dequeue→reserve window double-dispatches.
+            lock (_dispatchGate)
             {
-                Item = item,
-                Language = language,
-                Completion = null,
-                Force = force,
-                Tier = tier
-            }, MergeWork);
+                // If the same unit is mid-transcription, don't queue a duplicate — the running pass covers it.
+                if (_inFlight.ContainsKey(key)) return false;
 
-            // Always persist: even a Duplicate outcome can have OR-merged Force or promoted the tier onto
-            // the existing entry via MergeWork, so queue.json must be rewritten to survive a restart —
-            // otherwise an explicit forced re-request could silently revert to non-forced on restore (#112).
-            PersistQueue();
-            return outcome == LaneEnqueueOutcome.Added;
+                var outcome = _lanes.Enqueue(key, (int)tier, new SubtitleWorkItem
+                {
+                    Item = item,
+                    Language = language,
+                    Completion = null,
+                    Force = force,
+                    Tier = tier
+                }, MergeWork);
+
+                // Always persist: even a Duplicate outcome can have OR-merged Force or promoted the tier onto
+                // the existing entry via MergeWork, so queue.json must be rewritten to survive a restart —
+                // otherwise an explicit forced re-request could silently revert to non-forced on restore (#112).
+                PersistQueue();
+                return outcome == LaneEnqueueOutcome.Added;
+            }
         }
 
         [ExcludeFromCodeCoverage(Justification = "Requires Plugin.Instance for persistence")]
         public bool TryDequeuePriority(out SubtitleWorkItem? item)
         {
-            if (_lanes.TryDequeue(out var dequeued) && dequeued != null)
+            // Dequeue + reserve atomically (see _dispatchGate): moving an identity from the lanes to the
+            // in-flight set in one critical section is what guarantees the pool never dispatches the same
+            // (item,language) twice.
+            lock (_dispatchGate)
             {
-                // Mark in-flight so a concurrent re-request doesn't double-queue while it transcribes.
-                TryReserve(IdentityKey(dequeued.Item.Id, dequeued.Language));
-                PersistQueue();
-                item = dequeued;
-                return true;
+                if (_lanes.TryDequeue(out var dequeued) && dequeued != null)
+                {
+                    // Reserve it in-flight. Honour the result: TryReserve returns false only if the identity
+                    // is already in-flight, which under _dispatchGate cannot happen for a freshly-dequeued
+                    // item — but if it ever did, drop this copy rather than double-dispatch. queue.json is
+                    // persisted either way (the item left the lanes).
+                    var reserved = TryReserve(IdentityKey(dequeued.Item.Id, dequeued.Language));
+                    PersistQueue();
+                    if (reserved)
+                    {
+                        item = dequeued;
+                        return true;
+                    }
+                }
             }
             item = null;
             return false;
@@ -392,7 +416,12 @@ namespace WhisperSubs.Controller
                             EnsureDispatching(manager, config, loggerFactory, logger, cancellationToken);
                         }
                     }
-                }, cancellationToken);
+                    // Task.Run is deliberately NOT given the cancellation token: if it were and the token were
+                    // already cancelled, the delegate would be skipped and the finally above would never reset
+                    // _isDraining — wedging the queue forever. Cancellation is observed INSIDE via the captured
+                    // token (DispatchDrainAsync checks it), so the finally always runs. (Matches the per-job
+                    // Task.Run, which is un-tokened for the same reason.)
+                });
             }
         }
 
