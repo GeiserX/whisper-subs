@@ -109,34 +109,6 @@ namespace WhisperSubs.Controller
             }
         }
 
-        /// <summary>
-        /// Removes and returns the highest-priority entry whose value satisfies <paramref name="canDequeue"/>,
-        /// scanning lanes in priority order then FIFO within a lane. Strict tier order is preserved: a
-        /// lower-priority entry is returned only when no acceptable higher-priority one exists. Used by the
-        /// worker-pool dispatcher to skip a head job that no currently-free worker can serve (v4.0).
-        /// </summary>
-        public bool TryDequeue(Func<T, bool> canDequeue, out T value)
-        {
-            lock (_gate)
-            {
-                foreach (var lane in _lanes.Values)
-                {
-                    for (var node = lane.First; node != null; node = node.Next)
-                    {
-                        if (canDequeue(node.Value.Value))
-                        {
-                            value = node.Value.Value;
-                            RemoveNode(node);
-                            return true;
-                        }
-                    }
-                }
-
-                value = default!;
-                return false;
-            }
-        }
-
         /// <summary>Removes a specific key if queued. Returns true if it was present.</summary>
         public bool Remove(string key)
         {

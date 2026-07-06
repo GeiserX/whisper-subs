@@ -40,7 +40,7 @@ namespace WhisperSubs.Controller.Workers
     /// the scheduler's internal value.
     /// </summary>
     public readonly record struct WorkerStatus(
-        string Id, string Name, bool Healthy, int InFlight, int MaxConcurrency, bool IsLocal, double CostWeight,
+        string Id, string Name, int InFlight, int MaxConcurrency, bool IsLocal, double CostWeight,
         IReadOnlyList<string> CurrentItems);
 
     /// <summary>What a specific job needs from a worker (drives the hard capability filter).</summary>
