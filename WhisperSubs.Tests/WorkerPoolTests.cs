@@ -115,6 +115,28 @@ public class WorkerPoolTests
     }
 
     [Fact]
+    public async Task Snapshot_ReflectsIdentityAndLiveLoad()
+    {
+        var pool = new WorkerPool(new[] { Worker("local", 2, cost: 0), Worker("cloud", 1, cost: 5) });
+
+        var idle = pool.Snapshot();
+        Assert.Equal(2, idle.Count);
+        var local = idle.Single(s => s.Id == "local");
+        Assert.Equal(2, local.MaxConcurrency);
+        Assert.True(local.IsLocal);
+        Assert.Equal(0, local.InFlight);
+        var cloud = idle.Single(s => s.Id == "cloud");
+        Assert.Equal(5, cloud.CostWeight);
+        Assert.False(cloud.IsLocal);
+
+        // Acquire one slot → the snapshot's InFlight reflects it (local is cheapest, so it's taken first).
+        var lease = await pool.AcquireAsync(AnyJob, default);
+        Assert.Equal(1, pool.Snapshot().Single(s => s.Id == "local").InFlight);
+        pool.Release(lease.Key);
+        Assert.Equal(0, pool.Snapshot().Single(s => s.Id == "local").InFlight);
+    }
+
+    [Fact]
     public async Task DuplicateWorkerIds_DoNotCollide_BothSlotsUsableAndReleasable()
     {
         // Two workers misconfigured with the SAME Id — the lease key must keep per-slot accounting distinct.

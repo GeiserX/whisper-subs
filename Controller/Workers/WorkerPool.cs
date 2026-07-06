@@ -74,6 +74,28 @@ namespace WhisperSubs.Controller.Workers
         }
 
         /// <summary>
+        /// A live per-worker snapshot for the admin status panel (v4.0): each worker's identity, current
+        /// in-flight load, and the static facts the UI shows. Taken under the pool lock so counts are
+        /// consistent with each other.
+        /// </summary>
+        public IReadOnlyList<WorkerStatus> Snapshot()
+        {
+            lock (_gate)
+            {
+                var list = new List<WorkerStatus>(_keys.Count);
+                foreach (var key in _keys)
+                {
+                    var w = _byKey[key];
+                    var caps = w.Capabilities;
+                    list.Add(new WorkerStatus(
+                        w.Id, w.Name, Healthy: true, _inFlight[key],
+                        caps.MaxConcurrency < 1 ? 1 : caps.MaxConcurrency, caps.IsLocal, caps.CostWeight));
+                }
+                return list;
+            }
+        }
+
+        /// <summary>
         /// True if ANY worker could serve <paramref name="job"/>'s hard requirements ignoring current load —
         /// i.e. a capable worker exists (maybe busy). The dispatcher checks this before <see cref="AcquireAsync"/>
         /// so a job no worker can EVER serve is failed fast instead of blocking a slot forever.
