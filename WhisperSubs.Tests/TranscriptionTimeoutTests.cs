@@ -51,6 +51,16 @@ public class TranscriptionTimeoutTests
     }
 
     [Fact]
+    public void Compute_NeverExceedsCancelAfterCeiling()
+    {
+        // An absurd maxHours must not yield a deadline above CancellationTokenSource.CancelAfter's
+        // int.MaxValue-ms limit (~596h) — that would throw on every remote call. Huge audio × huge factor
+        // × a 1,000,000-hour cap still clamps to the safe ceiling.
+        var d = TranscriptionTimeout.Compute(long.MaxValue / 2, 1e9, 60, 1_000_000);
+        Assert.True(d.TotalMilliseconds <= int.MaxValue, $"deadline {d} exceeds the CancelAfter ceiling");
+    }
+
+    [Fact]
     public void Compute_HonorsCustomFactorAndBounds()
     {
         // factor 2, floor 30s, cap 1h.

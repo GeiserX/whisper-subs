@@ -36,9 +36,20 @@ namespace WhisperSubs.Controller
         [ExcludeFromCodeCoverage(Justification = "Filesystem I/O")]
         private static async Task WriteTextAtomicAsync(string path, string content, CancellationToken cancellationToken)
         {
-            var tmp = path + ".tmp";
-            await File.WriteAllTextAsync(tmp, content, cancellationToken).ConfigureAwait(false);
-            File.Move(tmp, path, overwrite: true);
+            // Unique temp name so two workers writing the SAME sidecar to a shared filesystem never collide
+            // on one .tmp (a torn write, or a FileNotFound on the loser's rename). Best-effort cleanup so a
+            // mid-write crash leaves no orphan .tmp behind.
+            var tmp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            try
+            {
+                await File.WriteAllTextAsync(tmp, content, cancellationToken).ConfigureAwait(false);
+                File.Move(tmp, path, overwrite: true);
+            }
+            catch
+            {
+                try { if (File.Exists(tmp)) File.Delete(tmp); } catch { /* best-effort cleanup */ }
+                throw;
+            }
         }
 
         // ── Subtitle save location (issue #101) ──────────────────────────────

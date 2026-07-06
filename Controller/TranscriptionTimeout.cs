@@ -17,6 +17,11 @@ namespace WhisperSubs.Controller
         // estimated straight from the WAV file size without probing it.
         internal const double BytesPerAudioSecond = 32000.0;
 
+        // CancellationTokenSource.CancelAfter throws if the delay exceeds int.MaxValue ms (~596 hours).
+        // The computed deadline is used as a CancelAfter delay, so it must never exceed this ceiling —
+        // even for an absurdly large maxHours config that would otherwise break every remote call.
+        internal const double MaxDeadlineSeconds = int.MaxValue / 1000.0;
+
         /// <summary>
         /// The deadline for a single transcription/detection call: estimated audio-seconds x
         /// <paramref name="realtimeFactor"/>, clamped to
@@ -30,6 +35,7 @@ namespace WhisperSubs.Controller
             double factor = realtimeFactor > 0 ? realtimeFactor : 6.0;
             double min = minSeconds > 0 ? minSeconds : 60;
             double maxSeconds = (maxHours > 0 ? maxHours : 12) * 3600.0;
+            if (maxSeconds > MaxDeadlineSeconds) maxSeconds = MaxDeadlineSeconds; // stay CancelAfter-safe
 
             double audioSeconds = Math.Max(0, audioBytes) / BytesPerAudioSecond;
             double seconds = audioSeconds * factor;
