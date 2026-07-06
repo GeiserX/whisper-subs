@@ -1,0 +1,51 @@
+name: Worker Image
+
+# Builds + pushes the example whisper.cpp+Vulkan worker image (worker/) to Docker Hub.
+# Public repo -> free ubuntu-latest runners. push/tag/dispatch only (never pull_request),
+# so fork PRs can never touch the Docker Hub secret.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag (semver, e.g. 0.1.0). Never 'latest'."
+        required: true
+        default: "0.1.0"
+  push:
+    branches: [main]
+    paths:
+      - "worker/**"
+      - ".github/workflows/worker-image.yml"
+
+concurrency:
+  group: worker-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Resolve tag
+        id: meta
+        run: echo "tag=${{ github.event.inputs.tag || '0.1.0' }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push (linux/amd64)
+        uses: docker/build-push-action@v6
+        with:
+          context: worker
+          file: worker/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: drumsergio/whisper-subs-worker:${{ steps.meta.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
