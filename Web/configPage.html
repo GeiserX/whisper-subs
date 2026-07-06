@@ -420,6 +420,35 @@
                         </div>
                     </details>
 
+                    <!-- Worker Pool (Optional / Advanced) - simple by default, power-user opt-in (v4.0) -->
+                    <details style="margin-top:1.5em;">
+                        <summary style="cursor:pointer; font-size:1.2em; font-weight:bold; padding:0.5em 0;">Worker Pool (Optional / Advanced)</summary>
+
+                        <div class="fieldDescription" style="margin-bottom:0.75em;">
+                            Leave this empty to transcribe on this server (the default). Add remote
+                            OpenAI-compatible Whisper endpoints to spread the backlog across machines/GPUs
+                            &mdash; see the <code>worker/</code> image in the repo.
+                        </div>
+
+                        <div class="checkboxContainer checkboxContainer-withDescription">
+                            <label>
+                                <input is="emby-checkbox" type="checkbox" id="chkEnableLocalWorker" name="EnableLocalWorker" />
+                                <span>Also use this server as a worker</span>
+                            </label>
+                            <div class="fieldDescription">
+                                Keep this server's own whisper-cli in the pool. Only matters once you add
+                                remote workers below &mdash; with none, this server always does the work.
+                                <strong>On by default.</strong>
+                            </div>
+                        </div>
+
+                        <div id="workerRows"></div>
+
+                        <button is="emby-button" type="button" id="btnAddWorker" class="raised block" style="max-width:220px; margin-top:0.5em;">
+                            <span>+ Add worker</span>
+                        </button>
+                    </details>
+
                     <details style="margin-top:1.5em;">
                         <summary style="cursor:pointer; font-size:1.2em; font-weight:bold; padding:0.5em 0;">Advanced / Manual Install</summary>
 
@@ -595,6 +624,8 @@
                         <div id="transcriptionCurrentItem" class="fieldDescription" style="margin:0; flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"></div>
                         <div id="transcriptionStats" class="fieldDescription" style="margin:0; white-space:nowrap; text-align:right;"></div>
                     </div>
+                    <div id="transcriptionPending" class="fieldDescription" style="margin:0.6em 0 0; white-space:normal;"></div>
+                    <div id="transcriptionWorkers" class="fieldDescription" style="margin:0.4em 0 0; white-space:normal; line-height:1.5;"></div>
                 </div>
                 <style>@keyframes wsQueueSpin{to{transform:rotate(360deg)}}</style>
 
@@ -1333,6 +1364,9 @@
                             page.querySelector('#numUserRequestActiveCap').value = (config.UserRequestActiveCap != null && config.UserRequestActiveCap >= 0) ? config.UserRequestActiveCap : 3;
                             page.querySelector('#numUserRequestMaxItemsPerRequest').value = (config.UserRequestMaxItemsPerRequest != null && config.UserRequestMaxItemsPerRequest >= 1) ? config.UserRequestMaxItemsPerRequest : 200;
                             page.querySelector('#numUserRequestGlobalCap').value = (config.UserRequestGlobalCap != null && config.UserRequestGlobalCap >= 0) ? config.UserRequestGlobalCap : 500;
+                            // Worker pool (v4.0). Absent/null Workers on older configs -> render nothing.
+                            page.querySelector('#chkEnableLocalWorker').checked = config.EnableLocalWorker !== false;
+                            WhisperSubsConfig.renderWorkers(config.Workers || []);
                             updateTranslationVisibility();
                         }
                             WhisperSubsConfig.loadLibraries();
@@ -1399,6 +1433,10 @@
                         config.UserRequestActiveCap = reqIntField('#numUserRequestActiveCap', 3, 0);
                         config.UserRequestMaxItemsPerRequest = reqIntField('#numUserRequestMaxItemsPerRequest', 200, 1);
                         config.UserRequestGlobalCap = reqIntField('#numUserRequestGlobalCap', 500, 0);
+
+                        // Worker pool (v4.0). Fully-blank rows are dropped; numbers are coerced.
+                        config.EnableLocalWorker = page.querySelector('#chkEnableLocalWorker').checked;
+                        config.Workers = WhisperSubsConfig.collectWorkers(page);
 
                         // Collect enabled libraries from checkboxes
                         var libraryCheckboxes = page.querySelectorAll('.chkLibrary');
@@ -1513,6 +1551,227 @@
                         if (action === 'Approve') WhisperSubsConfig.startQueuePolling();
                     }).catch(function () {
                         Dashboard.alert('Could not ' + action.toLowerCase() + ' the request.');
+                    });
+                },
+
+                // Worker pool (v4.0). Rows are built entirely in JS (mirrors the user-requests /
+                // library-selector panels): every server-provided string is rendered via
+                // textContent and input values are set as properties (never parsed as HTML), so
+                // it stays XSS-safe. No dynamic emby-select here (Model is a plain text input), so
+                // there is no pageshow-repopulate concern.
+                _workerSeq: 0,
+
+                genWorkerId: function () {
+                    return 'w' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+                },
+
+                renderWorkers: function (workers) {
+                    var container = document.querySelector('#workerRows');
+                    if (!container) return;
+                    container.innerHTML = '';
+                    if (workers && Array.isArray(workers)) {
+                        workers.forEach(function (w) {
+                            container.appendChild(WhisperSubsConfig.buildWorkerRow(w));
+                        });
+                    }
+                },
+
+                addWorkerRow: function () {
+                    var container = document.querySelector('#workerRows');
+                    if (!container) return;
+                    container.appendChild(WhisperSubsConfig.buildWorkerRow(null));
+                },
+
+                buildWorkerRow: function (w) {
+                    w = w || {};
+                    var row = document.createElement('div');
+                    row.className = 'workerRow';
+                    row.style.background = 'rgba(0,0,0,0.15)';
+                    row.style.borderRadius = '6px';
+                    row.style.padding = '1em';
+                    row.style.marginBottom = '1em';
+                    // Keep the stable Id (survives a rename); generate a short one for a new row.
+                    row.setAttribute('data-worker-id', w.Id || WhisperSubsConfig.genWorkerId());
+
+                    row.appendChild(WhisperSubsConfig._workerField(
+                        'Name', 'text', 'wkName', { placeholder: 'e.g. GPU box', maxlength: '128' },
+                        w.Name || '', 'A label to recognise this worker. Optional.'));
+                    row.appendChild(WhisperSubsConfig._workerField(
+                        'Endpoint URL', 'text', 'wkUrl', { placeholder: 'http://host:port' },
+                        w.ApiUrl || '', 'Base URL of an OpenAI-compatible Whisper server. No /v1 suffix.'));
+                    row.appendChild(WhisperSubsConfig._workerField(
+                        'API key (optional)', 'password', 'wkKey',
+                        { autocomplete: 'new-password', maxlength: '256', spellcheck: 'false' },
+                        w.ApiKey || '', 'Bearer token, if the server needs one. Leave blank for unauthenticated local servers.'));
+                    row.appendChild(WhisperSubsConfig._workerField(
+                        'Model (optional)', 'text', 'wkModel', { placeholder: 'server default', maxlength: '256' },
+                        w.Model || '', 'Model to request. Blank uses the worker default.'));
+                    row.appendChild(WhisperSubsConfig._workerField(
+                        'Max concurrency', 'number', 'wkConcurrency', { min: '1', max: '64', step: '1', placeholder: '1' },
+                        (w.MaxConcurrency != null && w.MaxConcurrency >= 1) ? w.MaxConcurrency : '',
+                        'How many files this worker transcribes at once. Default 1.'));
+                    row.appendChild(WhisperSubsConfig._workerField(
+                        'Cost weight', 'number', 'wkCost', { min: '0', step: '0.1', placeholder: '0' },
+                        (w.CostWeight != null && w.CostWeight >= 0) ? w.CostWeight : '',
+                        '0 = free/local, preferred; >0 = only used when local workers are busy.'));
+
+                    row.appendChild(WhisperSubsConfig._workerCheckbox('wkTranslate', 'Can translate to English', w.CanTranslate !== false));
+                    row.appendChild(WhisperSubsConfig._workerCheckbox('wkEnabled', 'Enabled', w.Enabled !== false));
+
+                    var btnBar = document.createElement('div');
+                    btnBar.style.display = 'flex';
+                    btnBar.style.gap = '0.6em';
+                    btnBar.style.alignItems = 'center';
+                    btnBar.style.flexWrap = 'wrap';
+                    btnBar.style.marginTop = '0.4em';
+
+                    var testBtn = document.createElement('button');
+                    testBtn.setAttribute('is', 'emby-button');
+                    testBtn.type = 'button';
+                    testBtn.className = 'raised';
+                    testBtn.innerHTML = '<span>Test</span>';
+                    testBtn.addEventListener('click', function () { WhisperSubsConfig.testWorker(row, testBtn); });
+                    btnBar.appendChild(testBtn);
+
+                    var removeBtn = document.createElement('button');
+                    removeBtn.setAttribute('is', 'emby-button');
+                    removeBtn.type = 'button';
+                    removeBtn.className = 'raised';
+                    removeBtn.innerHTML = '<span>Remove</span>';
+                    removeBtn.addEventListener('click', function () {
+                        if (row.parentNode) row.parentNode.removeChild(row);
+                    });
+                    btnBar.appendChild(removeBtn);
+
+                    var testResult = document.createElement('span');
+                    testResult.className = 'wkTestResult fieldDescription';
+                    testResult.style.margin = '0';
+                    btnBar.appendChild(testResult);
+
+                    row.appendChild(btnBar);
+                    return row;
+                },
+
+                // Builds one labelled input inside an .inputContainer (the file's standard field
+                // markup). Unique id/for so the emby floating label associates correctly.
+                _workerField: function (labelText, type, cls, attrs, value, descText) {
+                    var id = 'wk_' + (++WhisperSubsConfig._workerSeq);
+                    var container = document.createElement('div');
+                    container.className = 'inputContainer';
+                    var label = document.createElement('label');
+                    label.className = 'inputLabel inputLabelUnfocused';
+                    label.setAttribute('for', id);
+                    label.textContent = labelText;
+                    container.appendChild(label);
+                    var input = document.createElement('input');
+                    input.id = id;
+                    input.type = type;
+                    input.className = 'emby-input ' + cls;
+                    if (attrs) {
+                        Object.keys(attrs).forEach(function (k) { input.setAttribute(k, attrs[k]); });
+                    }
+                    input.value = (value != null) ? value : '';
+                    container.appendChild(input);
+                    if (descText) {
+                        var desc = document.createElement('div');
+                        desc.className = 'fieldDescription';
+                        desc.textContent = descText;
+                        container.appendChild(desc);
+                    }
+                    return container;
+                },
+
+                _workerCheckbox: function (cls, labelText, checked) {
+                    var container = document.createElement('div');
+                    container.className = 'checkboxContainer';
+                    container.style.padding = '0.2em 0';
+                    var label = document.createElement('label');
+                    var checkbox = document.createElement('input');
+                    checkbox.setAttribute('is', 'emby-checkbox');
+                    checkbox.type = 'checkbox';
+                    checkbox.className = cls;
+                    checkbox.checked = !!checked;
+                    label.appendChild(checkbox);
+                    var span = document.createElement('span');
+                    span.textContent = labelText;
+                    label.appendChild(span);
+                    container.appendChild(label);
+                    return container;
+                },
+
+                // Reads every row into config.Workers, skipping rows the user never filled in and
+                // coercing MaxConcurrency/CostWeight to numbers.
+                collectWorkers: function (page) {
+                    var rows = page.querySelectorAll('.workerRow');
+                    var workers = [];
+                    rows.forEach(function (row) {
+                        var name = (row.querySelector('.wkName').value || '').trim();
+                        var url = (row.querySelector('.wkUrl').value || '').trim();
+                        var key = (row.querySelector('.wkKey').value || '').trim();
+                        var model = (row.querySelector('.wkModel').value || '').trim();
+                        var concRaw = (row.querySelector('.wkConcurrency').value || '').trim();
+                        var costRaw = (row.querySelector('.wkCost').value || '').trim();
+                        var canTranslate = row.querySelector('.wkTranslate').checked;
+                        var enabled = row.querySelector('.wkEnabled').checked;
+
+                        // Skip a row the user never filled in (all text/number fields blank).
+                        if (!name && !url && !key && !model && concRaw === '' && costRaw === '') {
+                            return;
+                        }
+
+                        var conc = parseInt(concRaw, 10);
+                        if (isNaN(conc) || conc < 1) conc = 1;
+                        var cost = parseFloat(costRaw);
+                        if (isNaN(cost) || cost < 0) cost = 0;
+
+                        workers.push({
+                            Id: row.getAttribute('data-worker-id') || WhisperSubsConfig.genWorkerId(),
+                            Name: name,
+                            Enabled: enabled,
+                            ApiUrl: url,
+                            ApiKey: key,
+                            Model: model,
+                            MaxConcurrency: conc,
+                            CostWeight: cost,
+                            CanTranslate: canTranslate
+                        });
+                    });
+                    return workers;
+                },
+
+                // Probes one row's endpoint via POST Workers/TestConnection; shows the server's
+                // message inline (green when ok, red otherwise) via textContent.
+                testWorker: function (row, btn) {
+                    var result = row.querySelector('.wkTestResult');
+                    var url = (row.querySelector('.wkUrl').value || '').trim();
+                    var key = (row.querySelector('.wkKey').value || '').trim();
+                    var model = (row.querySelector('.wkModel').value || '').trim();
+                    if (!url) {
+                        if (result) { result.textContent = 'Enter an endpoint URL first.'; result.style.color = '#CC7B19'; }
+                        return;
+                    }
+                    if (btn) { btn.disabled = true; }
+                    if (result) { result.textContent = 'Testing…'; result.style.color = ''; }
+                    ApiClient.ajax({
+                        type: 'POST',
+                        url: ApiClient.getUrl('Plugins/WhisperSubs/Workers/TestConnection'),
+                        data: JSON.stringify({ apiUrl: url, apiKey: key, model: model }),
+                        contentType: 'application/json',
+                        dataType: 'json'
+                    }).then(function (response) {
+                        var r = typeof response === 'string' ? JSON.parse(response) : response;
+                        if (result) {
+                            // Server-provided message rendered via textContent (never innerHTML).
+                            result.textContent = (r && r.message) ? r.message : ((r && r.ok) ? 'OK' : 'Failed');
+                            result.style.color = (r && r.ok) ? '#52B54B' : '#CC3333';
+                        }
+                    }).catch(function (err) {
+                        if (result) {
+                            result.textContent = 'Test failed: ' + (err && err.message ? err.message : err);
+                            result.style.color = '#CC3333';
+                        }
+                    }).then(function () {
+                        if (btn) { btn.disabled = false; }
                     });
                 },
 
@@ -1692,9 +1951,13 @@
                             var stats = document.querySelector('#transcriptionStats');
                             var current = document.querySelector('#transcriptionCurrentItem');
                             var spinner = document.querySelector('#transcriptionSpinner');
+                            var pendingEl = document.querySelector('#transcriptionPending');
+                            var workersEl = document.querySelector('#transcriptionWorkers');
 
                             // ── Idle: hide or show "Finished" briefly ──
                             if (!q.isProcessing && q.remaining === 0) {
+                                if (pendingEl) pendingEl.textContent = '';
+                                if (workersEl) workersEl.textContent = '';
                                 if (banner.style.display !== 'none' && q.processed > 0) {
                                     var hadFailure = q.failed > 0;
                                     spinner.style.animation = 'none';
@@ -1781,6 +2044,45 @@
                             if (total > 0) parts.push(q.processed.toLocaleString() + ' of ' + total.toLocaleString() + ' items');
                             if (q.failed > 0) parts.push(q.failed + ' failed');
                             stats.textContent = parts.join(' \u00b7 ');
+
+                            // Inbound: the waiting queue (v4.0). Item names are server data, so the
+                            // whole line is assigned via textContent (never innerHTML) \u2014 XSS-safe.
+                            if (pendingEl) {
+                                var pend = Array.isArray(q.pending) ? q.pending : [];
+                                if (pend.length > 0) {
+                                    var pieces = pend.map(function (p) {
+                                        return (p.name || '') + (p.tier ? ' [' + p.tier + ']' : '');
+                                    });
+                                    var waitingTotal = (q.remaining != null) ? q.remaining : pend.length;
+                                    var pendingLine = 'Waiting (' + waitingTotal + '): ' + pieces.join(' \u00b7 ');
+                                    if (q.remaining != null && q.remaining > pend.length) {
+                                        pendingLine += '  (+' + (q.remaining - pend.length) + ' more)';
+                                    }
+                                    pendingEl.textContent = pendingLine;
+                                } else {
+                                    pendingEl.textContent = '';
+                                }
+                            }
+
+                            // Outbound: what's running where (v4.0). One line per worker; only shown
+                            // when a live pool exists, so single-server installs stay clean.
+                            if (workersEl) {
+                                var wks = Array.isArray(q.workers) ? q.workers : [];
+                                workersEl.textContent = '';
+                                if (wks.length > 0) {
+                                    wks.forEach(function (wk) {
+                                        var inF = (wk.inFlight != null) ? wk.inFlight : 0;
+                                        var maxC = (wk.maxConcurrency != null) ? wk.maxConcurrency : 1;
+                                        var cur = Array.isArray(wk.current) ? wk.current : [];
+                                        var running = cur.length > 0 ? cur.join(', ') : 'idle';
+                                        var lineEl = document.createElement('div');
+                                        lineEl.textContent = (wk.name || wk.id || 'worker') +
+                                            ' (' + inF + '/' + maxC + ')' +
+                                            (wk.isLocal ? ' (local)' : '') + ': ' + running;
+                                        workersEl.appendChild(lineEl);
+                                    });
+                                }
+                            }
                         })
                         .catch(function () { /* ignore transient errors */ });
                 },
@@ -1811,6 +2113,10 @@
                     resetBar.style.width = '0%';
                     resetBar.style.background = '#52B54B';
                     document.querySelector('#transcriptionProgressPct').textContent = '';
+                    var rbPending = document.querySelector('#transcriptionPending');
+                    if (rbPending) rbPending.textContent = '';
+                    var rbWorkers = document.querySelector('#transcriptionWorkers');
+                    if (rbWorkers) rbWorkers.textContent = '';
                 },
 
                 generateSubtitle: function (itemId, itemName, itemType) {
@@ -1918,6 +2224,10 @@
 
             document.querySelector('#btnRefreshRequests').addEventListener('click', function () {
                 WhisperSubsConfig.loadRequests();
+            });
+
+            document.querySelector('#btnAddWorker').addEventListener('click', function () {
+                WhisperSubsConfig.addWorkerRow();
             });
 
             document.querySelector('#btnEngineDownloadModel').addEventListener('click', function () {

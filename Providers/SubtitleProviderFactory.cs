@@ -26,6 +26,17 @@ namespace WhisperSubs.Providers
                     config.JobMaxTimeoutHours);
             }
 
+            return CreateLocal(config, loggerFactory);
+        }
+
+        /// <summary>
+        /// Builds the host's local in-process whisper-cli provider (VAD + detection-model resolution).
+        /// Extracted from <see cref="Create"/> so the v4.0 worker pool can construct the local worker
+        /// directly, without the remote-vs-local switch.
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Orchestration: news up WhisperProvider + WhisperSetupService, File.Exists, TryAcquire — same rationale as Create.")]
+        public static ISubtitleProvider CreateLocal(PluginConfiguration config, ILoggerFactory loggerFactory)
+        {
             var setup = new WhisperSetupService(
                 loggerFactory.CreateLogger<WhisperSetupService>(),
                 Plugin.Instance?.DataFolderPath ?? "");

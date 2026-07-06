@@ -6,7 +6,9 @@ using System.Linq;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using WhisperSubs.Configuration;
 using WhisperSubs.Providers;
+using WhisperSubs.Controller.Workers;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 using Microsoft.Extensions.Logging;
@@ -66,6 +68,13 @@ namespace WhisperSubs.Controller
         // queued set so a re-request while an item is mid-transcription does not double-queue it.
         private readonly ConcurrentDictionary<string, byte> _inFlight = new();
 
+        // Serialises the queue↔in-flight transition so the invariant "an identity is queued XOR in-flight"
+        // holds atomically: the dispatcher's dequeue+reserve and Enqueue's in-flight-check+lane-add run
+        // under this one lock. Without it (the two touch _lanes and _inFlight under different locks) a
+        // concurrent enqueue in the dequeue→reserve window could re-add an identity that is about to run,
+        // letting the pool dispatch the SAME (item,language) twice — two workers writing one .srt (v4.0).
+        private readonly object _dispatchGate = new();
+
         private int _isDraining;
         private string? _currentItemName;
         private int _processedCount;
@@ -73,11 +82,57 @@ namespace WhisperSubs.Controller
         private string? _lastError;
         private static readonly object _fileLock = new();
 
+        // The single shared worker pool (v4.0) — the concurrency gate for ALL transcription, replacing the
+        // former global TranscriptionLock(1,1). Built lazily from config and rebuilt (see GetPool) only at a
+        // session start when the other consumer is idle and no jobs are in flight, so adding/removing a worker
+        // takes effect between drain sessions without ever corrupting a live session's slot accounting. Both
+        // the background dispatcher and the scheduled task fetch it via GetPool and converge on this one pool
+        // — with the default one local worker of MaxConcurrency 1 it admits exactly one job at a time
+        // (byte-identical to the old lock); with N workers it dispatches up to ΣMaxConcurrency concurrently.
+        private WorkerPool? _pool;
+        private readonly object _poolGate = new();
+
         /// <summary>
-        /// Global lock — only one whisper transcription at a time.
-        /// Must be acquired by both the drain loop and the scheduled task.
+        /// The shared worker pool for the current (or next) drain session, (re)built from config. Rebuilt at a
+        /// session start only when the OTHER consumer is idle AND no jobs are in flight, so a rebuild never
+        /// splits the concurrency gate (any live holder keeps its captured pool). <paramref name="forTask"/>
+        /// excludes the caller's own just-set running flag (the scheduled task vs the background dispatcher).
+        /// Picks up config changes (added worker, changed model path) on the next idle session — matching the
+        /// old per-call provider construction, without staleness, and without over-rebuilding (once per session).
         /// </summary>
-        public static readonly SemaphoreSlim TranscriptionLock = new(1, 1);
+        [ExcludeFromCodeCoverage(Justification = "Builds providers from config via WorkerRegistry (Plugin.Instance) — orchestration")]
+        internal WorkerPool GetPool(PluginConfiguration config, ILoggerFactory loggerFactory, bool forTask)
+        {
+            lock (_poolGate)
+            {
+                var otherConsumerIdle = forTask ? _isDraining == 0 : _taskIsRunning == 0;
+                if (_pool == null || (otherConsumerIdle && _pool.ActiveJobs == 0))
+                {
+                    _pool = new WorkerPool(WorkerRegistry.BuildWorkers(config, loggerFactory));
+                }
+                return _pool;
+            }
+        }
+
+        /// <summary>
+        /// Marks the scheduled task as running so <see cref="GetPool"/> will not rebuild the shared pool
+        /// underneath it during its startup window (before the first progress report). Idempotent.
+        /// </summary>
+        public void MarkTaskStarted() => Interlocked.CompareExchange(ref _taskIsRunning, 1, 0);
+
+        /// <summary>
+        /// A live snapshot of the current worker pool for the admin status panel (v4.0), or an empty list
+        /// when no pool has been built yet (nothing has dispatched since startup). Thin accessor over the
+        /// unit-tested <see cref="WorkerPool.Snapshot"/>.
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Thin accessor over the unit-tested WorkerPool.Snapshot; depends on live pool state")]
+        public IReadOnlyList<WorkerStatus> SnapshotWorkers()
+        {
+            lock (_poolGate)
+            {
+                return _pool?.Snapshot() ?? (IReadOnlyList<WorkerStatus>)System.Array.Empty<WorkerStatus>();
+            }
+        }
 
         // ── Scheduled task progress tracking ─────────────────────
         private string? _taskCurrentItemName;
@@ -100,6 +155,19 @@ namespace WhisperSubs.Controller
         /// <summary>Queued item counts by named tier (#112) — for the admin queue view.</summary>
         public Dictionary<PriorityTier, int> CountsByTier()
             => _lanes.CountsByTier().ToDictionary(kv => (PriorityTier)kv.Key, kv => kv.Value);
+
+        /// <summary>
+        /// The waiting ("inbound") queue for the admin panel, in the exact order it will run (strongest tier
+        /// first, then FIFO): each item's name, tier and language. Capped at <paramref name="max"/> so a
+        /// library-wide Generate-All doesn't return thousands of names to a polled endpoint — the full total
+        /// is <see cref="PriorityCount"/>. (v4.0.)
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Reads BaseItem.Name off queued items; the lane ordering it projects is unit-tested in PriorityLanesTests")]
+        public IReadOnlyList<(string Name, PriorityTier Tier, string Language)> PendingItems(int max = 200)
+            => _lanes.Snapshot()
+                     .Take(max < 0 ? 0 : max)
+                     .Select(e => (e.Value.Item.Name, (PriorityTier)e.Tier, e.Value.Language))
+                     .ToList();
 
         // ── Per-file progress (updated by WhisperProvider stderr) ──
         private int _currentFileProgress;
@@ -209,35 +277,52 @@ namespace WhisperSubs.Controller
         {
             var key = IdentityKey(item.Id, language);
 
-            // If the same unit is mid-transcription, don't queue a duplicate — the running pass covers it.
-            if (_inFlight.ContainsKey(key)) return false;
-
-            var outcome = _lanes.Enqueue(key, (int)tier, new SubtitleWorkItem
+            // Under _dispatchGate so the in-flight check and the lane-add are atomic with the dispatcher's
+            // dequeue+reserve — otherwise a re-add landing in the dequeue→reserve window double-dispatches.
+            lock (_dispatchGate)
             {
-                Item = item,
-                Language = language,
-                Completion = null,
-                Force = force,
-                Tier = tier
-            }, MergeWork);
+                // If the same unit is mid-transcription, don't queue a duplicate — the running pass covers it.
+                if (_inFlight.ContainsKey(key)) return false;
 
-            // Always persist: even a Duplicate outcome can have OR-merged Force or promoted the tier onto
-            // the existing entry via MergeWork, so queue.json must be rewritten to survive a restart —
-            // otherwise an explicit forced re-request could silently revert to non-forced on restore (#112).
-            PersistQueue();
-            return outcome == LaneEnqueueOutcome.Added;
+                var outcome = _lanes.Enqueue(key, (int)tier, new SubtitleWorkItem
+                {
+                    Item = item,
+                    Language = language,
+                    Completion = null,
+                    Force = force,
+                    Tier = tier
+                }, MergeWork);
+
+                // Always persist: even a Duplicate outcome can have OR-merged Force or promoted the tier onto
+                // the existing entry via MergeWork, so queue.json must be rewritten to survive a restart —
+                // otherwise an explicit forced re-request could silently revert to non-forced on restore (#112).
+                PersistQueue();
+                return outcome == LaneEnqueueOutcome.Added;
+            }
         }
 
         [ExcludeFromCodeCoverage(Justification = "Requires Plugin.Instance for persistence")]
         public bool TryDequeuePriority(out SubtitleWorkItem? item)
         {
-            if (_lanes.TryDequeue(out var dequeued) && dequeued != null)
+            // Dequeue + reserve atomically (see _dispatchGate): moving an identity from the lanes to the
+            // in-flight set in one critical section is what guarantees the pool never dispatches the same
+            // (item,language) twice.
+            lock (_dispatchGate)
             {
-                // Mark in-flight so a concurrent re-request doesn't double-queue while it transcribes.
-                TryReserve(IdentityKey(dequeued.Item.Id, dequeued.Language));
-                PersistQueue();
-                item = dequeued;
-                return true;
+                if (_lanes.TryDequeue(out var dequeued) && dequeued != null)
+                {
+                    // Reserve it in-flight. Honour the result: TryReserve returns false only if the identity
+                    // is already in-flight, which under _dispatchGate cannot happen for a freshly-dequeued
+                    // item — but if it ever did, drop this copy rather than double-dispatch. queue.json is
+                    // persisted either way (the item left the lanes).
+                    var reserved = TryReserve(IdentityKey(dequeued.Item.Id, dequeued.Language));
+                    PersistQueue();
+                    if (reserved)
+                    {
+                        item = dequeued;
+                        return true;
+                    }
+                }
             }
             item = null;
             return false;
@@ -321,144 +406,182 @@ namespace WhisperSubs.Controller
         }
 
         /// <summary>
-        /// Starts the background drain loop if not already running.
-        /// Safe to call multiple times — only one drain runs at a time.
-        /// Re-checks queue after draining to avoid race with late enqueues.
+        /// Starts the background dispatch loop if not already running (only one at a time), building the
+        /// shared worker pool from config. Safe to call multiple times. Re-checks the queue after draining
+        /// to avoid a race with late enqueues. Replaces the former single-worker EnsureDraining: with the
+        /// default one local worker it behaves identically (one job at a time); with N configured workers it
+        /// dispatches up to ΣMaxConcurrency jobs concurrently across the pool.
         /// </summary>
-        [ExcludeFromCodeCoverage(Justification = "Orchestrates async drain loop with external processes")]
-        public void EnsureDraining(
+        [ExcludeFromCodeCoverage(Justification = "Orchestrates the async dispatch loop with external processes")]
+        public void EnsureDispatching(
             SubtitleManager manager,
-            ISubtitleProvider provider,
+            PluginConfiguration config,
+            ILoggerFactory loggerFactory,
             ILogger logger,
             CancellationToken cancellationToken)
         {
             if (Interlocked.CompareExchange(ref _isDraining, 1, 0) == 0)
             {
+                var pool = GetPool(config, loggerFactory, forTask: false);
+                var requirements = WorkerJob.Requirements(config.SubtitleMode, config.EnableTranslation);
                 _ = Task.Run(async () =>
                 {
                     try
                     {
-                        await DrainLoopAsync(manager, provider, logger, cancellationToken);
+                        await DispatchDrainAsync(manager, pool, requirements, countProcessed: true, logger, cancellationToken);
                     }
                     finally
                     {
                         _currentItemName = null;
                         Interlocked.Exchange(ref _isDraining, 0);
 
-                        // Re-check: if items were enqueued during the finally block, restart the drain to
+                        // Re-check: if items were enqueued during the finally block, restart the loop to
                         // avoid stuck items — but never on an already-cancelled token, which would set
                         // _isDraining=1 while Task.Run skips the delegate, wedging the queue forever (#112).
                         if (!_lanes.IsEmpty && !cancellationToken.IsCancellationRequested)
                         {
-                            EnsureDraining(manager, provider, logger, cancellationToken);
+                            EnsureDispatching(manager, config, loggerFactory, logger, cancellationToken);
                         }
                     }
-                }, cancellationToken);
+                    // Task.Run is deliberately NOT given the cancellation token: if it were and the token were
+                    // already cancelled, the delegate would be skipped and the finally above would never reset
+                    // _isDraining — wedging the queue forever. Cancellation is observed INSIDE via the captured
+                    // token (DispatchDrainAsync checks it), so the finally always runs. (Matches the per-job
+                    // Task.Run, which is un-tokened for the same reason.)
+                });
             }
         }
 
-        [ExcludeFromCodeCoverage(Justification = "Orchestrates async drain with external processes")]
-        private async Task DrainLoopAsync(
+        /// <summary>
+        /// The core N-slot dispatcher: pulls the highest-priority item, waits for a free worker slot
+        /// (backpressure at ΣMaxConcurrency), routes it to the cheapest capable worker, and runs it
+        /// concurrently — up to the pool's capacity in flight at once. On completion or failure both the
+        /// worker slot and the in-flight (item,language) reservation are released. Shared by the background
+        /// loop (fire-and-forget via EnsureDispatching) and the scheduled task's priority drain (awaited via
+        /// DrainPriorityAsync); both use the SAME pool so the global concurrency limit always holds. At one
+        /// worker of MaxConcurrency 1 the slot serialises exactly like the old TranscriptionLock.
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Orchestrates concurrent async transcription with external processes")]
+        private async Task DispatchDrainAsync(
             SubtitleManager manager,
-            ISubtitleProvider provider,
+            WorkerPool pool,
+            JobRequirements requirements,
+            bool countProcessed,
             ILogger logger,
             CancellationToken cancellationToken)
         {
-            while (TryDequeuePriority(out var workItem) && workItem != null)
+            // The job requirements are uniform across a drain session, so feasibility is decided once: if no
+            // worker can EVER serve them (e.g. translation enabled but every configured worker is
+            // transcribe-only) fail the whole queue fast rather than block a slot forever. A misconfig then
+            // surfaces loudly (every item errors with a clear message) instead of the queue hanging.
+            if (!pool.HasCapableWorker(requirements))
             {
-                try
+                while (TryDequeuePriority(out var unservable) && unservable != null)
                 {
-                    // Inside the try so the finally still releases the in-flight reservation on cancel (#112).
-                    cancellationToken.ThrowIfCancellationRequested();
-                    _currentItemName = workItem.Item.Name;
-                    logger.LogInformation("[Queue] Processing {ItemName} [{Tier}] ({Remaining} remaining)",
-                        workItem.Item.Name, workItem.Tier, _lanes.Count);
-
-                    await TranscriptionLock.WaitAsync(cancellationToken);
-                    try
-                    {
-                        await manager.GenerateSubtitleAsync(
-                            workItem.Item, provider, workItem.Language, cancellationToken, workItem.Force);
-                    }
-                    finally
-                    {
-                        TranscriptionLock.Release();
-                    }
-
-                    Interlocked.Increment(ref _processedCount);
-                    workItem.Completion?.TrySetResult(true);
-                }
-                catch (System.OperationCanceledException)
-                {
-                    workItem.Completion?.TrySetCanceled();
-                    throw;
-                }
-                catch (System.Exception ex)
-                {
-                    Interlocked.Increment(ref _processedCount);
+                    // Match the old counting: the background loop counted a failure toward `processed`,
+                    // the scheduled task's priority drain did not (countProcessed distinguishes them).
+                    if (countProcessed) Interlocked.Increment(ref _processedCount);
                     Interlocked.Increment(ref _failedCount);
-                    _lastError = $"{workItem.Item.Name}: {ex.Message}";
-                    workItem.Completion?.TrySetException(ex);
-                    logger.LogError(ex, "[Queue] Failed: {ItemName}", workItem.Item.Name);
+                    _lastError = $"{unservable.Item.Name}: no configured worker can serve this job";
+                    unservable.Completion?.TrySetException(
+                        new System.InvalidOperationException("No configured worker can serve this job"));
+                    Release(IdentityKey(unservable.Item.Id, unservable.Language));
+                    logger.LogError("[Dispatch] No capable worker for {ItemName} — skipping", unservable.Item.Name);
                 }
-                finally
+                _currentItemName = null;
+                return;
+            }
+
+            var running = new List<Task>();
+            try
+            {
+                while (!_lanes.IsEmpty)
                 {
-                    Release(IdentityKey(workItem.Item.Id, workItem.Language));
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    // Acquire a free slot FIRST (backpressure at ΣMaxConcurrency), THEN dequeue the current
+                    // highest-priority item — so an item leaves the persisted queue only when a worker is
+                    // ready to run it now (same crash-durability as the old single-lock loop), and each pick
+                    // sees the freshest priority state.
+                    var lease = await pool.AcquireAsync(requirements, cancellationToken);
+                    if (!TryDequeuePriority(out var workItem) || workItem == null)
+                    {
+                        // Emptied by a concurrent consumer between the check and the dequeue — release, re-check.
+                        pool.Release(lease.Key);
+                        continue;
+                    }
+
+                    var wi = workItem;
+                    var l = lease;
+                    _currentItemName = wi.Item.Name;
+                    pool.SetCurrent(l.Key, wi.Item.Name);   // "what's running where" — surfaced in the status panel
+                    logger.LogInformation("[Dispatch] Processing {ItemName} [{Tier}] on {Worker} ({Remaining} remaining)",
+                        wi.Item.Name, wi.Tier, l.Worker.Name, _lanes.Count);
+
+                    // Fire the job WITHOUT gating Task.Run on the token: a cancelled token must not skip the
+                    // delegate, or the finally (which frees the slot + reservation) would never run and leak
+                    // the slot. Cancellation is observed INSIDE, via the token passed to the transcription.
+                    running.Add(Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await manager.GenerateSubtitleAsync(
+                                wi.Item, l.Worker.Provider, wi.Language, cancellationToken, wi.Force);
+                            if (countProcessed) Interlocked.Increment(ref _processedCount);
+                            wi.Completion?.TrySetResult(true);
+                        }
+                        catch (System.OperationCanceledException)
+                        {
+                            wi.Completion?.TrySetCanceled();
+                        }
+                        catch (System.Exception ex)
+                        {
+                            if (countProcessed) Interlocked.Increment(ref _processedCount);
+                            Interlocked.Increment(ref _failedCount);
+                            _lastError = $"{wi.Item.Name}: {ex.Message}";
+                            wi.Completion?.TrySetException(ex);
+                            logger.LogError(ex, "[Dispatch] Failed: {ItemName}", wi.Item.Name);
+                        }
+                        finally
+                        {
+                            Release(IdentityKey(wi.Item.Id, wi.Language));
+                            pool.Release(l.Key, wi.Item.Name);
+                        }
+                    }));
+
+                    // Reap finished tasks so the list can't grow unbounded on a long backlog.
+                    running.RemoveAll(t => t.IsCompleted);
                 }
             }
-            logger.LogInformation("[Queue] Drain complete. Processed {Count} items total ({Failed} failed).",
+            finally
+            {
+                // Wait for every dispatched job to finish before returning, so the caller (and _isDraining)
+                // only sees "drained" once the pool is truly idle. Individual job errors are handled above.
+                try { await Task.WhenAll(running); } catch { /* per-job exceptions already handled */ }
+            }
+
+            logger.LogInformation("[Dispatch] Drain complete. Processed {Count} items total ({Failed} failed).",
                 _processedCount, _failedCount);
         }
 
         /// <summary>
-        /// Process all pending priority items. Called by scheduled task.
+        /// Processes all currently-queued priority items across the worker pool and awaits their completion.
+        /// Called by the scheduled task to clear manual/user requests (which outrank the background sweep)
+        /// before and between its own items. Uses the SAME shared pool as the background dispatcher, so the
+        /// two together never exceed the global concurrency limit. With the default one local worker this is
+        /// a sequential drain (identical to the old single-lock behaviour); with N workers it runs in parallel.
         /// </summary>
-        [ExcludeFromCodeCoverage(Justification = "Orchestrates async drain with external processes")]
-        public async Task DrainPriorityAsync(
+        [ExcludeFromCodeCoverage(Justification = "Orchestrates concurrent async transcription with external processes")]
+        internal async Task DrainPriorityAsync(
             SubtitleManager manager,
-            ISubtitleProvider provider,
+            WorkerPool pool,
+            JobRequirements requirements,
             ILogger logger,
             CancellationToken cancellationToken)
         {
-            while (TryDequeuePriority(out var workItem) && workItem != null)
-            {
-                try
-                {
-                    // Inside the try so the finally still releases the in-flight reservation on cancel (#112).
-                    cancellationToken.ThrowIfCancellationRequested();
-                    _currentItemName = workItem.Item.Name;
-                    logger.LogInformation("[Priority] Processing {ItemName} [{Tier}]", workItem.Item.Name, workItem.Tier);
-
-                    await TranscriptionLock.WaitAsync(cancellationToken);
-                    try
-                    {
-                        await manager.GenerateSubtitleAsync(
-                            workItem.Item, provider, workItem.Language, cancellationToken, workItem.Force);
-                    }
-                    finally
-                    {
-                        TranscriptionLock.Release();
-                    }
-
-                    workItem.Completion?.TrySetResult(true);
-                }
-                catch (System.OperationCanceledException)
-                {
-                    workItem.Completion?.TrySetCanceled();
-                    throw;
-                }
-                catch (System.Exception ex)
-                {
-                    Interlocked.Increment(ref _failedCount);
-                    _lastError = $"{workItem.Item.Name}: {ex.Message}";
-                    workItem.Completion?.TrySetException(ex);
-                    logger.LogError(ex, "[Priority] Failed: {ItemName}", workItem.Item.Name);
-                }
-                finally
-                {
-                    Release(IdentityKey(workItem.Item.Id, workItem.Language));
-                }
-            }
+            // countProcessed:false — the old priority drain did not add to _processedCount (only the
+            // background loop did), so the /Queue `processed` stat stays byte-identical to pre-v4.
+            await DispatchDrainAsync(manager, pool, requirements, countProcessed: false, logger, cancellationToken);
             _currentItemName = null;
         }
     }

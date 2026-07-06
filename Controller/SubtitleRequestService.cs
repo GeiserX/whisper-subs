@@ -46,8 +46,7 @@ namespace WhisperSubs.Controller
             }
 
             var manager = new SubtitleManager(libraryManager, loggerFactory.CreateLogger<SubtitleManager>());
-            var provider = SubtitleProviderFactory.Create(config, loggerFactory);
-            queue.EnsureDraining(manager, provider, logger, CancellationToken.None);
+            queue.EnsureDispatching(manager, config, loggerFactory, logger, CancellationToken.None);
 
             logger.LogInformation("[Request] Enqueued {Queued} of {Total} item(s) for {ItemId} [{Tier}]",
                 queued, leaves.Count, itemId, tier);
