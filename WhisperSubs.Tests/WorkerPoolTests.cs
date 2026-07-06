@@ -105,6 +105,16 @@ public class WorkerPoolTests
     }
 
     [Fact]
+    public async Task AcquireAsync_ThrowsWhenNoCapableWorker_NeverSpins()
+    {
+        // Defense-in-depth (CodeRabbit): a transcribe-only pool asked for a translate job must fail fast
+        // with InvalidOperationException, not loop forever acquiring/releasing the slot.
+        var pool = new WorkerPool(new[] { Worker("t", 1, canTranslate: false) });
+        await Assert.ThrowsAsync<System.InvalidOperationException>(
+            () => pool.AcquireAsync(new JobRequirements(Translate: true, RequiredModel: null), default));
+    }
+
+    [Fact]
     public async Task DuplicateWorkerIds_DoNotCollide_BothSlotsUsableAndReleasable()
     {
         // Two workers misconfigured with the SAME Id — the lease key must keep per-slot accounting distinct.

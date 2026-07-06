@@ -102,6 +102,16 @@ namespace WhisperSubs.Controller.Workers
         /// </summary>
         public async Task<WorkerLease> AcquireAsync(JobRequirements job, CancellationToken cancellationToken)
         {
+            // Defense-in-depth: the callers already fail-fast on !HasCapableWorker, but if a call site ever
+            // skipped that, the retry loop below would spin forever (acquire slot → PickLocked fails →
+            // release → delay). Fail deterministically instead so a misuse surfaces as an exception, not a
+            // hung job. When a capable worker EXISTS but is busy, this passes and the loop waits for it.
+            if (!HasCapableWorker(job))
+            {
+                throw new System.InvalidOperationException(
+                    "No worker in the pool can serve this job's requirements.");
+            }
+
             while (true)
             {
                 await _slots.WaitAsync(cancellationToken).ConfigureAwait(false);
