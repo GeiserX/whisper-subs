@@ -269,6 +269,24 @@ namespace WhisperSubs.Configuration
         /// <summary>Global cap on total user-originated requests that are pending or queued at once. 0 = unlimited. Default 500.</summary>
         public int UserRequestGlobalCap { get; set; } = 500;
 
+        // ── Remote/worker call resilience (v4.0) ─────────────────────────────
+        // Every remote transcription call is bounded by a deadline derived from the audio length, instead
+        // of the old fixed 30-minute HttpClient.Timeout that let an unreachable endpoint pile up into a
+        // multi-day stuck task. See TranscriptionTimeout.Compute.
+
+        /// <summary>
+        /// Upper bound on how much slower than real-time a remote worker may run before a single call is
+        /// presumed hung and cancelled. Per-call deadline = audio-length × this factor (clamped). A
+        /// slow-but-working pass is never cut off; a dead endpoint is. Default 6.
+        /// </summary>
+        public double JobTimeoutRealtimeFactor { get; set; } = 6.0;
+
+        /// <summary>Floor for the per-call deadline in seconds, so a tiny detection chunk still gets a sane minimum. Default 60.</summary>
+        public int JobMinTimeoutSeconds { get; set; } = 60;
+
+        /// <summary>Absolute cap for the per-call deadline in hours — a genuinely long film's worst case still fits under it. Default 12.</summary>
+        public int JobMaxTimeoutHours { get; set; } = 12;
+
         public PluginConfiguration()
         {
         }

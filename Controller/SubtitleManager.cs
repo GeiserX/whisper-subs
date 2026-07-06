@@ -29,6 +29,29 @@ namespace WhisperSubs.Controller
             _logger = logger;
         }
 
+        // ── Atomic sidecar writes (v4.0 resilience) ──────────────────────────
+        // Write to a temp file then rename over the target, so a crash or torn write can never leave a
+        // truncated .srt/.lrc that the resume-parser (which reads the file's last timestamp) misreads, and
+        // a reader never observes a half-written file. Rename is atomic on the same filesystem.
+        [ExcludeFromCodeCoverage(Justification = "Filesystem I/O")]
+        private static async Task WriteTextAtomicAsync(string path, string content, CancellationToken cancellationToken)
+        {
+            // Unique temp name so two workers writing the SAME sidecar to a shared filesystem never collide
+            // on one .tmp (a torn write, or a FileNotFound on the loser's rename). Best-effort cleanup so a
+            // mid-write crash leaves no orphan .tmp behind.
+            var tmp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            try
+            {
+                await File.WriteAllTextAsync(tmp, content, cancellationToken).ConfigureAwait(false);
+                File.Move(tmp, path, overwrite: true);
+            }
+            catch
+            {
+                try { if (File.Exists(tmp)) File.Delete(tmp); } catch { /* best-effort cleanup */ }
+                throw;
+            }
+        }
+
         // ── Subtitle save location (issue #101) ──────────────────────────────
         // On a read-only media library, or when the library has "Save subtitles into media folders"
         // turned off, writing the sidecar next to the media fails (or isn't wanted). Mirror Jellyfin's
@@ -418,7 +441,7 @@ namespace WhisperSubs.Controller
                     srtContent = existingSrt.TrimEnd() + "\n\n" + offsetContent;
                 }
 
-                await File.WriteAllTextAsync(srtPath, srtContent, CancellationToken.None);
+                await WriteTextAtomicAsync(srtPath, srtContent, CancellationToken.None);
                 _logger.LogInformation("Saved full subtitle to {SrtPath}", srtPath);
                 return (GenerationOutcome.Succeeded, null);
             }
@@ -580,7 +603,7 @@ namespace WhisperSubs.Controller
                 string srtContent = await provider.TranscribeAsync(tempAudioPath, sourceLanguage, cancellationToken, translate: true);
                 srtContent = await ApplyTimingCorrectionsAsync(srtContent, mediaPath, tempAudioPath, isResume: false, providerUsesVad: provider.UsesVad, cancellationToken);
 
-                await File.WriteAllTextAsync(translatedSrtPath, srtContent, CancellationToken.None);
+                await WriteTextAtomicAsync(translatedSrtPath, srtContent, CancellationToken.None);
                 _logger.LogInformation("Saved translated subtitle to {SrtPath}", translatedSrtPath);
                 return (GenerationOutcome.Succeeded, null);
             }
@@ -741,6 +764,8 @@ namespace WhisperSubs.Controller
                     await whisperProvider.WaitForDetectionModelAsync(cancellationToken);
                 }
 
+                int consecutiveFailures = 0;
+                const int maxConsecutiveDetectionFailures = 3;
                 for (int i = 0; i < chunks.Count; i++)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
@@ -757,6 +782,7 @@ namespace WhisperSubs.Controller
                         await ExtractAudioChunkAsync(fullAudioPath, chunkPath, chunk.Start, chunkDuration, cancellationToken);
                         var (detectedLang, probability) = await provider.DetectLanguageAsync(chunkPath, cancellationToken);
                         successfulDetections++;
+                        consecutiveFailures = 0;
 
                         _logger.LogDebug("Chunk {Index}/{Total}: {Start:F1}s-{End:F1}s → {Language} (p={Prob:F3})",
                             i + 1, chunks.Count, chunk.Start, chunk.End, detectedLang, probability);
@@ -767,10 +793,26 @@ namespace WhisperSubs.Controller
                             foreignChunks.Add((chunk.Start, chunk.End, detectedLang));
                         }
                     }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        throw; // a genuine caller cancellation must propagate, not count as a detection failure
+                    }
                     catch (Exception ex)
                     {
-                        _logger.LogWarning(ex, "Language detection failed for chunk {Index} ({Start:F1}s-{End:F1}s), skipping",
-                            i, chunk.Start, chunk.End);
+                        consecutiveFailures++;
+                        _logger.LogWarning(ex, "Language detection failed for chunk {Index} ({Start:F1}s-{End:F1}s), skipping ({Consecutive}/{Max} consecutive)",
+                            i, chunk.Start, chunk.End, consecutiveFailures, maxConsecutiveDetectionFailures);
+
+                        // Fail-fast: a worker/endpoint that fails this many chunks in a row is down. Abort the
+                        // whole item now instead of grinding every remaining chunk × its per-call deadline —
+                        // the behaviour that turned an unreachable endpoint into a multi-hour stuck task.
+                        if (consecutiveFailures >= maxConsecutiveDetectionFailures)
+                        {
+                            _logger.LogError("Aborting forced-subtitle detection for {ItemName}: {Count} consecutive language-detection failures (worker/endpoint likely down)",
+                                item.Name, consecutiveFailures);
+                            return (GenerationOutcome.Failed, new InvalidOperationException(
+                                $"Aborted forced-subtitle detection for {item.Name} after {consecutiveFailures} consecutive language-detection failures (worker/endpoint likely down)."));
+                        }
                     }
                 }
 
@@ -857,7 +899,7 @@ namespace WhisperSubs.Controller
                 // Step 8: Save forced SRT
                 if (forcedSrt.Length > 0)
                 {
-                    await File.WriteAllTextAsync(forcedSrtPath, forcedSrt.ToString(), CancellationToken.None);
+                    await WriteTextAtomicAsync(forcedSrtPath, forcedSrt.ToString(), CancellationToken.None);
                     _logger.LogInformation("Saved forced subtitle to {Path} ({Entries} entries)",
                         forcedSrtPath, entryNum - 1);
                     return (GenerationOutcome.Succeeded, null);
@@ -996,7 +1038,7 @@ namespace WhisperSubs.Controller
                 string srtContent = await provider.TranscribeAsync(tempAudioPath, lang, cancellationToken);
                 string lrcContent = ConvertSrtToLrc(srtContent, item.Name);
 
-                await File.WriteAllTextAsync(lrcPath, lrcContent, CancellationToken.None);
+                await WriteTextAtomicAsync(lrcPath, lrcContent, CancellationToken.None);
                 _logger.LogInformation("Saved lyrics to {LrcPath}", lrcPath);
                 return (GenerationOutcome.Succeeded, null);
             }
