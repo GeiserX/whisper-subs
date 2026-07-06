@@ -49,6 +49,7 @@
 import hmac
 import http.client
 import os
+import select
 import shlex
 import signal
 import socket
@@ -87,12 +88,23 @@ WHISPER_LANGUAGE = _env("WHISPER_LANGUAGE", "auto")
 WHISPER_THREADS = _env("WHISPER_THREADS", "")   # "" -> whisper.cpp default
 WHISPER_CONVERT = _env("CONVERT", "false").lower() in ("1", "true", "yes", "y")
 WHISPER_EXTRA_ARGS = _env("WHISPER_EXTRA_ARGS", "")
+# Where whisper-server writes ffmpeg's transcoded WAV when CONVERT=true. whisper-server
+# defaults its --tmp-dir to "." (cwd = /opt/whisper-adapter), which is read-only on the
+# shipped hardened rootfs, so CONVERT would fail there. Point it at the writable tmpfs
+# the example compose mounts at /tmp (M3).
+WHISPER_TMP_DIR = _env("WHISPER_TMP_DIR", "/tmp")
 
 READY_TIMEOUT = int(_env("WHISPER_READY_TIMEOUT", "600"))  # seconds to first-ready
 
 # Drop a stalled-but-open client after this many seconds so one slow/silent
 # connection can't hold the single whisper-server inference slot forever (M2).
 SOCKET_TIMEOUT = float(_env("WHISPER_SOCKET_TIMEOUT", "120"))
+
+# How often the disconnect-watcher polls the client socket while the request thread is
+# blocked on the upstream inference. On a drop we tear down the upstream connection so
+# whisper-server's abort_callback fires and it stops holding the single inference slot
+# for a transcription nobody will read (M2).
+CLIENT_POLL_INTERVAL = float(_env("WHISPER_CLIENT_POLL_INTERVAL", "2"))
 
 # Reject an absurd Content-Length outright (M2). A 2h film's 16 kHz mono WAV is
 # ~260 MB; the default 8 GiB ceiling is generous but bounds a memory/disk-abuse
@@ -114,6 +126,9 @@ def log(msg):
 # Upstream whisper-server lifecycle
 # --------------------------------------------------------------------------- #
 _child = None  # type: subprocess.Popen | None
+# Set the first time the upstream reports ready (via backend_ready). Lets the watcher
+# tell a genuine mid-run crash from a startup misconfiguration that exits 0 (N6).
+_became_ready = threading.Event()
 
 
 def spawn_whisper_server():
@@ -137,7 +152,10 @@ def spawn_whisper_server():
         cmd += ["--threads", WHISPER_THREADS]
     if WHISPER_CONVERT:
         # Requires ffmpeg in the image (build with --build-arg INSTALL_FFMPEG=true).
-        cmd += ["--convert"]
+        # --tmp-dir: whisper-server writes the transcoded WAV to its temp dir, whose
+        # default "." (cwd /opt/whisper-adapter) is read-only on the hardened rootfs;
+        # send it to the writable tmpfs so CONVERT works under read_only: true (M3).
+        cmd += ["--convert", "--tmp-dir", WHISPER_TMP_DIR]
     if WHISPER_EXTRA_ARGS:
         cmd += shlex.split(WHISPER_EXTRA_ARGS)
 
@@ -148,7 +166,20 @@ def spawn_whisper_server():
     # (docker-compose `restart: unless-stopped`) rather than serving 502s forever.
     def _watch():
         code = _child.wait()
-        log("upstream whisper-server exited (code=%s); shutting down" % code)
+        if code == 0 and not _became_ready.is_set():
+            # whisper-server exits 0 (NOT non-zero) on an unrecognized CLI flag -- it
+            # prints usage then exit(0) -- and likewise when --convert is set but ffmpeg
+            # is missing from the image (both verified in server.cpp v1.8.4). A clean
+            # exit BEFORE it ever became ready is almost always one of those, and a bare
+            # "exited (code=0)" reads like a graceful shutdown. Say why, loudly (N6).
+            # (restart: unless-stopped restarts regardless of code, so the real symptom
+            # is a SILENT crash-loop, not a stopped container.)
+            log("ERROR: upstream whisper-server exited 0 before it became ready -- likely "
+                "an unknown flag in WHISPER_EXTRA_ARGS=%r, or CONVERT=true without ffmpeg "
+                "in the image (rebuild with --build-arg INSTALL_FFMPEG=true). Fix it and "
+                "recreate the container." % WHISPER_EXTRA_ARGS)
+        else:
+            log("upstream whisper-server exited (code=%s); shutting down" % code)
         os._exit(1 if code else 0)
 
     threading.Thread(target=_watch, name="whisper-watch", daemon=True).start()
@@ -173,7 +204,10 @@ def backend_ready():
         r = c.getresponse()
         r.read()
         c.close()
-        return r.status == 200
+        ok = r.status == 200
+        if ok:
+            _became_ready.set()  # once ready, a later exit(0) is a normal stop, not a bad flag (N6)
+        return ok
     except Exception:
         return False
 
@@ -187,6 +221,24 @@ def wait_until_ready(timeout):
             return False  # child already crashed; watcher will exit us
         time.sleep(1.0)
     return False
+
+
+def _client_disconnected(sock):
+    """True iff the client socket is at EOF (the plugin gave up: cancel/shutdown/deadline).
+
+    By this point we've consumed exactly Content-Length bytes from the client, so the only
+    thing left to observe on a well-behaved client is a close. select()+MSG_PEEK: readable
+    with an EMPTY peek == EOF == gone. Readable WITH data would be a pipelined request
+    (unsupported here) -- treat that as 'still connected' so a live client is never aborted.
+    Any socket error == gone.
+    """
+    try:
+        r, _, _ = select.select([sock], [], [], 0)
+        if not r:
+            return False
+        return sock.recv(1, socket.MSG_PEEK) == b""
+    except (OSError, ValueError):
+        return True
 
 
 # --------------------------------------------------------------------------- #
@@ -318,6 +370,8 @@ class Handler(BaseHTTPRequestHandler):
             total_len = body_len + len(prefix)
 
         conn = None
+        client_gone = threading.Event()
+        watch_stop = threading.Event()
         try:
             conn = http.client.HTTPConnection(
                 BACKEND_HOST, BACKEND_PORT, timeout=BACKEND_TIMEOUT
@@ -349,16 +403,48 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(400, '{"error":"client closed request body"}', close=True)
                 return
 
+            # The whole request is now upstream; whisper-server runs the (possibly very long)
+            # inference while we block in getresponse(). Watch the CLIENT socket meanwhile: if the
+            # plugin cancels / shuts down / hits its deadline and drops the connection, tear down
+            # the UPSTREAM socket. whisper-server's abort_callback polls is_connection_closed()
+            # throughout whisper_full (verified in server.cpp v1.8.4), so this actually aborts the
+            # in-flight transcription and frees the single GPU inference slot instead of running an
+            # abandoned job to completion (M2).
+            def _watch_client(upstream=conn, sock=self.connection):
+                while True:
+                    if _client_disconnected(sock):
+                        client_gone.set()
+                        s = upstream.sock
+                        if s is not None:
+                            try:
+                                # shutdown() (not merely close()) wakes the getresponse()
+                                # blocked in this request's thread and signals EOF upstream.
+                                s.shutdown(socket.SHUT_RDWR)
+                            except OSError:
+                                pass
+                        return
+                    if watch_stop.wait(CLIENT_POLL_INTERVAL):
+                        return
+
+            threading.Thread(target=_watch_client, name="client-watch", daemon=True).start()
+
             resp = conn.getresponse()
             payload = resp.read()  # SRT / JSON responses are small text bodies
             resp_ctype = resp.getheader("Content-Type", "text/plain; charset=utf-8")
         except (socket.timeout, ConnectionError, OSError, http.client.HTTPException) as exc:
+            if client_gone.is_set():
+                # We deliberately tore the upstream down because the client vanished; this is the
+                # intended outcome, not an upstream fault. The slot is freed; nothing to reply to.
+                log("client disconnected during inference; aborted upstream to free the slot")
+                self.close_connection = True
+                return
             log("upstream error: %r" % exc)
             self._send_json(502, '{"error":"upstream whisper-server unavailable"}', close=True)
             return
         finally:
-            # Always release the upstream socket — including the exception path, which previously
-            # relied on GC to close it (L4). close() is safe to call more than once.
+            # Stop the watcher, then always release the upstream socket — including the exception
+            # path, which previously relied on GC to close it (L4). close() is safe to call twice.
+            watch_stop.set()
             if conn is not None:
                 conn.close()
 

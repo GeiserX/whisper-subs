@@ -67,7 +67,7 @@ translations path to `translate=true`. Hence a minimal body-aware adapter:
 - supervises the `whisper-server` child and exits (so the container restarts) if it
   dies.
 
-The adapter is ~300 lines of Python standard library — **no pip dependencies** —
+The adapter is ~430 lines of Python standard library — **no pip dependencies** —
 in [`adapter.py`](adapter.py). `response_format=srt` and `verbose_json` are both
 native to `whisper-server`, so no response rewriting is needed.
 
