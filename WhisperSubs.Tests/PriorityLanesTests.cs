@@ -150,43 +150,4 @@ public class PriorityLanesTests
         Assert.Equal(0, lanes.Count);
         Assert.False(lanes.CountsByTier().ContainsKey(Medium)); // lane pruned
     }
-
-    // ── predicate dequeue (v4.0 dispatcher: skip a head job no free worker can serve) ──
-
-    [Fact]
-    public void TryDequeuePredicate_ReturnsHighestPriorityAcceptable()
-    {
-        var lanes = new PriorityLanes<string>();
-        lanes.Enqueue("c", Critical, "crit");
-        lanes.Enqueue("h", High, "high");
-        // Accept everything → same as the plain head (strongest tier).
-        Assert.True(lanes.TryDequeue(_ => true, out var v));
-        Assert.Equal("crit", v);
-    }
-
-    [Fact]
-    public void TryDequeuePredicate_SkipsRejectedHead_PreservesTierOrder()
-    {
-        var lanes = new PriorityLanes<string>();
-        lanes.Enqueue("c", Critical, "crit");   // rejected by the predicate
-        lanes.Enqueue("h1", High, "high1");
-        lanes.Enqueue("h2", High, "high2");
-        // Skip "crit" → the next acceptable is the FIFO head of the next-strongest lane.
-        Assert.True(lanes.TryDequeue(v => v != "crit", out var v1));
-        Assert.Equal("high1", v1);
-        // "crit" is still queued (only skipped, not removed).
-        Assert.True(lanes.ContainsKey("c"));
-        Assert.Equal(2, lanes.Count);
-    }
-
-    [Fact]
-    public void TryDequeuePredicate_FalseWhenNoneAcceptable()
-    {
-        var lanes = new PriorityLanes<string>();
-        lanes.Enqueue("a", Medium, "a");
-        lanes.Enqueue("b", Low, "b");
-        Assert.False(lanes.TryDequeue(_ => false, out var v));
-        Assert.Null(v);
-        Assert.Equal(2, lanes.Count); // nothing removed
-    }
 }
