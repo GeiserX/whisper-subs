@@ -98,12 +98,15 @@ public class SubtitleQueueServiceTests
     }
 
     [Fact]
-    public void TranscriptionLock_IsAvailable()
+    public void MarkTaskStarted_SetsRunning_And_ReportTaskComplete_Clears()
     {
-        Assert.NotNull(SubtitleQueueService.TranscriptionLock);
-        // Should be able to acquire and release
-        Assert.True(SubtitleQueueService.TranscriptionLock.Wait(0));
-        SubtitleQueueService.TranscriptionLock.Release();
+        var queue = SubtitleQueueService.Instance;
+        // The v4.0 pool-rebuild gate: MarkTaskStarted must set the task-running flag so GetPool won't
+        // rebuild underneath the scheduled task; ReportTaskComplete (run in the task's finally) clears it.
+        queue.MarkTaskStarted();
+        Assert.True(queue.IsTaskRunning);
+        queue.ReportTaskComplete();
+        Assert.False(queue.IsTaskRunning);
     }
 
     [Fact]

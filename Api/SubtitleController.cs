@@ -193,8 +193,7 @@ namespace WhisperSubs.Api
 
                 // Ensure the background drain worker is running
                 var manager = GetSubtitleManager();
-                var provider = SubtitleProviderFactory.Create(config, _loggerFactory);
-                queue.EnsureDraining(manager, provider, _logger, CancellationToken.None);
+                queue.EnsureDispatching(manager, config, _loggerFactory, _logger, CancellationToken.None);
 
                 return Accepted(new
                 {
@@ -264,8 +263,7 @@ namespace WhisperSubs.Api
 
                 // Ensure the background drain worker is running
                 var manager = GetSubtitleManager();
-                var provider = SubtitleProviderFactory.Create(config, _loggerFactory);
-                queue.EnsureDraining(manager, provider, _logger, CancellationToken.None);
+                queue.EnsureDispatching(manager, config, _loggerFactory, _logger, CancellationToken.None);
 
                 return Accepted(new
                 {
@@ -311,8 +309,106 @@ namespace WhisperSubs.Api
                 library = queue.TaskCurrentItemLibrary,
                 // Named-tier breakdown of what's queued + how many user requests await approval (#112).
                 tiers = queue.CountsByTier().ToDictionary(kv => kv.Key.ToString(), kv => kv.Value),
-                pendingRequests = SubtitleRequestStore.Instance.GetAll().Count(r => r.State == RequestState.Pending)
+                pendingRequests = SubtitleRequestStore.Instance.GetAll().Count(r => r.State == RequestState.Pending),
+                // Inbound: the items waiting, in the order they'll run (capped; the full total is `remaining`). (v4.0)
+                pending = queue.PendingItems().Select(p => new
+                {
+                    name = p.Name,
+                    tier = p.Tier.ToString(),
+                    language = p.Language
+                }),
+                // Outbound: which worker/endpoint is transcribing which item right now. (v4.0)
+                workers = queue.SnapshotWorkers().Select(w => new
+                {
+                    id = w.Id,
+                    name = w.Name,
+                    isLocal = w.IsLocal,
+                    inFlight = w.InFlight,
+                    maxConcurrency = w.MaxConcurrency,
+                    costWeight = w.CostWeight,
+                    current = w.CurrentItems
+                })
             });
+        }
+
+        /// <summary>
+        /// Tests a worker endpoint (v4.0 config UI): POSTs a tiny silent WAV to its transcription route so
+        /// the admin can confirm reachability + auth + a working transcribe path before saving the worker,
+        /// without touching the media library. Never throws — always returns a shaped {ok, message} result.
+        /// </summary>
+        [HttpPost("Workers/TestConnection")]
+        public async Task<ActionResult> TestWorkerConnection([FromBody] WorkerTestRequest request)
+        {
+            if (request == null)
+            {
+                return BadRequest(new { ok = false, message = "Missing request body." });
+            }
+
+            var worker = new Configuration.WhisperWorker
+            {
+                ApiUrl = request.ApiUrl ?? "",
+                ApiKey = request.ApiKey ?? "",
+                Model = request.Model ?? "",
+                MaxConcurrency = 1,
+                CostWeight = 0
+            };
+            var (valid, error) = Controller.Workers.WorkerConfigValidation.Validate(worker);
+            if (!valid)
+            {
+                return Ok(new { ok = false, message = error });
+            }
+
+            var url = worker.ApiUrl.TrimEnd('/') + "/v1/audio/transcriptions";
+            var model = string.IsNullOrWhiteSpace(worker.Model) ? "Systran/faster-whisper-large-v3" : worker.Model.Trim();
+            var wav = Controller.Workers.SyntheticAudio.SilentWav16kMono(100);
+
+            using var content = new System.Net.Http.MultipartFormDataContent();
+            var fileContent = new System.Net.Http.ByteArrayContent(wav);
+            fileContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("audio/wav");
+            content.Add(fileContent, "file", "test.wav");
+            content.Add(new System.Net.Http.StringContent(model), "model");
+            content.Add(new System.Net.Http.StringContent("srt"), "response_format");
+
+            using var probe = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Post, url) { Content = content };
+            if (!string.IsNullOrWhiteSpace(worker.ApiKey))
+            {
+                probe.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", worker.ApiKey.Trim());
+            }
+
+            var http = _httpClientFactory.CreateClient();
+            http.Timeout = TimeSpan.FromSeconds(20);
+
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            try
+            {
+                using var resp = await http.SendAsync(probe);
+                sw.Stop();
+                if (resp.IsSuccessStatusCode)
+                {
+                    return Ok(new
+                    {
+                        ok = true,
+                        status = (int)resp.StatusCode,
+                        latencyMs = sw.ElapsedMilliseconds,
+                        message = $"OK — transcribed a test clip in {sw.ElapsedMilliseconds} ms."
+                    });
+                }
+
+                var body = await resp.Content.ReadAsStringAsync();
+                var snippet = body.Length > 200 ? body.Substring(0, 200) : body;
+                return Ok(new
+                {
+                    ok = false,
+                    status = (int)resp.StatusCode,
+                    latencyMs = sw.ElapsedMilliseconds,
+                    message = $"HTTP {(int)resp.StatusCode}: {snippet}"
+                });
+            }
+            catch (Exception ex)
+            {
+                sw.Stop();
+                return Ok(new { ok = false, latencyMs = sw.ElapsedMilliseconds, message = $"Unreachable: {ex.Message}" });
+            }
         }
 
         /// <summary>
@@ -982,6 +1078,14 @@ namespace WhisperSubs.Api
         public List<ItemInfo> Items { get; set; } = new List<ItemInfo>();
         public int TotalCount { get; set; }
         public int StartIndex { get; set; }
+    }
+
+    /// <summary>Body for the worker "Test connection" probe (v4.0): the endpoint + optional key/model to try.</summary>
+    public class WorkerTestRequest
+    {
+        public string? ApiUrl { get; set; }
+        public string? ApiKey { get; set; }
+        public string? Model { get; set; }
     }
 }
 
