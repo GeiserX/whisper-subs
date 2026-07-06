@@ -119,6 +119,7 @@ namespace WhisperSubs.ScheduledTasks
             var enabledLibraryIds = config.EnabledLibraries
                 .Where(id => !string.IsNullOrEmpty(id))
                 .Select(id => Guid.Parse(id))
+                .Distinct()   // tolerate a duplicated ID in hand-edited config — items must dispatch once
                 .ToList();
 
             if (enabledLibraryIds.Count == 0)
@@ -146,6 +147,7 @@ namespace WhisperSubs.ScheduledTasks
             }
 
             var allItems = new List<(BaseItem Item, string LibraryName)>();
+            var seenItemIds = new HashSet<Guid>();   // dispatch each item once, even when two libraries reach it
             foreach (var libraryId in enabledLibraryIds)
             {
                 var library = _libraryManager.GetItemById(libraryId);
@@ -162,6 +164,12 @@ namespace WhisperSubs.ScheduledTasks
                 {
                     // Skip virtual/placeholder items with no media file
                     if (string.IsNullOrEmpty(queryItem.Path)) continue;
+
+                    // The same item can be reachable through two enabled (nested/overlapping) libraries.
+                    // Sequentially the duplicate was a cheap "existing .srt" skip; with N slots it would
+                    // now transcribe CONCURRENTLY (both copies see no .srt yet) — same output either way
+                    // (atomic sidecar writes), but hours of duplicated compute. Enumerate each item once.
+                    if (!seenItemIds.Add(queryItem.Id)) continue;
 
                     if (queryItem is Video video)
                     {
@@ -398,13 +406,6 @@ namespace WhisperSubs.ScheduledTasks
 
                 try
                 {
-                    _logger.LogInformation("[{Current}/{Total}] Processing {ItemName}",
-                        completed + 1, allItems.Count, item.Name);
-                    // Reset at item start so the bar reads 0 during audio extraction (before whisper
-                    // runs). WhisperProvider also resets at each whisper run; both are idempotent.
-                    queue.ResetFileProgress();
-                    queue.ReportTaskProgress(item.Name, completed, allItems.Count, failed, itemType, libName);
-
                     // No worker can serve this job's requirements (e.g. translation enabled but every
                     // configured worker is transcribe-only) — surface it via the same failure path below.
                     if (!pool.HasCapableWorker(requirements))
@@ -418,6 +419,29 @@ namespace WhisperSubs.ScheduledTasks
                     // the old inline await; with N workers the sweep shares the pool with the background
                     // dispatcher up to ΣMaxConcurrency.
                     var lease = await pool.AcquireAsync(requirements, cancellationToken);
+
+                    // A user/admin request that arrived while we were parked on AcquireAsync must not be
+                    // demoted behind the next swept item: this producer's waiter is FIFO-queued AHEAD of
+                    // the background dispatcher's, so the sweep would win every freed slot. Hand the slot
+                    // back, drain the priority lanes, then re-acquire. NEVER drain while still holding the
+                    // lease — at capacity 1, DrainPriorityAsync would wait forever on the very slot this
+                    // producer holds.
+                    while (queue.PriorityCount > 0)
+                    {
+                        pool.Release(lease.Key);
+                        _logger.LogInformation("Yielding worker slot to {Count} priority request(s) before the next swept item", queue.PriorityCount);
+                        await queue.DrainPriorityAsync(manager, pool, requirements, _logger, cancellationToken);
+                        lease = await pool.AcquireAsync(requirements, cancellationToken);
+                    }
+
+                    // Report AFTER the slot is won, so the panel names the item that is actually starting —
+                    // not the next one parked behind a long transcription (at capacity 1 the pre-acquire
+                    // report mislabeled the whole run). Reset so the bar reads 0 during audio extraction
+                    // (before whisper runs); WhisperProvider also resets at each whisper run — idempotent.
+                    _logger.LogInformation("[{Current}/{Total}] Processing {ItemName}",
+                        completed + 1, allItems.Count, item.Name);
+                    queue.ResetFileProgress();
+                    queue.ReportTaskProgress(item.Name, completed, allItems.Count, failed, itemType, libName);
                     pool.SetCurrent(lease.Key, item.Name);   // "what's running where" — surfaced in the status panel
 
                     // v4.1: run the item on its leased worker WITHOUT awaiting it inline, so the producer
@@ -434,9 +458,7 @@ namespace WhisperSubs.ScheduledTasks
                 {
                     Interlocked.Increment(ref failed);
                     _logger.LogError(ex, "Failed to generate subtitle for {ItemName}", item.Name);
-                    var done = Interlocked.Increment(ref completed);
-                    queue.ReportTaskProgress(null, done, allItems.Count, failed);
-                    progress.Report((double)done / allItems.Count * 100);
+                    CountSweptItem();
                 }
             }
 
@@ -463,6 +485,13 @@ namespace WhisperSubs.ScheduledTasks
                 catch (OperationCanceledException)
                 {
                     // Expected on cancellation — the in-flight items were cancelled with us.
+                }
+                catch (Exception ex)
+                {
+                    // A task can only end Faulted here if its own finally threw (not a known path). The
+                    // tail WhenAll above is the real propagation point — a settle-time fault must never
+                    // skip the skip-cache save below nor replace the producer's own exception.
+                    _logger.LogWarning(ex, "In-flight sweep item threw while settling; continuing so the skip-cache still saves");
                 }
 
                 // Persist even on cancellation / pause-timeout so the run keeps the progress it made.
@@ -493,23 +522,36 @@ namespace WhisperSubs.ScheduledTasks
                     {
                         await manager.GenerateSubtitleAsync(item, lease.Worker.Provider, language, cancellationToken);
                     }
+                    CountSweptItem();
                 }
-                catch (OperationCanceledException)
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
+                    // Real cancellation: rethrow WITHOUT counting, matching the old inline loop (a
+                    // cancelled item was never "Processed"). The filter keeps a third-party OCE (e.g. a
+                    // remote worker's HTTP timeout surfacing as TaskCanceledException) on the failure path
+                    // below, instead of marking the finished run Cancelled from the tail WhenAll.
                     throw;
                 }
                 catch (Exception ex)
                 {
                     Interlocked.Increment(ref failed);
                     _logger.LogError(ex, "Failed to generate subtitle for {ItemName}", item.Name);
+                    CountSweptItem();
                 }
                 finally
                 {
                     pool.Release(lease.Key, item.Name);
-                    var done = Interlocked.Increment(ref completed);
-                    queue.ReportTaskProgress(null, done, allItems.Count, failed);
-                    progress.Report((double)done / allItems.Count * 100);
                 }
+            }
+
+            // Shared "one more item is done" accounting for the producer's failure path and the per-item
+            // tasks (success + failure). Interlocked because N of these complete concurrently; cancelled
+            // items are deliberately NOT counted (identical to the old inline loop's semantics).
+            void CountSweptItem()
+            {
+                var done = Interlocked.Increment(ref completed);
+                queue.ReportTaskProgress(null, done, allItems.Count, failed);
+                progress.Report((double)done / allItems.Count * 100);
             }
         }
 
