@@ -125,10 +125,26 @@ another host) and add each to the pool.
 | `CONVERT` | `false` | `true` runs FFmpeg to accept non-WAV audio (needs `INSTALL_FFMPEG=true` image) |
 | `WHISPER_THREADS` | *(whisper default)* | CPU threads (`--threads`). Set to your CPU core count on CPU-only workers for best throughput |
 | `WHISPER_LANGUAGE` | `auto` | Upstream default language; per-request `language` still overrides |
-| `WHISPER_EXTRA_ARGS` | *(empty)* | Extra `whisper-server` flags. Flash attention is already **on by default** (v1.8.4), so `--flash-attn` is a no-op — pass `--no-flash-attn` only if a buggy Vulkan driver miscomputes with it. Other examples: `--vad --vad-model /models/ggml-silero-v5.1.2.bin` |
+| `WHISPER_SUPPRESS_NON_SPEECH` | `true` | Adds `-sns` (suppress non-speech tokens) — cuts music/credits hallucination. `false` disables |
+| `WHISPER_MAX_CONTEXT` | `0` | Adds `-mc <N>` (max prior-text-context tokens). `0` (default) curbs runaway hallucination; set `-1` to restore whisper-server's own default |
+| `WHISPER_BEAM_SIZE` | *(empty → greedy)* | When a **positive int**, adds `-bs <N>` (beam search). `5` trades speed for a bit more accuracy; empty leaves whisper-server's default (greedy) |
+| `WHISPER_VAD` | `true` | Adds `--vad --vad-model <path>` (native Silero VAD) so cue starts snap to real speech onset and long silences aren't decoded. Skipped (with a warning) if the model file is absent; `false` disables |
+| `WHISPER_VAD_MODEL` | `/opt/whisper-vad/ggml-silero-v5.1.2.bin` | Path to the Silero VAD model. **Baked into the image here — deliberately not under `/models`**, which a mounted model volume would shadow |
+| `WHISPER_EXTRA_ARGS` | *(empty)* | Extra `whisper-server` flags, appended **last** so they override the accuracy flags above. Flash attention is already **on by default** (v1.8.4), so `--flash-attn` is a no-op — pass `--no-flash-attn` only if a buggy Vulkan driver miscomputes with it |
 | `WHISPER_TMP_DIR` | `/tmp` | Temp dir for `CONVERT=true` ffmpeg WAVs. whisper-server's own default (`.`) is the read-only rootfs, so the adapter passes `--tmp-dir` here; the compose mounts a tmpfs at `/tmp` |
 | `WHISPER_BACKEND_PORT` | `8081` | Internal `whisper-server` port (localhost only) |
 | `WHISPER_READY_TIMEOUT` | `600` | Seconds to wait for the model to load before serving |
+
+> **Accuracy — matches local transcription (as of 0.1.2).** The decoding defaults now mirror
+> the plugin's own local `whisper-cli` path — `-sns` (suppress non-speech), `-mc 0`
+> (no stale text-context), and native **VAD on** — so a subtitle produced by a remote worker
+> matches the quality of one produced on the Jellyfin server itself. The Silero VAD model is
+> **bundled in the image** (at `/opt/whisper-vad/`, outside the `/models` volume so it can't be
+> shadowed), so `--vad` works out of the box. **VAD-on is a change from 0.1.1**, which used
+> whisper-server's looser defaults (no `-sns`, `-mc -1`, no VAD) and so hallucinated more on
+> music/silence and could start cues slightly early. Set **`WHISPER_BEAM_SIZE=5`** to trade some
+> speed for a little more accuracy (beam search). To restore the old 0.1.1 behavior, set
+> `WHISPER_SUPPRESS_NON_SPEECH=false`, `WHISPER_MAX_CONTEXT=-1`, and `WHISPER_VAD=false`.
 
 ---
 

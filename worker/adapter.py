@@ -68,6 +68,22 @@ def _env(name, default):
     return v if v is not None and v != "" else default
 
 
+def _env_bool(name, default):
+    """Parse a boolean env var: true/1/yes/y (case-insensitive) => True. `default` is the
+    STRING used when the var is unset/empty, so it reads like the other _env() calls."""
+    return _env(name, default).strip().lower() in ("1", "true", "yes", "y")
+
+
+def _parse_int(value):
+    """int(value) that returns None instead of raising, so a malformed numeric env var
+    degrades to 'leave whisper-server's own default' rather than crash-looping the
+    container (a bad -mc/-bs value would otherwise std::stoi-throw inside whisper-server)."""
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
 LISTEN_HOST = _env("LISTEN_HOST", "0.0.0.0")
 LISTEN_PORT = int(_env("LISTEN_PORT", "8080"))
 
@@ -86,13 +102,37 @@ WHISPER_BIN = _env("WHISPER_BIN", "/usr/local/bin/whisper-server")
 MODEL_FILE = _env("WHISPER_MODEL_FILE", "")
 WHISPER_LANGUAGE = _env("WHISPER_LANGUAGE", "auto")
 WHISPER_THREADS = _env("WHISPER_THREADS", "")   # "" -> whisper.cpp default
-WHISPER_CONVERT = _env("CONVERT", "false").lower() in ("1", "true", "yes", "y")
+WHISPER_CONVERT = _env_bool("CONVERT", "false")
 WHISPER_EXTRA_ARGS = _env("WHISPER_EXTRA_ARGS", "")
 # Where whisper-server writes ffmpeg's transcoded WAV when CONVERT=true. whisper-server
 # defaults its --tmp-dir to "." (cwd = /opt/whisper-adapter), which is read-only on the
 # shipped hardened rootfs, so CONVERT would fail there. Point it at the writable tmpfs
 # the example compose mounts at /tmp (M3).
 WHISPER_TMP_DIR = _env("WHISPER_TMP_DIR", "/tmp")
+
+# --- Decoding-quality flags ------------------------------------------------- #
+# Defaults deliberately MIRROR the plugin's LOCAL whisper-cli path
+# (Providers/WhisperProvider.cs -> BuildTranscribeArguments emits -sns, -mc 0, --vad), so a
+# remote worker's subtitles match local-transcription quality instead of whisper-server's
+# looser out-of-the-box defaults (which hallucinate on music/silence and carry long stale
+# text-context). All are overridable, and a WHISPER_EXTRA_ARGS value still wins (appended last).
+#
+# -sns / --suppress-nst : drop non-speech tokens. Plugin ON; whisper-server default OFF.
+WHISPER_SUPPRESS_NON_SPEECH = _env_bool("WHISPER_SUPPRESS_NON_SPEECH", "true")
+# -mc / --max-context   : tokens of prior text carried into the next window. Plugin uses 0
+#   (no stale context -> far less runaway hallucination); whisper-server default is -1.
+WHISPER_MAX_CONTEXT = _env("WHISPER_MAX_CONTEXT", "0")
+# -bs / --beam-size     : beam-search width. EMPTY (default) leaves whisper-server's own
+#   default (greedy, -bs -1), matching the plugin; set a positive int (e.g. 5) to trade
+#   speed for a bit more accuracy.
+WHISPER_BEAM_SIZE = _env("WHISPER_BEAM_SIZE", "")
+# --vad / --vad-model   : native Silero VAD. Snaps cue starts to real speech onset and
+#   avoids decoding long silences (another hallucination source). Plugin default ON. Added
+#   ONLY when the model file exists; if enabled but missing we log a warning and skip it
+#   (never a hard fail). The model is baked into the image at the path below, OUTSIDE the
+#   /models bind-mount so a mounted model cache can't shadow it.
+WHISPER_VAD = _env_bool("WHISPER_VAD", "true")
+WHISPER_VAD_MODEL = _env("WHISPER_VAD_MODEL", "/opt/whisper-vad/ggml-silero-v5.1.2.bin")
 
 READY_TIMEOUT = int(_env("WHISPER_READY_TIMEOUT", "600"))  # seconds to first-ready
 
@@ -131,12 +171,15 @@ _child = None  # type: subprocess.Popen | None
 _became_ready = threading.Event()
 
 
-def spawn_whisper_server():
-    global _child
-    if not MODEL_FILE or not os.path.isfile(MODEL_FILE):
-        log("FATAL: model file not found: %r (set WHISPER_MODEL / WHISPER_MODEL_FILE)" % MODEL_FILE)
-        sys.exit(1)
+def build_backend_cmd():
+    """Assemble the whisper-server argv from the module configuration.
 
+    Extracted from spawn_whisper_server() so the exact command is unit/print-testable. The
+    decoding-quality flags (-sns, -mc, -bs, --vad) are appended BEFORE any WHISPER_EXTRA_ARGS
+    so an operator's explicit override always wins (whisper-server honours the LAST value for
+    a repeated flag). VAD is added only when its model file is actually present, so a missing
+    model degrades to 'no VAD' with a warning instead of a whisper-server startup failure.
+    """
     cmd = [
         WHISPER_BIN,
         "--host", BACKEND_HOST,
@@ -156,8 +199,45 @@ def spawn_whisper_server():
         # default "." (cwd /opt/whisper-adapter) is read-only on the hardened rootfs;
         # send it to the writable tmpfs so CONVERT works under read_only: true (M3).
         cmd += ["--convert", "--tmp-dir", WHISPER_TMP_DIR]
+
+    # --- decoding-quality flags: mirror the plugin's local whisper-cli path --- #
+    if WHISPER_SUPPRESS_NON_SPEECH:
+        cmd += ["-sns"]
+    mc = _parse_int(WHISPER_MAX_CONTEXT)
+    if WHISPER_MAX_CONTEXT != "" and mc is None:
+        log("WARNING: WHISPER_MAX_CONTEXT=%r is not an integer; ignoring it (leaving "
+            "whisper-server's own default)." % WHISPER_MAX_CONTEXT)
+    elif mc is not None:
+        cmd += ["-mc", str(mc)]
+    if WHISPER_BEAM_SIZE != "":
+        bs = _parse_int(WHISPER_BEAM_SIZE)
+        if bs is not None and bs > 0:
+            cmd += ["-bs", str(bs)]
+        else:
+            log("WARNING: WHISPER_BEAM_SIZE=%r is not a positive integer; ignoring it "
+                "(leaving whisper-server's default = greedy)." % WHISPER_BEAM_SIZE)
+    if WHISPER_VAD:
+        if os.path.isfile(WHISPER_VAD_MODEL):
+            cmd += ["--vad", "--vad-model", WHISPER_VAD_MODEL]
+        else:
+            log("WARNING: WHISPER_VAD is enabled but no VAD model file exists at %r; "
+                "continuing WITHOUT VAD (cue starts may drift on gapless segments and long "
+                "silences may decode/hallucinate). The image bakes one in by default; point "
+                "WHISPER_VAD_MODEL at a ggml Silero model, or set WHISPER_VAD=false to "
+                "silence this warning." % WHISPER_VAD_MODEL)
+
     if WHISPER_EXTRA_ARGS:
         cmd += shlex.split(WHISPER_EXTRA_ARGS)
+    return cmd
+
+
+def spawn_whisper_server():
+    global _child
+    if not MODEL_FILE or not os.path.isfile(MODEL_FILE):
+        log("FATAL: model file not found: %r (set WHISPER_MODEL / WHISPER_MODEL_FILE)" % MODEL_FILE)
+        sys.exit(1)
+
+    cmd = build_backend_cmd()
 
     log("starting upstream: %s" % " ".join(shlex.quote(c) for c in cmd))
     _child = subprocess.Popen(cmd)

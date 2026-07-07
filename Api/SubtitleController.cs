@@ -405,6 +405,46 @@ namespace WhisperSubs.Api
             var model = string.IsNullOrWhiteSpace(worker.Model) ? "Systran/faster-whisper-large-v3" : worker.Model.Trim();
             var wav = Controller.Workers.SyntheticAudio.SilentWav16kMono(100);
 
+            // Reachability pre-probe (v4.1.1): before the (potentially slow) transcribe, do a cheap GET of the
+            // worker BASE url so we can tell a genuinely-unreachable endpoint (connection refused / DNS / TLS /
+            // host-unreachable) apart from a reachable-but-slow one. A modest GPU running a large model can take
+            // far longer than the transcribe deadline to decode even the silent probe clip (whisper decodes
+            // silence as a worst-case, full-length hallucination), and that must NOT be reported as "Unreachable" —
+            // a false negative that scares admins off a perfectly good worker. Same SSRF hardening as the transcribe
+            // call: no auto-redirect, and the link-local IP/DNS checks above already ran for this exact host.
+            var baseUrl = worker.ApiUrl.Trim();
+            if (System.Uri.TryCreate(baseUrl, System.UriKind.Absolute, out var baseUri))
+            {
+                baseUrl = baseUri.Scheme + "://" + baseUri.Authority + "/";
+            }
+            using (var reachHandler = new System.Net.Http.SocketsHttpHandler
+            {
+                AllowAutoRedirect = false,
+                ConnectTimeout = TimeSpan.FromSeconds(8)
+            })
+            using (var reachHttp = new System.Net.Http.HttpClient(reachHandler) { Timeout = TimeSpan.FromSeconds(8) })
+            {
+                try
+                {
+                    using var getReq = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Get, baseUrl);
+                    using var getResp = await reachHttp.SendAsync(getReq);
+                    // Any HTTP status answered (even 401/404) proves the host is reachable — fall through to transcribe.
+                }
+                catch (System.Net.Http.HttpRequestException ex)
+                {
+                    // Connection refused / DNS failure / TLS failure / connect-timeout / host-unreachable — genuinely
+                    // unreachable. Stop here; the transcribe would only fail the same way, slower.
+                    var (ok, warning, msg) = Controller.Workers.WorkerProbe.ClassifyProbeOutcome(reachable: false, httpStatus: null, timedOut: false);
+                    return Ok(new { ok, warning, message = msg + ": " + ex.Message });
+                }
+                catch (OperationCanceledException)
+                {
+                    // The overall GET timeout elapsed AFTER connecting: the host completed the TCP/TLS handshake but
+                    // is slow to answer a bare GET (some transcribe servers only handle POST). That is REACHABLE —
+                    // fall through and let the transcribe probe be the real test. A GET timeout is NOT "unreachable".
+                }
+            }
+
             using var content = new System.Net.Http.MultipartFormDataContent();
             var fileContent = new System.Net.Http.ByteArrayContent(wav);
             fileContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("audio/wav");
@@ -419,43 +459,47 @@ namespace WhisperSubs.Api
             }
 
             // Dedicated no-redirect client (v4.0.1): a real transcribe endpoint never 302s, so disabling
-            // auto-redirect blocks a redirect-based SSRF pivot to an arbitrary URL.
+            // auto-redirect blocks a redirect-based SSRF pivot to an arbitrary URL. Overall timeout is 30s (v4.1.1,
+            // up from 20s): reachability is already confirmed, so a timeout here means "reachable and it accepted the
+            // audio but the decode is slow" — surfaced as a warning (worker still usable), never a hard failure.
             using var handler = new System.Net.Http.SocketsHttpHandler
             {
                 AllowAutoRedirect = false,
                 ConnectTimeout = TimeSpan.FromSeconds(10)
             };
-            using var http = new System.Net.Http.HttpClient(handler) { Timeout = TimeSpan.FromSeconds(20) };
+            using var http = new System.Net.Http.HttpClient(handler) { Timeout = TimeSpan.FromSeconds(30) };
 
             var sw = System.Diagnostics.Stopwatch.StartNew();
             try
             {
                 using var resp = await http.SendAsync(probe);
                 sw.Stop();
-                if (resp.IsSuccessStatusCode)
-                {
-                    return Ok(new
-                    {
-                        ok = true,
-                        status = (int)resp.StatusCode,
-                        latencyMs = sw.ElapsedMilliseconds,
-                        message = $"OK — transcribed a test clip in {sw.ElapsedMilliseconds} ms."
-                    });
-                }
-
                 // Do NOT echo the upstream response body (SSRF response-disclosure) — status + latency only.
-                return Ok(new
-                {
-                    ok = false,
-                    status = (int)resp.StatusCode,
-                    latencyMs = sw.ElapsedMilliseconds,
-                    message = $"Endpoint responded HTTP {(int)resp.StatusCode} — not a working transcribe endpoint."
-                });
+                var status = (int)resp.StatusCode;
+                var (ok, warning, msg) = Controller.Workers.WorkerProbe.ClassifyProbeOutcome(reachable: true, httpStatus: status, timedOut: false);
+                // The 2xx result is a stem; append the measured round-trip so the admin sees how fast it was.
+                var message = (ok && !warning) ? (msg + " (" + sw.ElapsedMilliseconds + " ms).") : msg;
+                return Ok(new { ok, warning, status, latencyMs = sw.ElapsedMilliseconds, message });
+            }
+            catch (OperationCanceledException)
+            {
+                // Overall 30s timeout, and reachability already passed: reachable + accepted the audio, decode slow.
+                sw.Stop();
+                var (ok, warning, msg) = Controller.Workers.WorkerProbe.ClassifyProbeOutcome(reachable: true, httpStatus: null, timedOut: true);
+                return Ok(new { ok, warning, latencyMs = sw.ElapsedMilliseconds, message = msg });
+            }
+            catch (System.Net.Http.HttpRequestException ex)
+            {
+                // The connection dropped mid-transcribe (it was reachable a moment ago) — report as unreachable.
+                sw.Stop();
+                var (ok, warning, msg) = Controller.Workers.WorkerProbe.ClassifyProbeOutcome(reachable: false, httpStatus: null, timedOut: false);
+                return Ok(new { ok, warning, latencyMs = sw.ElapsedMilliseconds, message = msg + ": " + ex.Message });
             }
             catch (Exception ex)
             {
+                // Never throw — the endpoint contract is an always-shaped {ok, warning, ...} result.
                 sw.Stop();
-                return Ok(new { ok = false, latencyMs = sw.ElapsedMilliseconds, message = $"Unreachable: {ex.Message}" });
+                return Ok(new { ok = false, warning = false, latencyMs = sw.ElapsedMilliseconds, message = $"Unreachable: {ex.Message}" });
             }
         }
 
