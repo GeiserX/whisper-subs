@@ -78,6 +78,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
        fi \
     && rm -rf /var/lib/apt/lists/*
 
+# Silero VAD model, BAKED into the image so `--vad` works out of the box (the adapter turns
+# it on by default, matching the plugin's local whisper-cli path). It lives under
+# /opt/whisper-vad -- deliberately NOT under /models, which is a VOLUME / bind-mount in real
+# deployments and would SHADOW anything baked into it. Same version + URL the plugin's local
+# path defaults to (Setup/ModelCatalog.cs) and that whisper.cpp's own
+# models/download-vad-model.sh uses, so worker VAD matches local VAD. `curl -fL` fails on an
+# HTTP error (no 404 page saved) and follows the Hugging Face redirect; the size guard fails
+# the build on an empty/partial download. Override VAD_MODEL_URL / VAD_MODEL_FILE to bake a
+# different version (e.g. silero-v6.2.0) -- WHISPER_VAD_MODEL (below) tracks the filename.
+ARG VAD_MODEL_FILE=ggml-silero-v5.1.2.bin
+ARG VAD_MODEL_URL=https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin
+RUN mkdir -p /opt/whisper-vad \
+    && curl -fL --retry 3 --retry-delay 2 --output "/opt/whisper-vad/${VAD_MODEL_FILE}" "${VAD_MODEL_URL}" \
+    && _sz=$(stat -c %s "/opt/whisper-vad/${VAD_MODEL_FILE}" 2>/dev/null || echo 0) \
+    && echo "[build] VAD model ${VAD_MODEL_FILE}: ${_sz} bytes" \
+    && if [ "${_sz}" -lt 102400 ]; then \
+           echo "[build] ERROR: VAD model missing/too small (${_sz} bytes < 100 KiB) from ${VAD_MODEL_URL}" >&2; \
+           exit 1; \
+       fi
+
 # Non-root user; own the model cache so a named volume is writable on first run.
 #   groupadd -f -r render : create the `render` group so the compose's `group_add`
 #     resolves the NAME on this Debian base (which otherwise has no such group, making
@@ -107,7 +127,8 @@ ENV WHISPER_MODEL=large-v3-turbo-q5_0 \
     LISTEN_PORT=8080 \
     WHISPER_BACKEND_HOST=127.0.0.1 \
     WHISPER_BACKEND_PORT=8081 \
-    CONVERT=false
+    CONVERT=false \
+    WHISPER_VAD_MODEL=/opt/whisper-vad/${VAD_MODEL_FILE}
 
 EXPOSE 8080
 VOLUME ["/models"]
