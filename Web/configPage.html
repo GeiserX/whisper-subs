@@ -1740,7 +1740,8 @@
                 },
 
                 // Probes one row's endpoint via POST Workers/TestConnection; shows the server's
-                // message inline (green when ok, red otherwise) via textContent.
+                // message inline via textContent — green when verified, yellow when reachable-but-slow
+                // (ok && warning), red when unreachable/auth/HTTP error.
                 testWorker: function (row, btn) {
                     var result = row.querySelector('.wkTestResult');
                     var url = (row.querySelector('.wkUrl').value || '').trim();
@@ -1763,7 +1764,12 @@
                         if (result) {
                             // Server-provided message rendered via textContent (never innerHTML).
                             result.textContent = (r && r.message) ? r.message : ((r && r.ok) ? 'OK' : 'Failed');
-                            result.style.color = (r && r.ok) ? '#52B54B' : '#CC3333';
+                            // Three states from the {ok, warning} shape: ok && !warning = verified (green);
+                            // ok && warning = reachable but the test transcription was slow (yellow, still usable);
+                            // !ok = unreachable / auth failure / HTTP error (red).
+                            result.style.color = (r && r.ok)
+                                ? ((r && r.warning) ? '#CC7B19' : '#52B54B')
+                                : '#CC3333';
                         }
                     }).catch(function (err) {
                         if (result) {
