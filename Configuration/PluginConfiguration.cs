@@ -27,6 +27,17 @@ namespace WhisperSubs.Configuration
         public string DefaultLanguage { get; set; } = "auto";
 
         /// <summary>
+        /// When <see cref="DefaultLanguage"/> is "auto" and a file has multiple audio languages, controls
+        /// whether every audio-track language is transcribed (<see cref="AudioLanguageSelection.All"/>,
+        /// default — one <c>.&lt;lang&gt;.generated.srt</c> per language) or only the primary/default audio
+        /// track (<see cref="AudioLanguageSelection.PrimaryOnly"/>). Default All preserves existing behavior,
+        /// so an upgrade never changes what an install already produces. Has no effect when a specific
+        /// language is set (already one language) or when no audio language tags are found (a single whisper
+        /// auto-detect pass). Does not affect the English translation pass.
+        /// </summary>
+        public AudioLanguageSelection AudioLanguageSelection { get; set; } = AudioLanguageSelection.All;
+
+        /// <summary>
         /// Controls whether to generate full subtitles, forced-only subtitles, or both.
         /// </summary>
         [JsonConverter(typeof(SubtitleModeConverter))]
