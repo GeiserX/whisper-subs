@@ -409,3 +409,11 @@ Synthesize → propose approach → implement (likely: FT integration with direc
 ### Entry — v00 implemented (PR #130); M4-restart deferred (2 active viewers); bead 9gq filed (2026-07-09)
 - **whisper-subs-v00 (multi-audio toggle) — PR #130** feat/bead-v00-multi-audio @ 62c1d31: `AudioLanguageSelection` (All default / PrimaryOnly) + pure `SelectAudioLanguages` wired only into the auto=all `passLanguages` case; docs (README/CLAUDE.md/config UI); 961 tests, 0 warnings. Awaiting CI+CodeRabbit → merge.
 - **Sergio asked why the M4 isn't processing yet** (thought PauseOnPlayback-off = it should). Clarified: PauseOnPlayback IS off (generation runs during playback — S6 progressing on iGPUs); the M4 just needs a pool REBUILD which today only happens on Jellyfin restart. Filed **bead whisper-subs-9gq (P2): hot-add worker / rebuild pool on config change without a restart** (the real fix). M4-restart deferred by best judgment: 2 people just started movies (actively playing) — won't interrupt them while Sergio's away; the idle watcher stays armed.
+
+### Entry — /sergio-loop COMPLETE (2026-07-09)
+- **Mac mini M4 Metal worker**: built, verified (46× faster than iGPUs), launchd-persistent, in config, plugin TestConnection ok. Live activation ARMED (idle-gated restart watcher on watchtower) — fires when viewers stop.
+- **Bead 1t0 (auto-retry + lossless in-flight persistence)**: MERGED to v4-dev (#129), closed. Adversarially reviewed + 2 fixes (boot-loop bound, counter fix), CodeRabbit-clean, 949 tests.
+- **Bead v00 (AudioLanguageSelection toggle + multi-audio docs)**: MERGED to v4-dev (#130, 62c1d31), closed. 961 tests, CodeRabbit-clean.
+- **Bead meo (Mac mini)**: DELETE requested but blocked by bd tooling (v49→v53 migration on the remote-synced DB); not in the public repo anyway. Deferred (DEFERRED-QUESTIONS).
+- **Bead 9gq (hot-add worker without restart)**: filed (Sergio's follow-up) — future improvement, not part of this directive.
+- **Loop deactivated.** GATED on Sergio: the v4-dev→main RELEASE (1t0+v00 accumulated) + install on his Jellyfin; and forcing the M4 restart now (vs the armed idle watcher).
