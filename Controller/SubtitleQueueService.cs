@@ -403,6 +403,11 @@ namespace WhisperSubs.Controller
         [ExcludeFromCodeCoverage(Justification = "Requires BaseItem + Plugin.Instance for persistence")]
         public bool Enqueue(BaseItem item, string language, PriorityTier tier = PriorityTier.High, bool force = false)
         {
+            // De-dup invariant: Enqueue only READS _inFlight; the in-flight reservation happens once,
+            // at drain-entry (TryDequeuePriority → TryReserve), and every releaser lives in
+            // DispatchDrainAsync. So a failed/never-started drain leaves items in the lanes (pending,
+            // persisted), never orphaned in _inFlight — correctness here depends on PersistQueue
+            // swallowing (not propagating) its exceptions, which it does.
             var key = IdentityKey(item.Id, language);
 
             // Under _dispatchGate so the in-flight check and the lane-add are atomic with the dispatcher's
