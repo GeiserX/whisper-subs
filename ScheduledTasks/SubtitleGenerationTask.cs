@@ -112,7 +112,7 @@ namespace WhisperSubs.ScheduledTasks
             if (restored > 0)
             {
                 _logger.LogInformation("Draining {Count} restored priority items before auto-generation", restored);
-                await queue.DrainPriorityAsync(manager, pool, requirements, _logger, cancellationToken);
+                await queue.DrainPriorityAsync(manager, pool, requirements, config.JobMaxRetries, _logger, cancellationToken);
             }
 
             // Collect items — the query is fast (DB lookup), no bulk in-memory storage needed
@@ -240,7 +240,7 @@ namespace WhisperSubs.ScheduledTasks
                 if (queue.PriorityCount > 0)
                 {
                     _logger.LogInformation("Pausing auto-generation to process {Count} priority request(s)", queue.PriorityCount);
-                    await queue.DrainPriorityAsync(manager, pool, requirements, _logger, cancellationToken);
+                    await queue.DrainPriorityAsync(manager, pool, requirements, config.JobMaxRetries, _logger, cancellationToken);
                 }
 
                 var (item, libName) = allItems[i];
@@ -430,7 +430,7 @@ namespace WhisperSubs.ScheduledTasks
                     {
                         pool.Release(lease.Key);
                         _logger.LogInformation("Yielding worker slot to {Count} priority request(s) before the next swept item", queue.PriorityCount);
-                        await queue.DrainPriorityAsync(manager, pool, requirements, _logger, cancellationToken);
+                        await queue.DrainPriorityAsync(manager, pool, requirements, config.JobMaxRetries, _logger, cancellationToken);
                         lease = await pool.AcquireAsync(requirements, cancellationToken);
                     }
 

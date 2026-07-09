@@ -34,6 +34,14 @@ namespace WhisperSubs.Controller
         /// default is only a safe fallback.
         /// </summary>
         public PriorityTier Tier { get; init; } = PriorityTier.Medium;
+
+        /// <summary>
+        /// How many times this job has already been auto-re-queued after being killed (cancelled) or
+        /// failing. 0 for a fresh request. Bounded by <see cref="Configuration.PluginConfiguration.JobMaxRetries"/>
+        /// so a permanently-failing item is eventually given up on instead of looping forever. Persisted
+        /// to queue.json and restored, so the retry budget survives a restart. (whisper-subs-1t0.)
+        /// </summary>
+        public int RetryCount { get; init; }
     }
 
     public class QueueEntry
@@ -51,6 +59,32 @@ namespace WhisperSubs.Controller
         /// restore — NOT Critical(0), which a non-nullable int default would wrongly imply.
         /// </summary>
         public int? Tier { get; set; }
+
+        /// <summary>
+        /// Persisted retry counter (whisper-subs-1t0). A queue.json written before this feature has no
+        /// field, so it deserializes to 0 — the same "fresh job" state a new entry carries, which is
+        /// exactly right for a legacy restore.
+        /// </summary>
+        public int RetryCount { get; set; }
+    }
+
+    /// <summary>
+    /// The v2 (whisper-subs-1t0) on-disk shape of queue.json: a top-level object carrying BOTH the
+    /// pending lanes and the currently in-flight leases, so an item that was dequeued-and-running is no
+    /// longer lost on a restart. A pre-v2 queue.json is a bare <see cref="QueueEntry"/> array (no wrapper)
+    /// and is still read via the legacy fallback in <see cref="SubtitleQueueService.ParseQueueFile"/>.
+    /// </summary>
+    public class QueueFile
+    {
+        /// <summary>Schema version. 2 = this pending+in-flight object shape; a bare array is legacy v1.</summary>
+        public int Version { get; set; }
+
+        /// <summary>Items still waiting in the priority lanes, in dequeue order.</summary>
+        public List<QueueEntry> Pending { get; set; } = new List<QueueEntry>();
+
+        /// <summary>Leases that were dequeued and running when the snapshot was taken. On restore these
+        /// are re-enqueued as Pending (they were interrupted, not completed — redo them).</summary>
+        public List<QueueEntry> InFlight { get; set; } = new List<QueueEntry>();
     }
 
     public class SubtitleQueueService
@@ -65,8 +99,14 @@ namespace WhisperSubs.Controller
         private readonly PriorityLanes<SubtitleWorkItem> _lanes = new();
 
         // Keys currently being PROCESSED (dequeued, transcription running). Kept separate from the
-        // queued set so a re-request while an item is mid-transcription does not double-queue it.
-        private readonly ConcurrentDictionary<string, byte> _inFlight = new();
+        // queued set so a re-request while an item is mid-transcription does not double-queue it. The
+        // value is the full work item (whisper-subs-1t0) so an in-flight lease's identity/tier/language/
+        // force/retry-count is recoverable — PersistQueue writes it to queue.json, and RestoreQueue
+        // re-enqueues it as Pending after an interrupting restart, so a running item is never dropped.
+        // Nullable value: the low-level TryReserve(key) identity-only overload (tests / bare reservation)
+        // stores null, which PersistQueue skips; every real dispatch reserves WITH the item, so a value
+        // is never null in production.
+        private readonly ConcurrentDictionary<string, SubtitleWorkItem?> _inFlight = new();
 
         // Serialises the queue↔in-flight transition so the invariant "an identity is queued XOR in-flight"
         // holds atomically: the dispatcher's dequeue+reserve and Enqueue's in-flight-check+lane-add run
@@ -251,14 +291,82 @@ namespace WhisperSubs.Controller
                 Language = existing.Language,
                 Completion = existing.Completion ?? incoming.Completion,
                 Force = existing.Force || incoming.Force,
-                Tier = PriorityScheduling.Stronger(existing.Tier, incoming.Tier)
+                Tier = PriorityScheduling.Stronger(existing.Tier, incoming.Tier),
+                // Keep the LARGER retry count so a concurrent fresh request (RetryCount 0) can never reset
+                // the retry budget of an item that is already being retried — the bound only ever tightens.
+                RetryCount = System.Math.Max(existing.RetryCount, incoming.RetryCount)
             };
 
-        // Reserve a key as in-flight (being processed); returns false if already reserved.
-        internal bool TryReserve(string key) => _inFlight.TryAdd(key, 0);
+        // Reserve a key as in-flight (being processed), retaining the work item so the lease is persistable
+        // and re-queueable on an interrupted restart; returns false if already reserved.
+        internal bool TryReserve(string key, SubtitleWorkItem? item) => _inFlight.TryAdd(key, item);
+
+        // Identity-only reservation (no retained work item) — used by the low-level dedup tests and any
+        // caller that only needs to claim the identity. Stores null, which PersistQueue skips.
+        internal bool TryReserve(string key) => TryReserve(key, null);
 
         // Release after processing (or on failure/cancel) so the same work can be requested again later.
         internal void Release(string key) => _inFlight.TryRemove(key, out _);
+
+        /// <summary>
+        /// Pure retry decision (whisper-subs-1t0): an item that has already been retried
+        /// <paramref name="retryCount"/> times may be retried again only while it is strictly under the
+        /// configured cap. <paramref name="maxRetries"/> &lt;= 0 disables retry entirely (0 = the pre-feature
+        /// "drop a killed/failed job" behaviour), so auto-retry is opt-out-able.
+        /// </summary>
+        internal static bool ShouldRetry(int retryCount, int maxRetries) => retryCount < maxRetries;
+
+        /// <summary>
+        /// Cancel/failure transition for an in-flight item. Under <see cref="_dispatchGate"/> — the SAME
+        /// lock <see cref="Enqueue"/> and the dequeue+reserve take — it always leaves the in-flight set,
+        /// and, when the item still has retry budget (<see cref="ShouldRetry"/>), atomically re-adds it to
+        /// the lanes at its original tier with RetryCount+1. This is the exact reverse of
+        /// <see cref="TryDequeuePriority"/>'s dequeue+reserve: doing the release and the lane-add under one
+        /// gate means the identity is never simultaneously in-flight AND queued, and a concurrent
+        /// re-request merges (via <see cref="MergeWork"/>) rather than duplicating. Returns true if the
+        /// item was re-queued, false if the retry budget was spent and it was dropped. Persists either way
+        /// so the transition is durable.
+        /// </summary>
+        internal bool RetryOrRelease(SubtitleWorkItem wi, int maxRetries)
+        {
+            var key = IdentityKey(wi.Item.Id, wi.Language);
+            lock (_dispatchGate)
+            {
+                var requeue = ShouldRetry(wi.RetryCount, maxRetries);
+                Release(key);
+                if (requeue)
+                {
+                    _lanes.Enqueue(key, (int)wi.Tier, new SubtitleWorkItem
+                    {
+                        Item = wi.Item,
+                        Language = wi.Language,
+                        Completion = null,   // any awaited completion was already signalled by the caller
+                        Force = wi.Force,
+                        Tier = wi.Tier,
+                        RetryCount = wi.RetryCount + 1
+                    }, MergeWork);
+                }
+                PersistQueue();
+                return requeue;
+            }
+        }
+
+        /// <summary>
+        /// Terminally drop an in-flight identity that reached a final state (completed successfully, or
+        /// given up on after exhausting retries, or unservable by any worker) and persist so queue.json no
+        /// longer lists it as in-flight — otherwise a crash would restore a finished item as pending. Under
+        /// the gate for a lanes+in-flight snapshot consistent with enqueue/dequeue. The RETRY path never
+        /// uses this — it moves the item back to the lanes (see <see cref="RetryOrRelease"/>).
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Release + PersistQueue (requires Plugin.Instance) — persistence orchestration")]
+        private void ReleaseInFlightAndPersist(string key)
+        {
+            lock (_dispatchGate)
+            {
+                Release(key);
+                PersistQueue();
+            }
+        }
 
         [ExcludeFromCodeCoverage(Justification = "Requires Plugin.Instance")]
         private static string QueueFilePath
@@ -311,11 +419,12 @@ namespace WhisperSubs.Controller
             {
                 if (_lanes.TryDequeue(out var dequeued) && dequeued != null)
                 {
-                    // Reserve it in-flight. Honour the result: TryReserve returns false only if the identity
-                    // is already in-flight, which under _dispatchGate cannot happen for a freshly-dequeued
-                    // item — but if it ever did, drop this copy rather than double-dispatch. queue.json is
-                    // persisted either way (the item left the lanes).
-                    var reserved = TryReserve(IdentityKey(dequeued.Item.Id, dequeued.Language));
+                    // Reserve it in-flight, retaining the work item so the lease is persistable/recoverable.
+                    // Honour the result: TryReserve returns false only if the identity is already in-flight,
+                    // which under _dispatchGate cannot happen for a freshly-dequeued item — but if it ever
+                    // did, drop this copy rather than double-dispatch. queue.json is persisted either way
+                    // (the item left the lanes).
+                    var reserved = TryReserve(IdentityKey(dequeued.Item.Id, dequeued.Language), dequeued);
                     PersistQueue();
                     if (reserved)
                     {
@@ -340,11 +449,19 @@ namespace WhisperSubs.Controller
             try
             {
                 var json = File.ReadAllText(path);
-                var entries = JsonSerializer.Deserialize<List<QueueEntry>>(json);
-                if (entries == null || entries.Count == 0) return 0;
+
+                // Parse either shape: v2 = { Version, Pending[], InFlight[] }; legacy v1 = a bare
+                // QueueEntry[]. The interrupted in-flight leases are restored as Pending too — they were
+                // running (not completed) when the snapshot was taken, so they must be redone; an
+                // already-satisfied one is a cheap no-op thanks to GenerateSubtitleAsync's existing-file
+                // skip (#82). Pending is restored first so, if the same identity appears in both lists
+                // (it should not, but be safe), the lane dedup collapses them and we never double-restore.
+                var (pending, inFlight) = ParseQueueFile(json);
+                var total = pending.Count + inFlight.Count;
+                if (total == 0) return 0;
 
                 int restored = 0;
-                foreach (var entry in entries)
+                foreach (var entry in pending.Concat(inFlight))
                 {
                     if (!System.Guid.TryParse(entry.ItemId, out var guid)) continue;
                     var item = libraryManager.GetItemById(guid);
@@ -354,20 +471,25 @@ namespace WhisperSubs.Controller
                     var key = IdentityKey(item.Id, entry.Language);
 
                     // A queue.json with the same (item, language) more than once must not re-run every
-                    // copy — de-dup the restored set too, keeping the strongest tier / OR'd force.
+                    // copy — de-dup the restored set too, keeping the strongest tier / OR'd force / larger
+                    // retry count. The retry budget carries over so a chronically-failing item is not given
+                    // a fresh set of attempts on every restart.
                     var outcome = _lanes.Enqueue(key, (int)tier, new SubtitleWorkItem
                     {
                         Item = item,
                         Language = entry.Language,
                         Completion = null,
                         Force = entry.Force,
-                        Tier = tier
+                        Tier = tier,
+                        RetryCount = entry.RetryCount
                     }, MergeWork);
 
                     if (outcome == LaneEnqueueOutcome.Added) restored++;
                 }
 
-                logger.LogInformation("[Queue] Restored {Count} items from disk (of {Total} saved)", restored, entries.Count);
+                logger.LogInformation(
+                    "[Queue] Restored {Count} items from disk ({Pending} pending + {InFlight} interrupted in-flight re-queued, of {Total} saved)",
+                    restored, pending.Count, inFlight.Count, total);
                 return restored;
             }
             catch (System.Exception ex)
@@ -375,6 +497,32 @@ namespace WhisperSubs.Controller
                 logger.LogWarning(ex, "[Queue] Failed to restore queue from {Path}", path);
                 return 0;
             }
+        }
+
+        /// <summary>
+        /// Parse queue.json in either shape (whisper-subs-1t0). v2 is a top-level object
+        /// <c>{ Version, Pending[], InFlight[] }</c>; legacy v1 is a bare <see cref="QueueEntry"/> array
+        /// (no wrapper) whose entries are all pending. Disambiguated by the first non-whitespace character
+        /// (<c>[</c> = array = v1). Pure (string in, two lists out) so the version dispatch and the legacy
+        /// fallback are unit-testable without Plugin.Instance / a library. An empty document yields two
+        /// empty lists; a malformed one throws <see cref="JsonException"/> (caught + logged by the caller,
+        /// preserving the pre-existing "warn on a corrupt queue.json" behaviour).
+        /// </summary>
+        internal static (List<QueueEntry> Pending, List<QueueEntry> InFlight) ParseQueueFile(string json)
+        {
+            if (string.IsNullOrWhiteSpace(json))
+                return (new List<QueueEntry>(), new List<QueueEntry>());
+
+            if (json.TrimStart().StartsWith('['))
+            {
+                var legacy = JsonSerializer.Deserialize<List<QueueEntry>>(json) ?? new List<QueueEntry>();
+                return (legacy, new List<QueueEntry>());
+            }
+
+            var file = JsonSerializer.Deserialize<QueueFile>(json);
+            return file == null
+                ? (new List<QueueEntry>(), new List<QueueEntry>())
+                : (file.Pending ?? new List<QueueEntry>(), file.InFlight ?? new List<QueueEntry>());
         }
 
         [ExcludeFromCodeCoverage(Justification = "Requires Plugin.Instance for file path")]
@@ -385,15 +533,30 @@ namespace WhisperSubs.Controller
 
             try
             {
-                var entries = _lanes.Snapshot().Select(e => new QueueEntry
+                // Persist BOTH the pending lanes AND the in-flight leases (whisper-subs-1t0) so a job that
+                // was dequeued-and-running survives a restart instead of being silently dropped. Pending
+                // tier comes from the lane (authoritative for position); in-flight tier from the work item.
+                var pending = _lanes.Snapshot().Select(e => new QueueEntry
                 {
                     ItemId = e.Value.Item.Id.ToString("N"),
                     Language = e.Value.Language,
                     Force = e.Value.Force,
-                    Tier = e.Tier
+                    Tier = e.Tier,
+                    RetryCount = e.Value.RetryCount
                 }).ToList();
 
-                var json = JsonSerializer.Serialize(entries);
+                var inFlight = _inFlight.Values
+                    .Where(w => w != null)
+                    .Select(w => new QueueEntry
+                    {
+                        ItemId = w!.Item.Id.ToString("N"),
+                        Language = w.Language,
+                        Force = w.Force,
+                        Tier = (int)w.Tier,
+                        RetryCount = w.RetryCount
+                    }).ToList();
+
+                var json = JsonSerializer.Serialize(new QueueFile { Version = 2, Pending = pending, InFlight = inFlight });
                 lock (_fileLock)
                 {
                     // Atomic write (v4.0.1): serialize to a unique temp file then File.Move(overwrite) so a
@@ -452,7 +615,7 @@ namespace WhisperSubs.Controller
                         var pool = GetPool(config, loggerFactory, forTask: false);
                         var requirements = WorkerJob.Requirements(config.SubtitleMode, config.EnableTranslation);
                         started = true;
-                        await DispatchDrainAsync(manager, pool, requirements, countProcessed: true, logger, cancellationToken);
+                        await DispatchDrainAsync(manager, pool, requirements, countProcessed: true, config.JobMaxRetries, logger, cancellationToken);
                     }
                     catch (System.Exception ex)
                     {
@@ -495,6 +658,7 @@ namespace WhisperSubs.Controller
             WorkerPool pool,
             JobRequirements requirements,
             bool countProcessed,
+            int maxRetries,
             ILogger logger,
             CancellationToken cancellationToken)
         {
@@ -513,7 +677,10 @@ namespace WhisperSubs.Controller
                     _lastError = $"{unservable.Item.Name}: no configured worker can serve this job";
                     unservable.Completion?.TrySetException(
                         new System.InvalidOperationException("No configured worker can serve this job"));
-                    Release(IdentityKey(unservable.Item.Id, unservable.Language));
+                    // Deterministic fail-fast (broken config), NOT a transient kill — do not retry, just
+                    // drop it. Release AND persist so the interrupted-in-flight snapshot on disk no longer
+                    // lists it (otherwise it would restore as pending and re-fail every startup).
+                    ReleaseInFlightAndPersist(IdentityKey(unservable.Item.Id, unservable.Language));
                     logger.LogError("[Dispatch] No capable worker for {ItemName} — skipping", unservable.Item.Name);
                 }
                 _currentItemName = null;
@@ -551,16 +718,30 @@ namespace WhisperSubs.Controller
                     // the slot. Cancellation is observed INSIDE, via the token passed to the transcription.
                     running.Add(Task.Run(async () =>
                     {
+                        var key = IdentityKey(wi.Item.Id, wi.Language);
                         try
                         {
                             await manager.GenerateSubtitleAsync(
                                 wi.Item, l.Worker.Provider, wi.Language, cancellationToken, wi.Force);
                             if (countProcessed) Interlocked.Increment(ref _processedCount);
                             wi.Completion?.TrySetResult(true);
+                            // Completed — release the in-flight lease and persist so a crash can't restore
+                            // a finished item as pending. (whisper-subs-1t0.)
+                            ReleaseInFlightAndPersist(key);
                         }
                         catch (System.OperationCanceledException)
                         {
+                            // Cancelled = task stopped or Jellyfin restart mid-transcription. This is the
+                            // very case that used to silently drop an item (the #1 bug). Re-queue it for a
+                            // bounded retry instead of losing it; RetryOrRelease moves it lanes⇄in-flight
+                            // atomically under the gate (never both, never neither).
                             wi.Completion?.TrySetCanceled();
+                            if (RetryOrRelease(wi, maxRetries))
+                                logger.LogWarning("[Dispatch] {ItemName} was cancelled (task stopped / restart) — re-queued to retry (retry {Retry} of {Max})",
+                                    wi.Item.Name, wi.RetryCount + 1, maxRetries);
+                            else
+                                logger.LogWarning("[Dispatch] Giving up on {ItemName} after {Attempts} attempt(s) — cancelled and out of retries",
+                                    wi.Item.Name, wi.RetryCount + 1);
                         }
                         catch (System.Exception ex)
                         {
@@ -569,10 +750,20 @@ namespace WhisperSubs.Controller
                             _lastError = $"{wi.Item.Name}: {ex.Message}";
                             wi.Completion?.TrySetException(ex);
                             logger.LogError(ex, "[Dispatch] Failed: {ItemName}", wi.Item.Name);
+                            // Transient failure (whisper crash, unreachable worker, …) — bounded auto-retry.
+                            if (RetryOrRelease(wi, maxRetries))
+                                logger.LogWarning("[Dispatch] {ItemName} failed — re-queued to retry (retry {Retry} of {Max})",
+                                    wi.Item.Name, wi.RetryCount + 1, maxRetries);
+                            else
+                                logger.LogWarning("[Dispatch] Giving up on {ItemName} after {Attempts} attempt(s) — it keeps failing",
+                                    wi.Item.Name, wi.RetryCount + 1);
                         }
                         finally
                         {
-                            Release(IdentityKey(wi.Item.Id, wi.Language));
+                            // Only the worker SLOT is freed here (always). The in-flight (item,language)
+                            // reservation is released along the success/retry/drop paths above — NOT here —
+                            // so a re-queued item that was already re-dequeued+reserved by another slot is
+                            // not wrongly un-reserved (which would let it dispatch twice).
                             pool.Release(l.Key, wi.Item.Name);
                         }
                     }));
@@ -604,12 +795,13 @@ namespace WhisperSubs.Controller
             SubtitleManager manager,
             WorkerPool pool,
             JobRequirements requirements,
+            int maxRetries,
             ILogger logger,
             CancellationToken cancellationToken)
         {
             // countProcessed:false — the old priority drain did not add to _processedCount (only the
             // background loop did), so the /Queue `processed` stat stays byte-identical to pre-v4.
-            await DispatchDrainAsync(manager, pool, requirements, countProcessed: false, logger, cancellationToken);
+            await DispatchDrainAsync(manager, pool, requirements, countProcessed: false, maxRetries, logger, cancellationToken);
             _currentItemName = null;
         }
     }
