@@ -37,28 +37,85 @@ namespace WhisperSubs.Controller.Workers
         {
             if (workers == null) throw new ArgumentNullException(nameof(workers));
 
+            var keys = ComputeKeys(workers);
             var capacity = 0;
             for (var i = 0; i < workers.Count; i++)
             {
-                var w = workers[i];
-                // Guarantee a unique routing key even if two configured workers collide on Id — a
-                // duplicate would otherwise make the reverse Id→worker lookup ambiguous. The key is only
-                // used internally for slot accounting; WorkerSlot.Id still carries it for the deterministic
-                // ordinal tiebreak in WorkerScheduling.Pick.
-                var key = _byKey.ContainsKey(w.Id) ? $"{w.Id}#{i}" : w.Id;
-                _keys.Add(key);
-                _byKey[key] = w;
-                _inFlight[key] = 0;
-                _current[key] = new List<string>();
-                capacity += w.Capabilities.MaxConcurrency < 1 ? 1 : w.Capabilities.MaxConcurrency;
+                InitWorkerSlot(keys[i], workers[i]);
+                capacity += Cap(workers[i]);
             }
 
             TotalCapacity = capacity < 1 ? 1 : capacity;
-            _slots = new SemaphoreSlim(TotalCapacity, TotalCapacity);
+            // Single-arg (UNCAPPED) SemaphoreSlim — deliberately NOT the two-arg (max-capped) form: Reconcile
+            // grows the live pool via _slots.Release(delta), which the two-arg ctor would reject with
+            // SemaphoreFullException once past its initial max. Normal dispatch keeps Acquire/Release strictly
+            // 1:1, so it can never over-release past TotalCapacity — only Reconcile ever grows it. (whisper-subs-9gq.)
+            _slots = new SemaphoreSlim(TotalCapacity);
         }
 
-        /// <summary>Summed MaxConcurrency across all workers (≥1): how many jobs may run at once.</summary>
-        public int TotalCapacity { get; }
+        /// <summary>Summed MaxConcurrency across all workers (≥1): how many jobs may run at once. Grows when
+        /// <see cref="Reconcile"/> hot-adds a worker to the live pool. (whisper-subs-9gq.)</summary>
+        public int TotalCapacity { get; private set; }
+
+        // Initialise one worker's per-slot state (routing key → descriptor + zeroed in-flight / current-items).
+        // ONE source of truth shared by the constructor (object not yet published) and Reconcile (under _gate),
+        // so a hot-added worker is set up byte-identically to a constructor-time one. (whisper-subs-9gq.)
+        private void InitWorkerSlot(string key, ITranscriptionWorker w)
+        {
+            _keys.Add(key);
+            _byKey[key] = w;
+            _inFlight[key] = 0;
+            _current[key] = new List<string>();
+        }
+
+        // One worker's slot contribution: MaxConcurrency floored to 1 (a nonsense concurrency still gets one slot).
+        private static int Cap(ITranscriptionWorker w)
+            => w.Capabilities.MaxConcurrency < 1 ? 1 : w.Capabilities.MaxConcurrency;
+
+        // Canonical, collision-safe routing keys for a worker list — the SAME scheme the constructor and
+        // Reconcile share: the first worker with a given Id keeps its Id; a later duplicate gets "{Id}#{index}"
+        // so the reverse key→worker lookup stays unambiguous (the key is internal slot accounting; WorkerSlot.Id
+        // still carries it for the deterministic ordinal tiebreak in WorkerScheduling.Pick). Computed against a
+        // FRESH seen-set (independent of the live pool) so Reconcile can diff the result against the current
+        // keys. (whisper-subs-9gq.)
+        private static List<string> ComputeKeys(IReadOnlyList<ITranscriptionWorker> workers)
+        {
+            var keys = new List<string>(workers.Count);
+            var seen = new HashSet<string>();
+            for (var i = 0; i < workers.Count; i++)
+            {
+                var id = workers[i].Id;
+                var key = seen.Contains(id) ? $"{id}#{i}" : id;
+                keys.Add(key);
+                seen.Add(key);
+            }
+            return keys;
+        }
+
+        /// <summary>
+        /// Pure grow-only diff (whisper-subs-9gq), factored out of <see cref="Reconcile"/> so the add / keep /
+        /// ignore-removal decision is unit-testable without a live pool. Given the pool's current routing keys
+        /// and a desired worker list, returns the desired keys NOT yet present (to ADD) and the current keys
+        /// absent from desired (REMOVED — reported for observability but intentionally NOT acted on by the
+        /// grow-only reconcile). Uses the SAME collision-safe key scheme as the constructor via <see cref="ComputeKeys"/>.
+        /// </summary>
+        internal static (IReadOnlyList<string> Added, IReadOnlyList<string> Removed) DiffWorkers(
+            IReadOnlyCollection<string> currentKeys, IReadOnlyList<ITranscriptionWorker> desired)
+        {
+            var current = new HashSet<string>(currentKeys);
+            var desiredKeys = ComputeKeys(desired);
+            var desiredSet = new HashSet<string>(desiredKeys);
+
+            var added = new List<string>();
+            foreach (var k in desiredKeys)
+                if (!current.Contains(k)) added.Add(k);
+
+            var removed = new List<string>();
+            foreach (var k in currentKeys)
+                if (!desiredSet.Contains(k)) removed.Add(k);
+
+            return (added, removed);
+        }
 
         /// <summary>Number of workers in the pool.</summary>
         public int WorkerCount => _keys.Count;
@@ -188,6 +245,50 @@ namespace WhisperSubs.Controller.Workers
                     _inFlight[leaseKey] = n - 1;
             }
             _slots.Release();
+        }
+
+        /// <summary>
+        /// Hot-adds newly-configured workers to the LIVE pool without a restart (whisper-subs-9gq) — the
+        /// "add a worker mid-backlog" case (e.g. a just-provisioned Mac mini). GROW-ONLY: every worker in
+        /// <paramref name="desired"/> not already present is added (its per-slot state initialised exactly as
+        /// the constructor does) and the backpressure semaphore is grown by the added capacity, so the new
+        /// slot(s) become dispatchable immediately — even while a drain is in flight. Workers already in the
+        /// pool are LEFT UNTOUCHED: their in-flight counts and "what's running" lists survive, so no running
+        /// job is disturbed. A worker that DISAPPEARED from the config is deliberately NOT removed here — live
+        /// removal needs permit-shrink accounting that is out of scope for this change; a removed worker simply
+        /// stops receiving new jobs on the next idle <c>GetPool</c> rebuild. Returns the resulting worker count.
+        ///
+        /// Concurrency: the map mutation runs under <see cref="_gate"/> — the SAME lock <see cref="PickLocked"/>
+        /// and <see cref="Release"/> take — so a dispatcher observes the old-or-new worker set atomically, never
+        /// a partial one. The semaphore is grown AFTER the maps are mutated and OUTSIDE the lock, so a waiter
+        /// woken by the new permit is guaranteed to see the added worker when it re-enters PickLocked.
+        /// </summary>
+        public int Reconcile(IReadOnlyList<ITranscriptionWorker> desired)
+        {
+            if (desired == null) throw new ArgumentNullException(nameof(desired));
+
+            var addedPermits = 0;
+            int workerCount;
+            lock (_gate)
+            {
+                var desiredKeys = ComputeKeys(desired);
+                for (var i = 0; i < desired.Count; i++)
+                {
+                    var key = desiredKeys[i];
+                    if (_byKey.ContainsKey(key)) continue;   // already live → leave its in-flight state alone
+                    InitWorkerSlot(key, desired[i]);
+                    var cap = Cap(desired[i]);
+                    TotalCapacity += cap;
+                    addedPermits += cap;
+                }
+                workerCount = _keys.Count;
+            }
+
+            // Release the added permits OUTSIDE _gate (never release inside a lock). The uncapped semaphore
+            // makes Release(delta) legal; the map-add-BEFORE-release ordering means the woken waiter sees the
+            // newly-added workers in PickLocked.
+            if (addedPermits > 0) _slots.Release(addedPermits);
+            return workerCount;
         }
 
         // Caller holds _gate. Snapshots each worker as a WorkerSlot (keyed by the unique routing key), asks
