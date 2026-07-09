@@ -79,4 +79,67 @@ public class WorkerSignatureTests
             SubtitleQueueService.ComputeWorkersSignature(twoNoise),
             SubtitleQueueService.ComputeWorkersSignature(oneNoise));
     }
+
+    [Fact]
+    public void Signature_TwoEqualWorkerConfigs_ProduceEqualSignature_SoDoubleSaveIsNoOp()
+    {
+        // Double-save no-op: two separately-built but value-equal configs must yield the SAME signature, so a
+        // repeated config save with nothing changed skips the provider-constructing rebuild in ReconcileWorkers.
+        var a = new PluginConfiguration();
+        a.Workers.Add(new WhisperWorker { Id = "a", ApiUrl = "http://x:8080", MaxConcurrency = 2, CostWeight = 1.5 });
+        a.Workers.Add(new WhisperWorker { Id = "b", ApiUrl = "http://y:9090", MaxConcurrency = 1 });
+
+        var b = new PluginConfiguration();
+        b.Workers.Add(new WhisperWorker { Id = "a", ApiUrl = "http://x:8080", MaxConcurrency = 2, CostWeight = 1.5 });
+        b.Workers.Add(new WhisperWorker { Id = "b", ApiUrl = "http://y:9090", MaxConcurrency = 1 });
+
+        Assert.Equal(
+            SubtitleQueueService.ComputeWorkersSignature(a),
+            SubtitleQueueService.ComputeWorkersSignature(b));
+    }
+
+    [Fact]
+    public void Signature_IsOrderInsensitive_RowReorderProducesSameSignature()
+    {
+        // L1: merely reordering worker rows must NOT change the signature (else a no-op save runs a needless,
+        // HttpClient-churning rebuild). Same workers, different row order → identical signature.
+        var ab = new PluginConfiguration();
+        ab.Workers.Add(new WhisperWorker { Id = "a", ApiUrl = "http://x:8080", MaxConcurrency = 2 });
+        ab.Workers.Add(new WhisperWorker { Id = "b", ApiUrl = "http://y:9090", MaxConcurrency = 1 });
+
+        var ba = new PluginConfiguration();
+        ba.Workers.Add(new WhisperWorker { Id = "b", ApiUrl = "http://y:9090", MaxConcurrency = 1 });
+        ba.Workers.Add(new WhisperWorker { Id = "a", ApiUrl = "http://x:8080", MaxConcurrency = 2 });
+
+        Assert.Equal(
+            SubtitleQueueService.ComputeWorkersSignature(ab),
+            SubtitleQueueService.ComputeWorkersSignature(ba));
+    }
+
+    [Fact]
+    public void Signature_OrderInsensitive_StillChangesOnRealEdits()
+    {
+        // L1 guard: order-insensitivity must not swallow a REAL change — a url/concurrency edit or an added
+        // worker still flips the signature so ReconcileWorkers rebuilds.
+        var baseCfg = new PluginConfiguration();
+        baseCfg.Workers.Add(new WhisperWorker { Id = "a", ApiUrl = "http://x:8080", MaxConcurrency = 2 });
+        baseCfg.Workers.Add(new WhisperWorker { Id = "b", ApiUrl = "http://y:9090", MaxConcurrency = 1 });
+        var baseSig = SubtitleQueueService.ComputeWorkersSignature(baseCfg);
+
+        var urlChanged = new PluginConfiguration();
+        urlChanged.Workers.Add(new WhisperWorker { Id = "a", ApiUrl = "http://x:8080", MaxConcurrency = 2 });
+        urlChanged.Workers.Add(new WhisperWorker { Id = "b", ApiUrl = "http://CHANGED:9090", MaxConcurrency = 1 });
+        Assert.NotEqual(baseSig, SubtitleQueueService.ComputeWorkersSignature(urlChanged));
+
+        var concurrencyChanged = new PluginConfiguration();
+        concurrencyChanged.Workers.Add(new WhisperWorker { Id = "a", ApiUrl = "http://x:8080", MaxConcurrency = 4 });
+        concurrencyChanged.Workers.Add(new WhisperWorker { Id = "b", ApiUrl = "http://y:9090", MaxConcurrency = 1 });
+        Assert.NotEqual(baseSig, SubtitleQueueService.ComputeWorkersSignature(concurrencyChanged));
+
+        var added = new PluginConfiguration();
+        added.Workers.Add(new WhisperWorker { Id = "a", ApiUrl = "http://x:8080", MaxConcurrency = 2 });
+        added.Workers.Add(new WhisperWorker { Id = "b", ApiUrl = "http://y:9090", MaxConcurrency = 1 });
+        added.Workers.Add(new WhisperWorker { Id = "c", ApiUrl = "http://z:7070", MaxConcurrency = 1 });
+        Assert.NotEqual(baseSig, SubtitleQueueService.ComputeWorkersSignature(added));
+    }
 }

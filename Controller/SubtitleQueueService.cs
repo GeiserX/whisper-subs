@@ -156,7 +156,9 @@ namespace WhisperSubs.Controller
                 var otherConsumerIdle = forTask ? _isDraining == 0 : _taskIsRunning == 0;
                 if (_pool == null || (otherConsumerIdle && _pool.ActiveJobs == 0))
                 {
-                    _pool = new WorkerPool(WorkerRegistry.BuildWorkers(config, loggerFactory));
+                    _pool = new WorkerPool(
+                        WorkerRegistry.BuildWorkers(config, loggerFactory),
+                        loggerFactory.CreateLogger<WorkerPool>());
                     // Keep the reconcile signature in step with the config the live pool was just built from,
                     // so a subsequent unchanged config save is a no-op in ReconcileWorkers. (whisper-subs-9gq.)
                     _workersSignature = ComputeWorkersSignature(config);
@@ -176,6 +178,13 @@ namespace WhisperSubs.Controller
         /// workers-signature comparison skips the (provider-constructing) rebuild when the worker set is
         /// unchanged, so an unrelated config save does not churn HttpClients. Returns the live worker count.
         /// </summary>
+        /// <remarks>
+        /// GROW-ONLY (see <see cref="WorkerPool.Reconcile"/>): a newly-added worker joins the live drain
+        /// immediately, but REMOVING a worker — or EDITING the URL/Id of an existing one — takes effect only on
+        /// the next idle <see cref="GetPool"/> rebuild or a restart. Editing the URL of a blank-Id worker
+        /// re-keys it, so both the old and edited worker run until that rebuild. The added / removed workers are
+        /// logged by <see cref="WorkerPool.Reconcile"/>.
+        /// </remarks>
         [ExcludeFromCodeCoverage(Justification = "Builds providers from config via WorkerRegistry — orchestration; the signature (ComputeWorkersSignature) and WorkerPool.Reconcile are unit-tested")]
         public int ReconcileWorkers(PluginConfiguration config, ILoggerFactory loggerFactory)
         {
@@ -221,17 +230,21 @@ namespace WhisperSubs.Controller
 
             if (source == WorkerSource.ExplicitList && config.Workers != null)
             {
+                // Collect each contributing row's segment, then append them SORTED (whisper-subs-9gq L1) so that
+                // merely reordering worker rows in the config does not flip the signature — which would run a
+                // needless no-op provider rebuild. Same fields/format as before; only per-row ordering is stable.
+                var segments = new List<string>();
                 foreach (var w in config.Workers)
                 {
                     if (!w.Enabled || string.IsNullOrWhiteSpace(w.ApiUrl)) continue;
                     var id = string.IsNullOrWhiteSpace(w.Id) ? w.ApiUrl : w.Id;
-                    sb.Append("w[").Append(id).Append('|')
-                      .Append(w.ApiUrl.Trim()).Append('|')
-                      .Append((w.Model ?? string.Empty).Trim()).Append('|')
-                      .Append(w.MaxConcurrency < 1 ? 1 : w.MaxConcurrency).Append('|')
-                      .Append(w.CostWeight.ToString(System.Globalization.CultureInfo.InvariantCulture)).Append('|')
-                      .Append(w.CanTranslate).Append("];");
+                    segments.Add(
+                        $"w[{id}|{w.ApiUrl.Trim()}|{(w.Model ?? string.Empty).Trim()}|" +
+                        $"{(w.MaxConcurrency < 1 ? 1 : w.MaxConcurrency)}|" +
+                        $"{w.CostWeight.ToString(System.Globalization.CultureInfo.InvariantCulture)}|{w.CanTranslate}];");
                 }
+                foreach (var seg in segments.OrderBy(s => s, System.StringComparer.Ordinal))
+                    sb.Append(seg);
             }
             else if (source == WorkerSource.LegacyRemote)
             {

@@ -171,4 +171,23 @@ public class WorkerPoolReconcileTests
         Assert.Contains("dup", added);
         Assert.Contains("dup#1", added);
     }
+
+    [Fact]
+    public void Reconcile_ShrinkingDesiredSet_LeavesExistingWorkersAndCapacityIntact()
+    {
+        // M2/M3 wiring (whisper-subs-9gq): Reconcile now diffs the desired set, but stays GROW-ONLY — a worker
+        // dropped from 'desired' must NOT be removed or shrink capacity (it is reported for observability only;
+        // it stays live until the next idle rebuild / restart). Proves the (now-wired) DiffWorkers 'removed'
+        // path does not disturb existing workers or the concurrency ceiling.
+        var pool = new WorkerPool(new[] { Worker("a", 1), Worker("b", 2) });
+        Assert.Equal(2, pool.WorkerCount);
+        Assert.Equal(3, pool.TotalCapacity);
+
+        var count = pool.Reconcile(new[] { Worker("a", 1) });   // "b" dropped from desired
+
+        Assert.Equal(2, count);
+        Assert.Equal(2, pool.WorkerCount);                       // "b" still live (grow-only)
+        Assert.Equal(3, pool.TotalCapacity);                     // capacity unchanged — no shrink
+        Assert.Contains(pool.Snapshot(), s => s.Id == "b");
+    }
 }

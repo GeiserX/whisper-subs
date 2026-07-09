@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace WhisperSubs.Controller.Workers
 {
@@ -32,10 +34,14 @@ namespace WhisperSubs.Controller.Workers
         // sees "what's running where" (a worker with MaxConcurrency > 1 can hold several). (v4.0.)
         private readonly Dictionary<string, List<string>> _current = new();
         private readonly SemaphoreSlim _slots;
+        // Production passes a real logger (SubtitleQueueService.GetPool); the unit tests construct the pool
+        // without one (NullLogger). Used for the diagnostic over-release tripwire and hot-add / removal logging.
+        private readonly ILogger _logger;
 
-        public WorkerPool(IReadOnlyList<ITranscriptionWorker> workers)
+        public WorkerPool(IReadOnlyList<ITranscriptionWorker> workers, ILogger? logger = null)
         {
             if (workers == null) throw new ArgumentNullException(nameof(workers));
+            _logger = logger ?? NullLogger.Instance;
 
             var keys = ComputeKeys(workers);
             var capacity = 0;
@@ -211,7 +217,7 @@ namespace WhisperSubs.Controller.Workers
                 // A slot freed but only incapable workers are free (heterogeneous-capability case). Give the
                 // slot back and wait briefly for the capable-but-busy worker to free — the HasCapableWorker
                 // guard guarantees one exists, so this terminates.
-                _slots.Release();
+                ReleaseSlots();
                 await Task.Delay(100, cancellationToken).ConfigureAwait(false);
             }
         }
@@ -244,7 +250,7 @@ namespace WhisperSubs.Controller.Workers
                 if (_inFlight.TryGetValue(leaseKey, out var n) && n > 0)
                     _inFlight[leaseKey] = n - 1;
             }
-            _slots.Release();
+            ReleaseSlots();
         }
 
         /// <summary>
@@ -263,14 +269,29 @@ namespace WhisperSubs.Controller.Workers
         /// a partial one. The semaphore is grown AFTER the maps are mutated and OUTSIDE the lock, so a waiter
         /// woken by the new permit is guaranteed to see the added worker when it re-enters PickLocked.
         /// </summary>
+        /// <remarks>
+        /// GROW-ONLY, and the caller must understand the limits: a newly-added worker joins the LIVE pool
+        /// immediately, but REMOVING a worker — or EDITING the URL/Id of an existing one — does NOT take effect
+        /// here; it applies only on the next idle <c>GetPool</c> rebuild or a Jellyfin restart. In particular,
+        /// editing the URL of a worker row whose Id is BLANK re-keys it (the routing key derives from the URL
+        /// when Id is blank), so the reconcile sees a NEW worker and transiently runs BOTH the old and the
+        /// edited one until the next idle rebuild. Removed / re-keyed workers are surfaced via a warning log
+        /// for visibility (they are diffed but intentionally not applied — live removal is out of scope).
+        /// </remarks>
         public int Reconcile(IReadOnlyList<ITranscriptionWorker> desired)
         {
             if (desired == null) throw new ArgumentNullException(nameof(desired));
 
             var addedPermits = 0;
             int workerCount;
+            IReadOnlyList<string> added;
+            IReadOnlyList<string> removed;
             lock (_gate)
             {
+                // Diff BEFORE mutating _keys so added/removed describe the PRE-reconcile pool. Grow-only:
+                // 'added' is applied by the loop below; 'removed' (a dropped or re-keyed worker) is only reported.
+                (added, removed) = DiffWorkers(_keys, desired);
+
                 var desiredKeys = ComputeKeys(desired);
                 for (var i = 0; i < desired.Count; i++)
                 {
@@ -286,9 +307,34 @@ namespace WhisperSubs.Controller.Workers
 
             // Release the added permits OUTSIDE _gate (never release inside a lock). The uncapped semaphore
             // makes Release(delta) legal; the map-add-BEFORE-release ordering means the woken waiter sees the
-            // newly-added workers in PickLocked.
-            if (addedPermits > 0) _slots.Release(addedPermits);
+            // newly-added workers in PickLocked. Routed through ReleaseSlots so the over-release tripwire runs.
+            if (addedPermits > 0) ReleaseSlots(addedPermits);
+
+            // Surface the reconcile outcome (whisper-subs-9gq hardening): a hot-add is expected; a removal or
+            // re-key is a known foot-gun (grow-only leaves it live until the next idle rebuild), so warn on it.
+            if (added.Count > 0)
+                _logger.LogInformation("WorkerPool hot-add: added workers [{Added}]", string.Join(",", added));
+            if (removed.Count > 0)
+                _logger.LogWarning(
+                    "WorkerPool: worker(s) [{Removed}] were removed from config but stay live until the next idle pool rebuild / restart (live removal not yet supported)",
+                    string.Join(",", removed));
+
             return workerCount;
+        }
+
+        // Central choke-point for every semaphore Release (whisper-subs-9gq hardening). The ctor now uses the
+        // UNCAPPED SemaphoreSlim (so Reconcile can Release(delta) to grow capacity), which removed the
+        // SemaphoreFullException that used to catch a double-release. This restores that tripwire as a LOG
+        // (never a throw — a diagnostic must not crash dispatch): if the permit count ever exceeds the current
+        // TotalCapacity ceiling, a Release was not paired 1:1 with an Acquire. TotalCapacity is read AFTER
+        // Reconcile grows it under _gate, so the comparison always uses the current ceiling.
+        private void ReleaseSlots(int n = 1)
+        {
+            _slots.Release(n);
+            if (_slots.CurrentCount > TotalCapacity)
+                _logger.LogError(
+                    "WorkerPool permit over-release: CurrentCount {C} > TotalCapacity {T}",
+                    _slots.CurrentCount, TotalCapacity);
         }
 
         // Caller holds _gate. Snapshots each worker as a WorkerSlot (keyed by the unique routing key), asks
