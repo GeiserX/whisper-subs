@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -132,6 +133,13 @@ namespace WhisperSubs.Controller
         private WorkerPool? _pool;
         private readonly object _poolGate = new();
 
+        // The worker "signature" the current _pool was built or last reconciled from (whisper-subs-9gq): a
+        // stable string over the CONFIGURED workers (composition plan + each row's routing-key / url / model /
+        // concurrency / cost / translate). ReconcileWorkers skips the provider-constructing rebuild when this
+        // is unchanged, so an unrelated config save — e.g. toggling PauseOnPlayback — does not needlessly news
+        // up RemoteWhisperProvider/HttpClient instances. Guarded by _poolGate, alongside _pool.
+        private string? _workersSignature;
+
         /// <summary>
         /// The shared worker pool for the current (or next) drain session, (re)built from config. Rebuilt at a
         /// session start only when the OTHER consumer is idle AND no jobs are in flight, so a rebuild never
@@ -148,10 +156,104 @@ namespace WhisperSubs.Controller
                 var otherConsumerIdle = forTask ? _isDraining == 0 : _taskIsRunning == 0;
                 if (_pool == null || (otherConsumerIdle && _pool.ActiveJobs == 0))
                 {
-                    _pool = new WorkerPool(WorkerRegistry.BuildWorkers(config, loggerFactory));
+                    _pool = new WorkerPool(
+                        WorkerRegistry.BuildWorkers(config, loggerFactory),
+                        loggerFactory.CreateLogger<WorkerPool>());
+                    // Keep the reconcile signature in step with the config the live pool was just built from,
+                    // so a subsequent unchanged config save is a no-op in ReconcileWorkers. (whisper-subs-9gq.)
+                    _workersSignature = ComputeWorkersSignature(config);
                 }
                 return _pool;
             }
+        }
+
+        /// <summary>
+        /// Hot-applies a Workers-config change to the LIVE pool without a Jellyfin restart (whisper-subs-9gq).
+        /// Under <see cref="_poolGate"/> (the lock guarding <see cref="_pool"/>): when a pool exists and the
+        /// configured workers actually changed, it rebuilds the desired worker set from <paramref name="config"/>
+        /// and GROWS the pool via <see cref="WorkerPool.Reconcile"/> so a just-added worker joins the running
+        /// drain immediately — without disturbing in-flight jobs on the other workers, and preserving the
+        /// sole-dispatch invariant (Reconcile mutates the pool under the pool's own gate). When no pool exists
+        /// yet this is a no-op: the next <see cref="GetPool"/> builds fresh from the new config anyway. A cheap
+        /// workers-signature comparison skips the (provider-constructing) rebuild when the worker set is
+        /// unchanged, so an unrelated config save does not churn HttpClients. Returns the live worker count.
+        /// </summary>
+        /// <remarks>
+        /// GROW-ONLY (see <see cref="WorkerPool.Reconcile"/>): a newly-added worker joins the live drain
+        /// immediately, but REMOVING a worker — or EDITING the URL/Id of an existing one — takes effect only on
+        /// the next idle <see cref="GetPool"/> rebuild or a restart. Editing the URL of a blank-Id worker
+        /// re-keys it, so both the old and edited worker run until that rebuild. The added / removed workers are
+        /// logged by <see cref="WorkerPool.Reconcile"/>.
+        /// </remarks>
+        [ExcludeFromCodeCoverage(Justification = "Builds providers from config via WorkerRegistry — orchestration; the signature (ComputeWorkersSignature) and WorkerPool.Reconcile are unit-tested")]
+        public int ReconcileWorkers(PluginConfiguration config, ILoggerFactory loggerFactory)
+        {
+            lock (_poolGate)
+            {
+                if (_pool == null)
+                {
+                    // Nothing live to grow — GetPool will build fresh from this config on the next drain.
+                    return 0;
+                }
+
+                var signature = ComputeWorkersSignature(config);
+                if (signature == _workersSignature)
+                {
+                    return _pool.WorkerCount;   // workers unchanged — skip the provider rebuild
+                }
+
+                var count = _pool.Reconcile(WorkerRegistry.BuildWorkers(config, loggerFactory));
+                _workersSignature = signature;
+                return count;
+            }
+        }
+
+        /// <summary>
+        /// A stable signature of the CONFIGURED transcription workers (whisper-subs-9gq): the backward-compat
+        /// composition decision (<see cref="WorkerPlan.Decide"/>) plus, per contributing worker, its routing
+        /// key, URL, model, MaxConcurrency, cost and translate capability — everything that changes which
+        /// workers the pool would contain or their capacity. <see cref="ReconcileWorkers"/> compares it to
+        /// detect whether the worker set actually changed, so an unrelated config save is a cheap no-op.
+        /// Mirrors <see cref="WorkerRegistry.BuildWorkers"/>' enabled+non-blank filter and key derivation so
+        /// the signature tracks the workers the pool would really contain. Pure and internal so it is
+        /// unit-testable without a live pool.
+        /// </summary>
+        internal static string ComputeWorkersSignature(PluginConfiguration config)
+        {
+            var (source, addLocal) = WorkerPlan.Decide(
+                config.Workers?.Count ?? 0,
+                !string.IsNullOrWhiteSpace(config.RemoteWhisperApiUrl),
+                config.EnableLocalWorker);
+
+            var sb = new StringBuilder();
+            sb.Append("src=").Append(source).Append(";local=").Append(addLocal).Append(';');
+
+            if (source == WorkerSource.ExplicitList && config.Workers != null)
+            {
+                // Collect each contributing row's segment, then append them SORTED (whisper-subs-9gq L1) so that
+                // merely reordering worker rows in the config does not flip the signature — which would run a
+                // needless no-op provider rebuild. Same fields/format as before; only per-row ordering is stable.
+                var segments = new List<string>();
+                foreach (var w in config.Workers)
+                {
+                    if (!w.Enabled || string.IsNullOrWhiteSpace(w.ApiUrl)) continue;
+                    var id = string.IsNullOrWhiteSpace(w.Id) ? w.ApiUrl : w.Id;
+                    segments.Add(
+                        $"w[{id}|{w.ApiUrl.Trim()}|{(w.Model ?? string.Empty).Trim()}|" +
+                        $"{(w.MaxConcurrency < 1 ? 1 : w.MaxConcurrency)}|" +
+                        $"{w.CostWeight.ToString(System.Globalization.CultureInfo.InvariantCulture)}|{w.CanTranslate}];");
+                }
+                foreach (var seg in segments.OrderBy(s => s, System.StringComparer.Ordinal))
+                    sb.Append(seg);
+            }
+            else if (source == WorkerSource.LegacyRemote)
+            {
+                sb.Append("remote[")
+                  .Append((config.RemoteWhisperApiUrl ?? string.Empty).Trim()).Append('|')
+                  .Append((config.RemoteWhisperModel ?? string.Empty).Trim()).Append("];");
+            }
+
+            return sb.ToString();
         }
 
         /// <summary>
