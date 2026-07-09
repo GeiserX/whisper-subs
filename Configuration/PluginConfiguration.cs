@@ -287,6 +287,15 @@ namespace WhisperSubs.Configuration
         /// <summary>Absolute cap for the per-call deadline in hours — a genuinely long film's worst case still fits under it. Default 12.</summary>
         public int JobMaxTimeoutHours { get; set; } = 12;
 
+        /// <summary>
+        /// How many times a killed (task stopped / Jellyfin restart) or failed transcription job is
+        /// automatically re-queued before the plugin gives up on it. The job is re-queued at its original
+        /// priority tier, and the counter survives a restart (persisted to queue.json). 0 disables
+        /// auto-retry entirely — a killed/failed job is dropped exactly as before this feature, so the
+        /// behaviour is fully opt-out-able. Default 3. (whisper-subs-1t0.)
+        /// </summary>
+        public int JobMaxRetries { get; set; } = 3;
+
         // ── Worker pool (v4.0; power-user feature, empty by default) ─────────
         // Simple by default: a normal single-server install leaves Workers empty and EnableLocalWorker on,
         // so the plugin behaves exactly as today (the host's own whisper, one job at a time). Power users
