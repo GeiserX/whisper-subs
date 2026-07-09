@@ -19,9 +19,20 @@ namespace WhisperSubs.Controller
     [ExcludeFromCodeCoverage(Justification = "Thin resolver over ILibraryManager + Jellyfin runtime item types")]
     public static class MediaItemResolver
     {
-        /// <summary>A top-level library container that must never be enqueued wholesale.</summary>
-        public static bool IsWholeLibraryContainer(BaseItem item)
-            => item is CollectionFolder || item is UserView || item is AggregateFolder;
+        /// <summary>
+        /// The only item kinds an admin GenerateAll / user request may target: media leaves
+        /// (Video and its subclasses Movie/Episode/MusicVideo/Trailer; Audio) and the intended
+        /// containers (Series, Season, MusicAlbum). Everything else — library roots, BoxSet
+        /// collections, MusicArtist, plain Folders — is rejected to prevent an uncapped recursive
+        /// fan-out over the whole library. This allow-list subsumes the old whole-library-container
+        /// reject-list (a CollectionFolder / UserView / AggregateFolder is none of these types).
+        /// </summary>
+        public static bool IsAllowedGenerateTarget(BaseItem item)
+            => item is Video
+            || item is MediaBrowser.Controller.Entities.Audio.Audio
+            || item is MediaBrowser.Controller.Entities.TV.Series
+            || item is MediaBrowser.Controller.Entities.TV.Season
+            || item is MediaBrowser.Controller.Entities.Audio.MusicAlbum;
 
         /// <summary>
         /// Resolves the supported leaf media items (Video, or Audio when lyrics are enabled) under
