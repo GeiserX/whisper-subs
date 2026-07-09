@@ -507,6 +507,28 @@ namespace WhisperSubs.Api
         }
 
         /// <summary>
+        /// Hot-reloads the worker pool from the current configuration WITHOUT a Jellyfin restart
+        /// (whisper-subs-9gq): grows the live pool so a just-added worker joins the running drain immediately,
+        /// within one drain cycle and without dropping in-flight jobs on the other workers. A manual fallback
+        /// to the automatic on-config-change trigger, and makes the feature verifiable without a config
+        /// round-trip. Admin-only via the class-level RequiresElevation policy (mirrors Workers/TestConnection).
+        /// </summary>
+        [HttpPost("Workers/Reload")]
+        public ActionResult ReloadWorkers()
+        {
+            try
+            {
+                var count = SubtitleQueueService.Instance.ReconcileWorkers(Plugin.Instance.Configuration, _loggerFactory);
+                return Ok(new { message = "Worker pool reconciled", workers = count });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error reloading worker pool");
+                return StatusCode(500, new { error = ex.Message });
+            }
+        }
+
+        /// <summary>
         /// Lists all user subtitle requests (admin), newest first — for the config-page approval panel.
         /// Returns item names + state only; never a filesystem path. (Issue #112.)
         /// </summary>
