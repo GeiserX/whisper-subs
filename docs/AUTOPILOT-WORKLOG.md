@@ -417,3 +417,7 @@ Synthesize → propose approach → implement (likely: FT integration with direc
 - **Bead meo (Mac mini)**: DELETE requested but blocked by bd tooling (v49→v53 migration on the remote-synced DB); not in the public repo anyway. Deferred (DEFERRED-QUESTIONS).
 - **Bead 9gq (hot-add worker without restart)**: filed (Sergio's follow-up) — future improvement, not part of this directive.
 - **Loop deactivated.** GATED on Sergio: the v4-dev→main RELEASE (1t0+v00 accumulated) + install on his Jellyfin; and forcing the M4 restart now (vs the armed idle watcher).
+
+### Entry — continuing with the other beads; M4 health reconfirmed (2026-07-09)
+- **M4 worker health**: adapter.py (PID 2642) on :9010 + whisper-server (PID 2647) on :8081 (large-v3, -bs 5, --vad, -sns -mc 0), launchd `cloud.geiser.whisper-subs-worker` persistent. Ready; awaiting pool-rebuild to go live.
+- **Open beads to work (per directive "continue with the other beads")**: 9gq (P2 hot-add worker — solves M4-live w/o restart), ezg (P3 bug — DrainPriorityAsync/_isDraining race), qv4 (P3 bug — dedup-key leak if drain never starts), czk (P3 — GenerateAll allow-list). ezg/qv4/czk predate the v4.0 refactor (PR #96, 2026-06-25) → architect verifying which still apply to current v4-dev + designing 9gq before I implement.
