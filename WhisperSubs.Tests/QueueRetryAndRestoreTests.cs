@@ -209,4 +209,155 @@ public class QueueRetryAndRestoreTests
         Assert.Equal(1, queue.PriorityCount);
         Assert.True(queue.TryReserve(key));   // proves it left the in-flight set
     }
+
+    // ── Bounded in-flight restore (whisper-subs-1t0 Fix 1 — the hard-kill boot-loop guard) ──
+
+    private static Func<Guid, BaseItem?> Resolver(params BaseItem[] items)
+    {
+        var byId = items.ToDictionary(i => i.Id);
+        return id => byId.GetValueOrDefault(id);
+    }
+
+    private static QueueEntry NewEntry(BaseItem item, int retryCount, string language = "en",
+        PriorityTier tier = PriorityTier.High, bool force = false)
+        => new QueueEntry
+        {
+            ItemId = item.Id.ToString("N"),
+            Language = language,
+            Force = force,
+            Tier = (int)tier,
+            RetryCount = retryCount
+        };
+
+    [Theory]
+    // Pending (wasInFlight=false) is ALWAYS restored, whatever its count — it never started.
+    [InlineData(false, 0, 3, true)]
+    [InlineData(false, 3, 3, true)]
+    [InlineData(false, 99, 3, true)]
+    // In-flight (wasInFlight=true) restores only while strictly under the cap (one attempt already consumed).
+    [InlineData(true, 0, 3, true)]
+    [InlineData(true, 2, 3, true)]    // maxRetries-1 → still restored (at +1)
+    [InlineData(true, 3, 3, false)]   // at the cap → dropped
+    [InlineData(true, 4, 3, false)]   // over the cap → dropped
+    [InlineData(true, 0, 0, false)]   // retry disabled → a killed in-flight lease is dropped
+    public void ShouldRestore_TruthTable(bool wasInFlight, int retryCount, int maxRetries, bool expected)
+        => Assert.Equal(expected, SubtitleQueueService.ShouldRestore(wasInFlight, retryCount, maxRetries));
+
+    [Theory]
+    [InlineData(false, 0, 0)]   // Pending: unchanged (never started)
+    [InlineData(false, 2, 2)]   // Pending: unchanged
+    [InlineData(true, 0, 1)]    // In-flight: +1 (one attempt consumed)
+    [InlineData(true, 2, 3)]    // In-flight: +1
+    public void RestoredRetryCount_PendingUnchanged_InFlightPlusOne(bool wasInFlight, int retryCount, int expected)
+        => Assert.Equal(expected, SubtitleQueueService.RestoredRetryCount(wasInFlight, retryCount));
+
+    [Fact]
+    public void RestoreFromEntries_InFlightConsumesOneAttempt_PendingUnchanged_OverCapDropped()
+    {
+        // The highest-value test — the exact case Fix 1 exists for: an in-flight lease at the cap must NOT be
+        // restored (else it OOM-kills, restores, OOM-kills … a boot-loop that wedges ALL generation), one under
+        // the cap comes back at +1 (its kill counted as an attempt), and a Pending item keeps its count.
+        const int maxRetries = 3;
+        var queue = new SubtitleQueueService();
+
+        var pending = NewItem("Pending");                 // Pending at rc=2 → restored at 2 (unchanged)
+        var inflightBudget = NewItem("InFlightBudget");   // In-flight at rc=2 (=max-1) → restored at 3
+        var inflightAtCap = NewItem("InFlightAtCap");     // In-flight at rc=3 (=max)  → DROPPED, not restored
+
+        var (restored, givenUp) = queue.RestoreFromEntries(
+            pending: new List<QueueEntry> { NewEntry(pending, retryCount: 2) },
+            inFlight: new List<QueueEntry>
+            {
+                NewEntry(inflightBudget, retryCount: maxRetries - 1),
+                NewEntry(inflightAtCap, retryCount: maxRetries)
+            },
+            maxRetries: maxRetries,
+            resolveItem: Resolver(pending, inflightBudget, inflightAtCap));
+
+        Assert.Equal(2, restored);                          // pending + inflightBudget; inflightAtCap dropped
+        Assert.Single(givenUp);
+        Assert.Equal("InFlightAtCap", givenUp[0].Name);
+        Assert.Equal(maxRetries, givenUp[0].RetryCount);    // reported at its prior (spent) count
+        Assert.Equal(2, queue.PriorityCount);
+
+        // Drain and confirm the restored RetryCounts.
+        var counts = new Dictionary<string, int>();
+        while (queue.TryDequeuePriority(out var wi) && wi != null)
+            counts[wi.Item.Name] = wi.RetryCount;
+
+        Assert.Equal(2, counts["Pending"]);                 // Pending: unchanged (never started)
+        Assert.Equal(maxRetries, counts["InFlightBudget"]); // In-flight: RetryCount+1 (one attempt consumed)
+        Assert.False(counts.ContainsKey("InFlightAtCap"));  // dropped — never re-enters the lanes
+    }
+
+    [Fact]
+    public void RestoreFromEntries_SameIdentityInPendingAndInFlight_CollapsesToOneLaneEntry()
+    {
+        // Pending∩InFlight overlap (should-not-happen, but be safe): the same identity in BOTH lists restores
+        // as ONE lane entry (merge, not double). Pending is processed first; the in-flight copy (rc+1) merges
+        // onto it via the lane dedup, and MergeWork keeps the larger retry count.
+        var queue = new SubtitleQueueService();
+        var item = NewItem("Overlap");
+
+        var (restored, givenUp) = queue.RestoreFromEntries(
+            pending: new List<QueueEntry> { NewEntry(item, retryCount: 0) },
+            inFlight: new List<QueueEntry> { NewEntry(item, retryCount: 0) },
+            maxRetries: 3,
+            resolveItem: Resolver(item));
+
+        Assert.Equal(1, restored);                 // ONE lane entry, not two
+        Assert.Empty(givenUp);
+        Assert.Equal(1, queue.PriorityCount);
+
+        Assert.True(queue.TryDequeuePriority(out var wi));
+        Assert.Same(item, wi!.Item);
+        Assert.Equal(1, wi.RetryCount);            // in-flight copy's rc+1 (=1) wins the merge over pending's 0
+    }
+
+    [Fact]
+    public void RestoreFromEntries_SkipsUnparseableGuidAndMissingItem_RestoresTheRest()
+    {
+        var queue = new SubtitleQueueService();
+        var present = NewItem("Present");
+        var missing = NewItem("Missing");   // deliberately NOT known to the resolver
+
+        var (restored, givenUp) = queue.RestoreFromEntries(
+            pending: new List<QueueEntry>
+            {
+                new QueueEntry { ItemId = "not-a-guid", Language = "en", Tier = (int)PriorityTier.High },
+                NewEntry(missing, retryCount: 0),   // resolver returns null → skipped
+                NewEntry(present, retryCount: 0)    // restored
+            },
+            inFlight: new List<QueueEntry>(),
+            maxRetries: 3,
+            resolveItem: Resolver(present));        // only 'present' resolves
+
+        Assert.Equal(1, restored);
+        Assert.Empty(givenUp);
+        Assert.Equal(1, queue.PriorityCount);
+    }
+
+    [Fact]
+    public void RestoreFromEntries_TierlessInFlightLease_NormalizesToHigh_AndRestoresAtPlusOne()
+    {
+        // A legacy tier-less in-flight entry (Tier null) still normalizes to High (NOT Critical) AND obeys the
+        // in-flight +1 rule — the #112 migration rule and the 1t0 budget rule compose correctly.
+        var queue = new SubtitleQueueService();
+        var item = NewItem("Legacy");
+
+        var (restored, givenUp) = queue.RestoreFromEntries(
+            pending: new List<QueueEntry>(),
+            inFlight: new List<QueueEntry>
+            {
+                new QueueEntry { ItemId = item.Id.ToString("N"), Language = "en", Tier = null, RetryCount = 0 }
+            },
+            maxRetries: 3,
+            resolveItem: Resolver(item));
+
+        Assert.Equal(1, restored);
+        Assert.Empty(givenUp);
+        Assert.True(queue.TryDequeuePriority(out var wi));
+        Assert.Equal(PriorityTier.High, wi!.Tier);   // tier-less → High
+        Assert.Equal(1, wi.RetryCount);              // in-flight → +1
+    }
 }

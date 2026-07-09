@@ -317,6 +317,26 @@ namespace WhisperSubs.Controller
         internal static bool ShouldRetry(int retryCount, int maxRetries) => retryCount < maxRetries;
 
         /// <summary>
+        /// Whether a persisted lease should be restored to the lanes on startup (whisper-subs-1t0). A Pending
+        /// lease never started, so it is ALWAYS restored (its budget is untouched). An IN-FLIGHT lease was
+        /// running when the process died — that counts as one consumed attempt, so it is restored only while
+        /// it still has retry budget (<see cref="ShouldRetry"/>); an in-flight lease already at/over the cap is
+        /// dropped rather than looped forever (the hard-kill boot-loop guard for an item that OOM-kills every
+        /// run — restore-unbounded would re-run it at an unchanged count and wedge the whole queue on restart).
+        /// </summary>
+        internal static bool ShouldRestore(bool wasInFlight, int retryCount, int maxRetries) =>
+            !wasInFlight || ShouldRetry(retryCount, maxRetries);
+
+        /// <summary>
+        /// The RetryCount a restored lease re-enters the lanes at (whisper-subs-1t0). A Pending lease never
+        /// started, so it keeps its count unchanged; an in-flight lease consumed one attempt (its process was
+        /// killed mid-run), so it comes back at RetryCount+1 — which, together with <see cref="ShouldRestore"/>,
+        /// bounds restarts so a permanently-killed item is eventually given up on instead of boot-looping.
+        /// </summary>
+        internal static int RestoredRetryCount(bool wasInFlight, int retryCount) =>
+            wasInFlight ? retryCount + 1 : retryCount;
+
+        /// <summary>
         /// Cancel/failure transition for an in-flight item. Under <see cref="_dispatchGate"/> — the SAME
         /// lock <see cref="Enqueue"/> and the dequeue+reserve take — it always leaves the in-flight set,
         /// and, when the item still has retry budget (<see cref="ShouldRetry"/>), atomically re-adds it to
@@ -438,10 +458,17 @@ namespace WhisperSubs.Controller
         }
 
         /// <summary>
-        /// Restores queue from disk on startup. Call after Jellyfin library is available.
+        /// Restores queue from disk on startup (whisper-subs-1t0). Call after the Jellyfin library is
+        /// available. Pending leases (never started) are restored unincremented; an interrupted IN-FLIGHT
+        /// lease counts as one consumed attempt, so it is restored at RetryCount+1 while it still has budget
+        /// and DROPPED (given up on) once it has hit the retry cap. Without that bound an item whose process
+        /// is SIGKILL'd mid-transcription every time (OOM on a long film) would restore at an unchanged
+        /// RetryCount, be drained before the sweep, OOM again, restore again — an infinite boot-loop that
+        /// wedges ALL subtitle generation on every restart. <paramref name="maxRetries"/> is the same cap the
+        /// dispatcher uses (config.JobMaxRetries).
         /// </summary>
-        [ExcludeFromCodeCoverage(Justification = "Requires Plugin.Instance + ILibraryManager")]
-        public int RestoreQueue(ILibraryManager libraryManager, ILogger logger)
+        [ExcludeFromCodeCoverage(Justification = "Requires Plugin.Instance + ILibraryManager; the restore decision is the unit-tested RestoreFromEntries")]
+        public int RestoreQueue(ILibraryManager libraryManager, ILogger logger, int maxRetries)
         {
             var path = QueueFilePath;
             if (string.IsNullOrEmpty(path) || !File.Exists(path)) return 0;
@@ -451,45 +478,25 @@ namespace WhisperSubs.Controller
                 var json = File.ReadAllText(path);
 
                 // Parse either shape: v2 = { Version, Pending[], InFlight[] }; legacy v1 = a bare
-                // QueueEntry[]. The interrupted in-flight leases are restored as Pending too — they were
-                // running (not completed) when the snapshot was taken, so they must be redone; an
-                // already-satisfied one is a cheap no-op thanks to GenerateSubtitleAsync's existing-file
-                // skip (#82). Pending is restored first so, if the same identity appears in both lists
-                // (it should not, but be safe), the lane dedup collapses them and we never double-restore.
+                // QueueEntry[] (all pending). An interrupted in-flight lease is redone — but BOUNDED (see
+                // RestoreFromEntries): it consumed one attempt, so it comes back at RetryCount+1 and is
+                // dropped once out of budget, killing the hard-kill boot-loop.
                 var (pending, inFlight) = ParseQueueFile(json);
-                var total = pending.Count + inFlight.Count;
-                if (total == 0) return 0;
+                if (pending.Count + inFlight.Count == 0) return 0;
 
-                int restored = 0;
-                foreach (var entry in pending.Concat(inFlight))
+                var (restored, givenUp) = RestoreFromEntries(
+                    pending, inFlight, maxRetries, guid => libraryManager.GetItemById(guid));
+
+                foreach (var (name, retryCount) in givenUp)
                 {
-                    if (!System.Guid.TryParse(entry.ItemId, out var guid)) continue;
-                    var item = libraryManager.GetItemById(guid);
-                    if (item == null) continue;
-
-                    var tier = PriorityScheduling.NormalizeRestoredTier(entry.Tier);
-                    var key = IdentityKey(item.Id, entry.Language);
-
-                    // A queue.json with the same (item, language) more than once must not re-run every
-                    // copy — de-dup the restored set too, keeping the strongest tier / OR'd force / larger
-                    // retry count. The retry budget carries over so a chronically-failing item is not given
-                    // a fresh set of attempts on every restart.
-                    var outcome = _lanes.Enqueue(key, (int)tier, new SubtitleWorkItem
-                    {
-                        Item = item,
-                        Language = entry.Language,
-                        Completion = null,
-                        Force = entry.Force,
-                        Tier = tier,
-                        RetryCount = entry.RetryCount
-                    }, MergeWork);
-
-                    if (outcome == LaneEnqueueOutcome.Added) restored++;
+                    logger.LogWarning(
+                        "[Queue] Giving up on {Name} after {Attempts} attempt(s) — it was killed mid-transcription and is out of retries; not restoring",
+                        name, retryCount + 1);
                 }
 
                 logger.LogInformation(
-                    "[Queue] Restored {Count} items from disk ({Pending} pending + {InFlight} interrupted in-flight re-queued, of {Total} saved)",
-                    restored, pending.Count, inFlight.Count, total);
+                    "[Queue] Restored {Count} of {Total} saved items ({Pending} pending + {InFlight} interrupted in-flight; {Dropped} in-flight given up at the {Max}-retry cap)",
+                    restored, pending.Count + inFlight.Count, pending.Count, inFlight.Count, givenUp.Count, maxRetries);
                 return restored;
             }
             catch (System.Exception ex)
@@ -497,6 +504,68 @@ namespace WhisperSubs.Controller
                 logger.LogWarning(ex, "[Queue] Failed to restore queue from {Path}", path);
                 return 0;
             }
+        }
+
+        /// <summary>
+        /// The restore core (whisper-subs-1t0), separated from <see cref="RestoreQueue"/> so it is
+        /// unit-testable without Plugin.Instance / a live ILibraryManager: it depends only on the parsed
+        /// entries, the retry cap, and an item resolver. Restores into the lanes and returns the count of
+        /// newly-added items PLUS the in-flight leases it GAVE UP on (name + prior RetryCount) for the caller
+        /// to log. Rules:
+        /// <list type="bullet">
+        /// <item>Pending entries never started → always restored at their unchanged RetryCount.</item>
+        /// <item>In-flight entries were running when the snapshot was taken → count as one consumed attempt:
+        /// restored at RetryCount+1 while <see cref="ShouldRetry"/>, else dropped (the boot-loop guard).</item>
+        /// </list>
+        /// Pending is processed first so a (should-not-happen) same-identity Pending∩InFlight overlap collapses
+        /// onto the pending copy via the lane dedup (<see cref="MergeWork"/>) rather than double-restoring.
+        /// Tier-less legacy entries normalise to High; only a genuinely-<see cref="LaneEnqueueOutcome.Added"/>
+        /// entry is counted.
+        /// </summary>
+        internal (int Restored, List<(string Name, int RetryCount)> GivenUp) RestoreFromEntries(
+            List<QueueEntry> pending,
+            List<QueueEntry> inFlight,
+            int maxRetries,
+            System.Func<System.Guid, BaseItem?> resolveItem)
+        {
+            int restored = 0;
+            var givenUp = new List<(string Name, int RetryCount)>();
+
+            foreach (var (entry, wasInFlight) in
+                     pending.Select(e => (e, false)).Concat(inFlight.Select(e => (e, true))))
+            {
+                if (!System.Guid.TryParse(entry.ItemId, out var guid)) continue;
+                var item = resolveItem(guid);
+                if (item == null) continue;
+
+                // An in-flight lease already at/over the cap is given up on — NOT re-enqueued — so a job that
+                // is SIGKILL'd mid-transcription every restart (OOM) can't boot-loop the whole queue. Pending
+                // leases never started, so ShouldRestore always keeps them (unincremented).
+                if (!ShouldRestore(wasInFlight, entry.RetryCount, maxRetries))
+                {
+                    givenUp.Add((item.Name, entry.RetryCount));
+                    continue;
+                }
+
+                var tier = PriorityScheduling.NormalizeRestoredTier(entry.Tier);
+                var key = IdentityKey(item.Id, entry.Language);
+
+                // De-dup the restored set (same (item,language) more than once collapses to one lane entry),
+                // keeping the strongest tier / OR'd force / larger retry count via MergeWork.
+                var outcome = _lanes.Enqueue(key, (int)tier, new SubtitleWorkItem
+                {
+                    Item = item,
+                    Language = entry.Language,
+                    Completion = null,
+                    Force = entry.Force,
+                    Tier = tier,
+                    RetryCount = RestoredRetryCount(wasInFlight, entry.RetryCount)
+                }, MergeWork);
+
+                if (outcome == LaneEnqueueOutcome.Added) restored++;
+            }
+
+            return (restored, givenUp);
         }
 
         /// <summary>
@@ -745,18 +814,26 @@ namespace WhisperSubs.Controller
                         }
                         catch (System.Exception ex)
                         {
-                            if (countProcessed) Interlocked.Increment(ref _processedCount);
-                            Interlocked.Increment(ref _failedCount);
                             _lastError = $"{wi.Item.Name}: {ex.Message}";
                             wi.Completion?.TrySetException(ex);
                             logger.LogError(ex, "[Dispatch] Failed: {ItemName}", wi.Item.Name);
                             // Transient failure (whisper crash, unreachable worker, …) — bounded auto-retry.
+                            // Count ONLY the terminal outcome: an attempt that is about to be re-queued is not
+                            // yet a processed/failed item, so a 4×-retried item must not inflate Processed/Failed
+                            // by 4. The give-up branch — where the retry budget is finally spent — is the one
+                            // that counts it once as processed+failed (mirrors the fail-fast unservable path).
                             if (RetryOrRelease(wi, maxRetries))
+                            {
                                 logger.LogWarning("[Dispatch] {ItemName} failed — re-queued to retry (retry {Retry} of {Max})",
                                     wi.Item.Name, wi.RetryCount + 1, maxRetries);
+                            }
                             else
+                            {
+                                if (countProcessed) Interlocked.Increment(ref _processedCount);
+                                Interlocked.Increment(ref _failedCount);
                                 logger.LogWarning("[Dispatch] Giving up on {ItemName} after {Attempts} attempt(s) — it keeps failing",
                                     wi.Item.Name, wi.RetryCount + 1);
+                            }
                         }
                         finally
                         {
