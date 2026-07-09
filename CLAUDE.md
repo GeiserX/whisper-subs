@@ -258,6 +258,7 @@ Version is read from `<Version>` in `WhisperSubs.csproj`. Bump there before push
 - FFprobe extracts `language` tags from audio streams. Normalization: 30+ ISO 639-2 -> 639-1 mappings in `SubtitleManager.NormalizeLanguageCode()`.
 - Dedup: multiple streams with same language produce only one SRT.
 - Fallback: files with no language tags get whisper auto-detection — one SRT with language `auto`.
+- Multi-audio selection (`AudioLanguageSelection`, default `All`): with `DefaultLanguage=auto` the plugin transcribes EVERY detected audio language (one `.<lang>.generated.srt` each). `PrimaryOnly` restricts the per-track full/forced passes to the primary track only, via the pure `SubtitleManager.SelectAudioLanguages(detected, selection)` applied to the `foreach (var lang in passLanguages)` in `GenerateSubtitleAsync`. It only narrows the auto multi-language case (a specific code or the no-tags `auto` fallback is single-element and untouched); the translation pass deliberately still sees the full `languages` list. Serialized by name (`JsonStringEnumConverter`).
 
 ## Config Page (Web UI)
 
