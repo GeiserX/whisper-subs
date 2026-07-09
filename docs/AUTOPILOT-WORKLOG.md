@@ -421,3 +421,8 @@ Synthesize → propose approach → implement (likely: FT integration with direc
 ### Entry — continuing with the other beads; M4 health reconfirmed (2026-07-09)
 - **M4 worker health**: adapter.py (PID 2642) on :9010 + whisper-server (PID 2647) on :8081 (large-v3, -bs 5, --vad, -sns -mc 0), launchd `cloud.geiser.whisper-subs-worker` persistent. Ready; awaiting pool-rebuild to go live.
 - **Open beads to work (per directive "continue with the other beads")**: 9gq (P2 hot-add worker — solves M4-live w/o restart), ezg (P3 bug — DrainPriorityAsync/_isDraining race), qv4 (P3 bug — dedup-key leak if drain never starts), czk (P3 — GenerateAll allow-list). ezg/qv4/czk predate the v4.0 refactor (PR #96, 2026-06-25) → architect verifying which still apply to current v4-dev + designing 9gq before I implement.
+
+### Entry — PR A (czk+qv4) merged (#131); starting 9gq (2026-07-09)
+- **czk + qv4 MERGED to v4-dev (#131, squash 5d21332)**: allow-list `IsAllowedGenerateTarget` (Video/Audio/Series/Season/MusicAlbum) replacing the reject-list at both GenerateAll guard sites; `IsWholeLibraryContainer` retired; qv4 de-dup invariant comment. 973 tests, 0 warnings, CodeRabbit-clean. BoxSet-rejection trade-off flagged in the PR.
+- **meo**: resolved as no-action (pod-ephemeral, not in canonical) — see DEFERRED-QUESTIONS. Bead-DB is schema-frozen (v49); statuses can't sync until Sergio migrates.
+- **NEXT: 9gq (P2)** — grow-only `WorkerPool.Reconcile` + `ConfigurationChanged` trigger so a worker added mid-run (the M4) joins the LIVE pool without a Jellyfin restart. Architect design in hand; safety from `WorkerPool._gate` (NOT dependent on ezg). ezg to follow as a tiny CurrentItemName-from-snapshot change or won't-fix (cosmetic P3).
