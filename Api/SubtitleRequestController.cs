@@ -94,9 +94,11 @@ namespace WhisperSubs.Api
                 return NotFound(new { error = "Item not found" });
             }
 
-            if (MediaItemResolver.IsWholeLibraryContainer(item))
+            // Allow-list the only kinds a request may target — media leaves + series/season/album — so a
+            // BoxSet, MusicArtist, plain folder, or library root can't fan out over the whole library.
+            if (!MediaItemResolver.IsAllowedGenerateTarget(item))
             {
-                return BadRequest(new { error = "Select a specific movie, episode, season, or series." });
+                return BadRequest(new { error = "This item type cannot be requested. Select a movie, episode, series, season, or album." });
             }
 
             var lang = RequestValidation.NormalizeLanguage(language, config.DefaultLanguage);
