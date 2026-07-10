@@ -4,6 +4,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Text.RegularExpressions;
 using WhisperSubs.Configuration;
+using WhisperSubs.Controller;
 using WhisperSubs.Web;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Common.Plugins;
@@ -17,6 +18,7 @@ namespace WhisperSubs
     {
         private readonly IApplicationPaths _appPaths;
         private readonly ILogger<Plugin> _logger;
+        private readonly ILoggerFactory _loggerFactory;
 
         internal const string ScriptTag = "<script src=\"configurationpage?name=whisperSubs.js\"></script>";
 
@@ -46,14 +48,39 @@ namespace WhisperSubs
         public Plugin(
             IApplicationPaths applicationPaths,
             IXmlSerializer xmlSerializer,
-            ILogger<Plugin> logger)
+            ILogger<Plugin> logger,
+            ILoggerFactory loggerFactory)
             : base(applicationPaths, xmlSerializer)
         {
             _appPaths = applicationPaths;
             _logger = logger;
+            _loggerFactory = loggerFactory;
             Instance = this;
 
+            // Hot-add workers to the LIVE pool when the admin saves a Workers-config change, so a newly-added
+            // worker joins mid-backlog without a Jellyfin restart (whisper-subs-9gq). BasePlugin raises
+            // ConfigurationChanged from UpdateConfiguration after the new config is persisted; the handler
+            // swallows+logs any failure so a config save can never throw.
+            ConfigurationChanged += OnConfigurationChanged;
+
             InjectClientScript();
+        }
+
+        /// <summary>
+        /// Reconciles the live worker pool after a configuration change (whisper-subs-9gq) so a worker added
+        /// to the config joins the running pool without a restart. Never throws — a config save must not fail.
+        /// </summary>
+        private void OnConfigurationChanged(object? sender, BasePluginConfiguration configuration)
+        {
+            try
+            {
+                var count = SubtitleQueueService.Instance.ReconcileWorkers(Configuration, _loggerFactory);
+                _logger.LogDebug("WhisperSubs: reconciled worker pool after configuration change ({Count} worker(s))", count);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "WhisperSubs: failed to reconcile workers after a configuration change");
+            }
         }
 
         public static Plugin Instance { get; private set; } = null!;

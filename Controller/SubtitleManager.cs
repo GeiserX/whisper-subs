@@ -234,6 +234,14 @@ namespace WhisperSubs.Controller
                 enableTranslation: config?.EnableTranslation == true,
                 force: force);
 
+            // Which audio-track languages the per-track passes below transcribe. PrimaryOnly restricts
+            // the "auto" multi-audio case to just the primary/default track; All (default) keeps every
+            // detected language. This is a no-op for a specific DefaultLanguage or the no-tags 'auto'
+            // fallback (both single-element). NOTE: the translation pass deliberately still sees the FULL
+            // `languages` list — it needs a non-English source even when the primary audio track is English.
+            var passLanguages = SelectAudioLanguages(
+                languages, config?.AudioLanguageSelection ?? AudioLanguageSelection.All);
+
             int attempted = 0;
             int failed = 0;
             Exception? firstError = null;
@@ -257,7 +265,7 @@ namespace WhisperSubs.Controller
 
             if (subtitleMode != SubtitleMode.TranslationOnly)
             {
-                foreach (var lang in languages)
+                foreach (var lang in passLanguages)
                 {
                     // Full (original-language transcription) pass.
                     if (plan.OriginalPassApplies)
@@ -336,6 +344,31 @@ namespace WhisperSubs.Controller
                 ForcedPassApplies: forcedPassApplies,
                 OriginalPassApplies: fullPassApplies && wantOriginal,
                 TranslationApplies: translationApplies);
+        }
+
+        /// <summary>
+        /// Pure selection of which detected audio-track languages the per-track (original-language +
+        /// forced) passes iterate over, given the <see cref="AudioLanguageSelection"/> toggle.
+        /// <list type="bullet">
+        /// <item><see cref="AudioLanguageSelection.All"/> (default) returns <paramref name="detected"/>
+        /// unchanged — one subtitle per audio language, the existing behavior.</item>
+        /// <item><see cref="AudioLanguageSelection.PrimaryOnly"/> keeps only the first/primary track's
+        /// language.</item>
+        /// </list>
+        /// A 0- or 1-element list is returned unchanged either way, so this only ever narrows the "auto"
+        /// multi-language case: a specific default language and the no-tags whisper-auto-detect fallback are
+        /// both single-element and therefore unaffected. Extracted so the choice is unit-testable without
+        /// <c>Plugin.Instance</c>.
+        /// </summary>
+        internal static IReadOnlyList<string> SelectAudioLanguages(
+            IReadOnlyList<string> detected, AudioLanguageSelection selection)
+        {
+            if (selection == AudioLanguageSelection.PrimaryOnly && detected.Count > 0)
+            {
+                return new[] { detected[0] };
+            }
+
+            return detected;
         }
 
         /// <summary>

@@ -227,10 +227,13 @@ namespace WhisperSubs.Api
                     return NotFound(new { error = "Item not found" });
                 }
 
-                // Guard against enqueuing an entire library: only specific media or season/series containers.
-                if (MediaItemResolver.IsWholeLibraryContainer(parent))
+                // Allow-list the only kinds we may fan out over: media leaves (movie/episode/audio) and the
+                // intended containers (series/season/album). Everything else — library roots, BoxSet
+                // collections, MusicArtist, plain folders — is rejected so GenerateAll(Recursive) can't flood
+                // the whole library with an uncapped descendant sweep.
+                if (!MediaItemResolver.IsAllowedGenerateTarget(parent))
                 {
-                    return BadRequest(new { error = "Select a specific movie, episode, season, or series." });
+                    return BadRequest(new { error = "This item type cannot be used as a GenerateAll target. Select a movie, episode, series, season, album, or a single media item." });
                 }
 
                 var config = Plugin.Instance.Configuration;
@@ -500,6 +503,28 @@ namespace WhisperSubs.Api
                 // Never throw — the endpoint contract is an always-shaped {ok, warning, ...} result.
                 sw.Stop();
                 return Ok(new { ok = false, warning = false, latencyMs = sw.ElapsedMilliseconds, message = $"Unreachable: {ex.Message}" });
+            }
+        }
+
+        /// <summary>
+        /// Hot-reloads the worker pool from the current configuration WITHOUT a Jellyfin restart
+        /// (whisper-subs-9gq): grows the live pool so a just-added worker joins the running drain immediately,
+        /// within one drain cycle and without dropping in-flight jobs on the other workers. A manual fallback
+        /// to the automatic on-config-change trigger, and makes the feature verifiable without a config
+        /// round-trip. Admin-only via the class-level RequiresElevation policy (mirrors Workers/TestConnection).
+        /// </summary>
+        [HttpPost("Workers/Reload")]
+        public ActionResult ReloadWorkers()
+        {
+            try
+            {
+                var count = SubtitleQueueService.Instance.ReconcileWorkers(Plugin.Instance.Configuration, _loggerFactory);
+                return Ok(new { message = "Worker pool reconciled", workers = count });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error reloading worker pool");
+                return StatusCode(500, new { error = ex.Message });
             }
         }
 
