@@ -385,6 +385,7 @@ After installation, navigate to **Dashboard** > **Plugins** > **WhisperSubs** to
 | Setting | Description |
 |---|---|
 | **Default Language** | `Auto-detect` reads the language from each file's audio stream metadata and generates matching subtitles. Choose a specific language to force it for all transcriptions. |
+| **Audio Languages (auto-detect)** (`AudioLanguageSelection`) | Only applies with **Auto-detect** on a file that has more than one audio language. `All audio languages` (default) transcribes **every** audio track's language -- one `.<lang>.generated.srt` per language. `Primary audio track only` transcribes just the first/primary track and skips the others. A specific default language, or a file with no audio language tags, is unaffected. |
 | **Subtitle Mode** | Full, Forced Only, Full + Forced, or Translation Only. See [Subtitle Modes](#subtitle-modes) below. |
 | **Enable Auto-Generation** | When enabled, the scheduled task will scan selected libraries and generate subtitles for items that lack them. |
 | **Enabled Libraries** | Select which libraries should be monitored for automatic subtitle generation. |
@@ -417,6 +418,8 @@ After installation, navigate to **Dashboard** > **Plugins** > **WhisperSubs** to
 The plugin supports three language modes:
 
 1. **Auto-detect (recommended)** -- The plugin uses FFprobe to read the audio stream's language tag (e.g., `spa` → `es`, `eng` → `en`). Subtitles are generated in the language that matches the audio. If a file has multiple audio tracks in different languages, subtitles are generated for each one.
+
+   **Multiple audio languages.** By default (`AudioLanguageSelection = All`) every audio track's language is transcribed, producing one `.<lang>.generated.srt` per language (e.g. a Spanish + English file yields both `Movie.es.generated.srt` and `Movie.en.generated.srt`, each transcribed from its own audio track). Set **Audio Languages (auto-detect)** to `Primary audio track only` (`AudioLanguageSelection = PrimaryOnly`) to transcribe only the first/primary audio track and skip the secondary ones. This only affects auto-detect on multi-language files; a specific default language, or a file with no audio language tags, already resolves to a single track. The English translation pass is independent of this setting.
 
 2. **Whisper auto-detection** -- When no language metadata is available, the request falls through to whisper's built-in language detection (`-l auto`), which analyzes the first 30 seconds of audio.
 

@@ -158,4 +158,28 @@ public class WorkerPoolTests
         pool.Release(b.Key);
         Assert.Equal(0, pool.ActiveJobs);            // both released cleanly (would be 1 if released by Id)
     }
+
+    [Fact]
+    public async Task Ctor_DuplicateIds_KeepsBothWorkers_DistinctRoutingKeys_AndSummedCapacity()
+    {
+        // Characterization (whisper-subs-9gq): two workers colliding on Id must NOT collapse — the ctor's
+        // collision-safe scheme keys them "dup" and "dup#1", and capacity is the SUM of their capped
+        // concurrencies. Pins the routing-key behavior so a refactor can't silently merge them (which would
+        // drop a worker / halve capacity). Snapshot still surfaces both (each under its own Id "dup").
+        var pool = new WorkerPool(new[] { Worker("dup", 2), Worker("dup", 3) });
+
+        Assert.Equal(2, pool.WorkerCount);
+        Assert.Equal(5, pool.TotalCapacity);        // 2 + 3
+        Assert.Equal(2, pool.Snapshot().Count);     // both present
+
+        // The internal routing keys are observable via the lease keys: filling all 5 slots must touch BOTH
+        // "dup" and "dup#1", proving the collision suffix keeps the reverse key→worker lookup unambiguous.
+        var leases = new System.Collections.Generic.List<WorkerLease>();
+        for (var i = 0; i < 5; i++) leases.Add(await pool.AcquireAsync(AnyJob, default));
+        var keys = leases.Select(l => l.Key).Distinct().OrderBy(k => k, System.StringComparer.Ordinal).ToList();
+        Assert.Equal(new[] { "dup", "dup#1" }, keys);
+
+        foreach (var l in leases) pool.Release(l.Key);
+        Assert.Equal(0, pool.ActiveJobs);
+    }
 }

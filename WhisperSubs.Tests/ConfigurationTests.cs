@@ -77,6 +77,35 @@ public class ConfigurationTests
     }
 
     [Fact]
+    public void AudioLanguageSelection_DefaultsToAll()
+    {
+        // Default All = transcribe every audio-track language (existing behavior) — an upgrade must not
+        // silently start dropping secondary-audio subtitles.
+        var config = new PluginConfiguration();
+        Assert.Equal(AudioLanguageSelection.All, config.AudioLanguageSelection);
+    }
+
+    [Fact]
+    public void AudioLanguageSelection_AbsentFromJson_KeepsAll()
+    {
+        // Existing installs' config has no key — deserialization must land on the safe All default.
+        var config = JsonSerializer.Deserialize<PluginConfiguration>("{}");
+        Assert.NotNull(config);
+        Assert.Equal(AudioLanguageSelection.All, config!.AudioLanguageSelection);
+    }
+
+    [Fact]
+    public void AudioLanguageSelection_SerializesByName_AndRoundTrips()
+    {
+        // Serializes by NAME over the config REST API ([JsonStringEnumConverter]); the config page uses
+        // the string option value.
+        var json = JsonSerializer.Serialize(new PluginConfiguration { AudioLanguageSelection = AudioLanguageSelection.PrimaryOnly });
+        Assert.Contains("\"PrimaryOnly\"", json);
+        var back = JsonSerializer.Deserialize<PluginConfiguration>(json);
+        Assert.Equal(AudioLanguageSelection.PrimaryOnly, back!.AudioLanguageSelection);
+    }
+
+    [Fact]
     public void PluginConfiguration_DefaultValues()
     {
         var config = new PluginConfiguration();

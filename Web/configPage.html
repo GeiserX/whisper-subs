@@ -132,6 +132,21 @@
                     </div>
 
                     <div class="selectContainer">
+                        <label class="selectLabel" for="selectAudioLanguageSelection">Audio languages (auto-detect)</label>
+                        <select is="emby-select" id="selectAudioLanguageSelection" name="AudioLanguageSelection">
+                            <option value="All">All audio languages</option>
+                            <option value="PrimaryOnly">Primary audio track only</option>
+                        </select>
+                        <div class="fieldDescription">
+                            Only applies when the language above is <strong>Auto-detect</strong> and a file has more than one audio language.
+                            <strong>All audio languages</strong> (default) transcribes every audio track's language &mdash; one
+                            <code>.&lt;lang&gt;.generated.srt</code> per language.
+                            <strong>Primary audio track only</strong> transcribes just the first/primary audio track and skips the others.
+                            A specific language above, or a file with no audio language tags, is unaffected (already a single track).
+                        </div>
+                    </div>
+
+                    <div class="selectContainer">
                         <label class="selectLabel" for="selectSubtitleMode">Subtitle Mode</label>
                         <select is="emby-select" id="selectSubtitleMode" name="SubtitleMode">
                             <option value="0">Full</option>
@@ -1331,6 +1346,7 @@
                             page.querySelector('#txtRemoteWhisperModel').value = config.RemoteWhisperModel || 'Systran/faster-whisper-large-v3';
                             page.querySelector('#txtRemoteWhisperApiKey').value = config.RemoteWhisperApiKey || '';
                             page.querySelector('#selectDefaultLanguage').value = config.DefaultLanguage || 'auto';
+                            page.querySelector('#selectAudioLanguageSelection').value = config.AudioLanguageSelection || 'All';
                             page.querySelector('#selectSubtitleMode').value = (config.SubtitleMode != null ? config.SubtitleMode : 0).toString();
                             page.querySelector('#chkEnableAutoGeneration').checked = config.EnableAutoGeneration || false;
                             page.querySelector('#chkEnableLyricsGeneration').checked = config.EnableLyricsGeneration || false;
@@ -1385,6 +1401,7 @@
                         config.RemoteWhisperModel = (page.querySelector('#txtRemoteWhisperModel').value || '').trim() || 'Systran/faster-whisper-large-v3';
                         config.RemoteWhisperApiKey = (page.querySelector('#txtRemoteWhisperApiKey').value || '').trim();
                         config.DefaultLanguage = page.querySelector('#selectDefaultLanguage').value || 'auto';
+                        config.AudioLanguageSelection = page.querySelector('#selectAudioLanguageSelection').value || 'All';
                         config.SubtitleMode = parseInt(page.querySelector('#selectSubtitleMode').value, 10) || 0;
                         config.EnableAutoGeneration = page.querySelector('#chkEnableAutoGeneration').checked;
                         config.EnableLyricsGeneration = page.querySelector('#chkEnableLyricsGeneration').checked;
