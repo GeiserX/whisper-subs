@@ -304,7 +304,12 @@ namespace WhisperSubs.ScheduledTasks
                     {
                         // Issue #101: subtitles may live in the media folder OR the item's internal
                         // metadata path (read-only / save-with-media-off libraries), so look in both.
-                        var existingFiles = SubtitleManager.FindGeneratedFiles(item, dir, baseName + ".*.generated.srt").ToArray();
+                        // Configurable naming: widen the glob to any .srt and keep only the plugin's own
+                        // sidecars (new label-anchored names OR the legacy .generated./.translated. anchors).
+                        var label = Plugin.Instance?.Configuration?.SubtitleLabel ?? SubtitleNaming.DefaultLabel;
+                        var existingFiles = SubtitleManager.FindGeneratedFiles(item, dir, baseName + ".*.srt")
+                            .Where(f => SubtitleNaming.IsPluginOwnedSubtitle(System.IO.Path.GetFileName(f), label))
+                            .ToArray();
                         var noForeignMarkers = SubtitleManager.FindGeneratedFiles(item, dir, baseName + ".*.forced.noforeignlang").ToArray();
                         var hasFullSrt = existingFiles.Any(f => !System.IO.Path.GetFileName(f).Contains(".forced."));
 
@@ -322,7 +327,7 @@ namespace WhisperSubs.ScheduledTasks
                                     var ext = System.IO.Path.GetExtension(f).ToLowerInvariant();
                                     return subtitleExts.Contains(ext)
                                         && !name.Contains(".forced.")
-                                        && !name.Contains(".generated.");
+                                        && !SubtitleNaming.IsPluginOwnedSubtitle(name, label);
                                 });
                         }
 
@@ -350,8 +355,12 @@ namespace WhisperSubs.ScheduledTasks
                         var hasTranslatedSrt = false;
                         if (needsTranslation && dir != null)
                         {
-                            hasTranslatedSrt = SubtitleManager.GeneratedFileExists(
-                                item, System.IO.Path.Combine(dir, baseName + ".en.translated.srt"));
+                            // Configurable naming: any owned translated sidecar counts (legacy
+                            // .en.translated.srt OR a new label-anchored .translated. name).
+                            hasTranslatedSrt = SubtitleManager.FindGeneratedFiles(item, dir, baseName + ".*.srt")
+                                .Select(f => System.IO.Path.GetFileName(f))
+                                .Any(name => SubtitleNaming.IsPluginOwnedSubtitle(name, label)
+                                    && SubtitleNaming.Classify(name, label) == SubtitleNaming.OwnedKind.Translated);
 
                             // Issue #82: an existing usable English subtitle stream (embedded OR
                             // external) satisfies the translation need just as a .en.translated.srt

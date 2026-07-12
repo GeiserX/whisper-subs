@@ -101,16 +101,18 @@ namespace WhisperSubs.Controller
         }
 
         /// <summary>
-        /// True if the path is one of the plugin's own generated outputs
-        /// (<c>.generated.srt</c>, <c>.forced.generated.srt</c>, <c>.en.translated.srt</c>),
-        /// which must not count as a pre-existing user subtitle.
+        /// True if the path is one of the plugin's own generated outputs — a new label-anchored name
+        /// (<c>.{SubtitleLabel}.</c>, e.g. <c>.WhisperSubs.</c>) OR a legacy anchor
+        /// (<c>.generated.srt</c>, <c>.forced.generated.srt</c>, <c>.en.translated.srt</c>) — which must
+        /// not count as a pre-existing user subtitle. Delegates to <see cref="SubtitleNaming.IsPluginOwnedSubtitle"/>
+        /// (which ORs the configured label with the legacy anchors), so legacy sidecars stay recognised.
         /// </summary>
         public static bool IsPluginGeneratedPath(string? path)
         {
             if (string.IsNullOrEmpty(path)) return false;
             var name = System.IO.Path.GetFileName(path);
-            return name.Contains(".generated.", StringComparison.OrdinalIgnoreCase)
-                || name.Contains(".translated.", StringComparison.OrdinalIgnoreCase);
+            var label = Plugin.Instance?.Configuration?.SubtitleLabel ?? SubtitleNaming.DefaultLabel;
+            return SubtitleNaming.IsPluginOwnedSubtitle(name, label);
         }
 
         /// <summary>

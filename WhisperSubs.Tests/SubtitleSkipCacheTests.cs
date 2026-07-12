@@ -57,6 +57,23 @@ public class SubtitleSkipCacheTests
         Assert.NotEqual(baseSig, SubtitleSkipCache.ComputeSignature(mutated));
     }
 
+    [Fact]
+    public void ComputeSignature_ChangesWhenTemplateOrLabelChanges()
+    {
+        // Configurable naming: the template and label decide which filenames read as plugin-owned,
+        // hence which items are "already satisfied". Changing either MUST invalidate the whole cache
+        // (FromJson discards on a signature mismatch) so a rename never reuses a stale verdict.
+        var baseSig = SubtitleSkipCache.ComputeSignature(BaseConfig());
+
+        var templateChanged = BaseConfig();
+        templateChanged.SubtitleFilenameTemplate = "{name}.{lang}{.type}.{label}";
+        Assert.NotEqual(baseSig, SubtitleSkipCache.ComputeSignature(templateChanged));
+
+        var labelChanged = BaseConfig();
+        labelChanged.SubtitleLabel = "MyBrand";
+        Assert.NotEqual(baseSig, SubtitleSkipCache.ComputeSignature(labelChanged));
+    }
+
     // ── CanSkip ─────────────────────────────────────────────────────────────
 
     private const long Now = 1_000_000_000_000L;

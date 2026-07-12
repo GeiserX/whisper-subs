@@ -234,11 +234,16 @@ public class SubtitleInventoryTests
     // -------------------------------------------------------------------------
 
     [Theory]
-    // Case 11a: plugin-generated outputs (case-insensitive on the marker).
+    // Case 11a: plugin-generated outputs (case-insensitive on the marker). Legacy .generated./
+    // .translated. anchors AND the new default label anchor (.WhisperSubs.) are all owned. With no
+    // Plugin.Instance in the test host, the label falls back to SubtitleNaming.DefaultLabel ("WhisperSubs").
     [InlineData("/m/Movie.en.generated.srt")]
     [InlineData("/m/Movie.ko.forced.generated.srt")]
     [InlineData("/m/Movie.en.translated.srt")]
     [InlineData("/m/Movie.EN.GENERATED.srt")]
+    [InlineData("/m/Movie.en.WhisperSubs.srt")]           // new brand-first full sub
+    [InlineData("/m/Movie.es.WhisperSubs.forced.srt")]    // new forced sub
+    [InlineData("/m/Movie.en.WhisperSubs.translated.srt")] // new translated sub
     public void IsPluginGeneratedPath_GeneratedOutputs_ReturnsTrue(string path)
     {
         Assert.True(SubtitleInventory.IsPluginGeneratedPath(path));

@@ -677,7 +677,12 @@ namespace WhisperSubs.Api
                     var dir = System.IO.Path.GetDirectoryName(item.Path);
                     var baseName = System.IO.Path.GetFileNameWithoutExtension(item.Path);
                     // Issue #101: subtitles may live in the media folder OR the item's metadata path.
-                    var found = SubtitleManager.FindGeneratedFiles(item, dir, $"{baseName}.*.generated.srt").ToList();
+                    // Configurable naming: widen the glob to any .srt and keep only the plugin's own
+                    // sidecars (new label-anchored OR legacy .generated./.translated.).
+                    var label = Plugin.Instance.Configuration.SubtitleLabel ?? SubtitleNaming.DefaultLabel;
+                    var found = SubtitleManager.FindGeneratedFiles(item, dir, $"{baseName}.*.srt")
+                        .Where(f => SubtitleNaming.IsPluginOwnedSubtitle(System.IO.Path.GetFileName(f), label))
+                        .ToList();
 
                     var fullFiles = found.Where(f => !System.IO.Path.GetFileName(f).Contains(".forced.")).ToList();
                     var forcedFiles = found.Where(f => System.IO.Path.GetFileName(f).Contains(".forced.")).ToList();
@@ -692,10 +697,22 @@ namespace WhisperSubs.Api
                     });
                 }
 
-                var subtitlePath = System.IO.Path.ChangeExtension(item.Path, $".{lang}.generated.srt");
-                var forcedSubtitlePath = System.IO.Path.ChangeExtension(item.Path, $".{lang}.forced.generated.srt");
-                var hasGeneratedSubtitle = SubtitleManager.GeneratedFileExists(item, subtitlePath);
-                var hasForcedSubtitle = SubtitleManager.GeneratedFileExists(item, forcedSubtitlePath);
+                // Configurable naming: the CANONICAL (freshly-written) full-sub name comes from the
+                // template, but EXISTENCE is a glob-and-filter so a legacy-named sidecar still reports
+                // "exists". Restrict to this language via the ".{lang}." segment both schemes share.
+                var statusLabel = Plugin.Instance.Configuration.SubtitleLabel ?? SubtitleNaming.DefaultLabel;
+                var statusTemplate = SubtitleNaming.EffectiveTemplate(Plugin.Instance.Configuration.SubtitleFilenameTemplate);
+                var canonicalFullPath = SubtitleNaming.BuildMediaAdjacentPath(item.Path, statusTemplate, lang, statusLabel, type: "", ".srt");
+
+                var statusDir = System.IO.Path.GetDirectoryName(item.Path);
+                var statusBase = System.IO.Path.GetFileNameWithoutExtension(item.Path);
+                var ownedForLang = SubtitleManager.FindGeneratedFiles(item, statusDir, $"{statusBase}.*.srt")
+                    .Select(f => System.IO.Path.GetFileName(f))
+                    .Where(name => SubtitleNaming.IsPluginOwnedSubtitle(name, statusLabel)
+                        && name.Contains($".{lang}.", StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+                var hasGeneratedSubtitle = ownedForLang.Any(name => !name.Contains(".forced."));
+                var hasForcedSubtitle = ownedForLang.Any(name => name.Contains(".forced."));
 
                 return Ok(new SubtitleStatus
                 {
@@ -703,7 +720,7 @@ namespace WhisperSubs.Api
                     HasGeneratedSubtitle = hasGeneratedSubtitle,
                     HasForcedSubtitle = hasForcedSubtitle,
                     HasExistingSubtitles = item is Video v2 && v2.HasSubtitles,
-                    SubtitlePath = hasGeneratedSubtitle ? subtitlePath : null
+                    SubtitlePath = hasGeneratedSubtitle ? canonicalFullPath : null
                 });
             }
             catch (Exception ex)
