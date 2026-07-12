@@ -415,24 +415,45 @@ namespace WhisperSubs.Controller
             BaseItem item, ISubtitleProvider provider, string lang,
             string mediaPath, bool force, CancellationToken cancellationToken)
         {
-            var srtPath = ResolveSubtitleSavePath(item, Path.ChangeExtension(mediaPath, $".{lang}.generated.srt"));
+            var label = Plugin.Instance?.Configuration?.SubtitleLabel ?? SubtitleNaming.DefaultLabel;
+            var template = SubtitleNaming.EffectiveTemplate(Plugin.Instance?.Configuration?.SubtitleFilenameTemplate);
+            // Fresh output always goes to the canonical new-naming path (brand-first default →
+            // "<name>.<lang>.<label>.srt"); the resume source located below may be a LEGACY ".generated.srt".
+            var srtPath = ResolveSubtitleSavePath(item, SubtitleNaming.BuildMediaAdjacentPath(mediaPath, template, lang, label, type: "", ".srt"));
             string existingSrt = "";
             double resumeOffsetSeconds = 0;
             int existingEntryCount = 0;
 
+            // R2 (contract §4): locate ANY on-disk plugin-owned FULL subtitle for THIS language — the
+            // legacy "<name>.<lang>.generated.srt" OR the new "<name>.<lang>.<label>.srt" — so an upgraded
+            // install with a partial resumes it instead of restarting as a second file. Globs media +
+            // metadata dirs (issue #101) and filters with the naming engine. Prefer the canonical path
+            // when already on disk, else resume from whatever owned full file is found.
+            var ownedFullFiles = FindGeneratedFiles(item, Path.GetDirectoryName(mediaPath), Path.GetFileNameWithoutExtension(mediaPath) + ".*.srt")
+                .Where(f =>
+                {
+                    var name = Path.GetFileName(f);
+                    return name.Contains("." + lang + ".", StringComparison.OrdinalIgnoreCase)
+                        && SubtitleNaming.IsPluginOwnedSubtitle(name, label)
+                        && SubtitleNaming.Classify(name, label) == SubtitleNaming.OwnedKind.Full;
+                })
+                .ToList();
+            var existingSrtPath = ownedFullFiles.FirstOrDefault(f => string.Equals(f, srtPath, StringComparison.OrdinalIgnoreCase))
+                ?? ownedFullFiles.FirstOrDefault();
+
             // Issue #82: if a usable subtitle in THIS language already exists (embedded or external,
-            // text, non-forced when configured) and we have NO partial .generated.srt to resume,
-            // skip generation. The resume path below (when srtPath exists) is preserved untouched.
+            // text, non-forced when configured) and we have NO partial to resume, skip generation.
+            // The resume path below (when an owned file exists) is preserved untouched.
             // Bypassed when force=true (explicit manual request).
-            if (!force && !File.Exists(srtPath) && ShouldSkipForExistingSubtitle(item, lang))
+            if (!force && existingSrtPath is null && ShouldSkipForExistingSubtitle(item, lang))
             {
                 _logger.LogInformation("Skipping full subtitle for {ItemName} [{Language}]: usable subtitle already present", item.Name, lang);
                 return (GenerationOutcome.Skipped, null);
             }
 
-            if (File.Exists(srtPath))
+            if (existingSrtPath is not null)
             {
-                existingSrt = await File.ReadAllTextAsync(srtPath, cancellationToken);
+                existingSrt = await File.ReadAllTextAsync(existingSrtPath, cancellationToken);
                 var lastTimestamp = WhisperProvider.ParseLastSrtTimestamp(existingSrt);
                 var mediaDuration = await GetMediaDurationAsync(mediaPath, cancellationToken);
 
@@ -476,6 +497,27 @@ namespace WhisperSubs.Controller
 
                 await WriteTextAtomicAsync(srtPath, srtContent, CancellationToken.None);
                 _logger.LogInformation("Saved full subtitle to {SrtPath}", srtPath);
+
+                // R2 back-compat: when we resumed from a LEGACY-named owned file that differs from the
+                // canonical path, the fresh complete write above lives at srtPath — remove the old legacy
+                // sidecar so an upgraded install isn't left with two owned full tracks for the language.
+                // Defensive: only after the successful save, and never throw (a failed delete just leaves
+                // the harmless duplicate rather than failing the generation).
+                if (existingSrtPath is not null
+                    && !string.Equals(existingSrtPath, srtPath, StringComparison.OrdinalIgnoreCase)
+                    && File.Exists(existingSrtPath))
+                {
+                    try
+                    {
+                        File.Delete(existingSrtPath);
+                        _logger.LogInformation("Removed legacy resume-source subtitle {LegacyPath} after writing {SrtPath}", existingSrtPath, srtPath);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to delete legacy resume-source subtitle {LegacyPath}; leaving it in place", existingSrtPath);
+                    }
+                }
+
                 return (GenerationOutcome.Succeeded, null);
             }
             catch (OperationCanceledException)
@@ -515,10 +557,22 @@ namespace WhisperSubs.Controller
                 return (GenerationOutcome.Skipped, null);
             }
 
-            var translatedSrtPath = ResolveSubtitleSavePath(item, Path.ChangeExtension(mediaPath, ".en.translated.srt"));
+            var label = Plugin.Instance?.Configuration?.SubtitleLabel ?? SubtitleNaming.DefaultLabel;
+            var template = SubtitleNaming.EffectiveTemplate(Plugin.Instance?.Configuration?.SubtitleFilenameTemplate);
+            var translatedSrtPath = ResolveSubtitleSavePath(item, SubtitleNaming.BuildMediaAdjacentPath(mediaPath, template, lang: "en", label, type: "translated", ".srt"));
 
-            // Skip if translated subs already exist
-            if (File.Exists(translatedSrtPath))
+            // Skip if translated subs already exist. Widened from a single-path File.Exists so an
+            // upgraded install detects a LEGACY "<name>.en.translated.srt" OR a new-label owned
+            // translated sub instead of re-translating. Globs media + metadata dirs (issue #101)
+            // and filters with the naming engine (Classify == Translated).
+            var existingTranslated = FindGeneratedFiles(item, Path.GetDirectoryName(mediaPath), Path.GetFileNameWithoutExtension(mediaPath) + ".*.srt")
+                .Where(f =>
+                {
+                    var n = Path.GetFileName(f);
+                    return SubtitleNaming.IsPluginOwnedSubtitle(n, label) && SubtitleNaming.Classify(n, label) == SubtitleNaming.OwnedKind.Translated;
+                })
+                .ToList();
+            if (existingTranslated.Count > 0)
             {
                 _logger.LogInformation("Translated subtitle already exists for {ItemName}, skipping", item.Name);
                 return (GenerationOutcome.Skipped, null);
@@ -556,7 +610,7 @@ namespace WhisperSubs.Controller
                             var name = Path.GetFileName(f).ToLowerInvariant();
                             // Exclude the plugin's OWN output so it never self-satisfies.
                             return subtitleExts.Any(ext => name.EndsWith(ext))
-                                && !name.Contains(".generated.") && !name.Contains(".translated.")
+                                && !SubtitleNaming.IsPluginOwnedSubtitle(name, label)
                                 && (name.Contains(".en.") || name.Contains(".eng.") || name.Contains(".english."));
                         });
 
@@ -721,13 +775,26 @@ namespace WhisperSubs.Controller
                 }
             }
 
-            var forcedSrtPath = ResolveSubtitleSavePath(item, Path.ChangeExtension(mediaPath, $".{resolvedPrimary}.forced.generated.srt"));
+            var label = Plugin.Instance?.Configuration?.SubtitleLabel ?? SubtitleNaming.DefaultLabel;
+            var template = SubtitleNaming.EffectiveTemplate(Plugin.Instance?.Configuration?.SubtitleFilenameTemplate);
+            var forcedSrtPath = ResolveSubtitleSavePath(item, SubtitleNaming.BuildMediaAdjacentPath(mediaPath, template, resolvedPrimary, label, type: "forced", ".srt"));
             var noForeignMarkerPath = ResolveSubtitleSavePath(item, Path.ChangeExtension(mediaPath, $".{resolvedPrimary}.forced.noforeignlang"));
 
-            // Skip if forced SRT already exists with content
-            if (File.Exists(forcedSrtPath))
+            // Skip if a forced SRT already exists with content. Widened from a single-path File.Exists
+            // so an upgraded install detects a LEGACY "<name>.<lang>.forced.generated.srt" OR the new
+            // "<name>.<lang>.<label>.forced.srt" instead of re-transcribing forced dialogue. Globs media +
+            // metadata dirs (issue #101) and filters with the naming engine (Classify == Forced); the
+            // content check is preserved so an empty forced file still regenerates.
+            var existingForced = FindGeneratedFiles(item, Path.GetDirectoryName(mediaPath), Path.GetFileNameWithoutExtension(mediaPath) + ".*.srt")
+                .Where(f =>
+                {
+                    var n = Path.GetFileName(f);
+                    return SubtitleNaming.IsPluginOwnedSubtitle(n, label) && SubtitleNaming.Classify(n, label) == SubtitleNaming.OwnedKind.Forced;
+                })
+                .ToList();
+            foreach (var existingForcedPath in existingForced)
             {
-                var existing = await File.ReadAllTextAsync(forcedSrtPath, cancellationToken);
+                var existing = await File.ReadAllTextAsync(existingForcedPath, cancellationToken);
                 if (!string.IsNullOrWhiteSpace(existing))
                 {
                     _logger.LogInformation("Forced subtitle already exists for {ItemName} [{Language}], skipping",

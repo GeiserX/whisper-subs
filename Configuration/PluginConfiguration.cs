@@ -212,6 +212,27 @@ namespace WhisperSubs.Configuration
         public bool CountImageSubtitlesAsPresent { get; set; } = false;
 
         /// <summary>
+        /// The brand label written into the plugin's own subtitle filenames (via the
+        /// <c>{label}</c> token in <see cref="SubtitleFilenameTemplate"/>). With the brand-first
+        /// default template it sits right after the language code, so it becomes the Jellyfin
+        /// subtitle picker's Title AND the ownership marker (<c>.WhisperSubs.</c>) used to recognise
+        /// the plugin's own sidecars. Pick a distinctive value — it is matched as a substring.
+        /// Default <c>"WhisperSubs"</c>. See <see cref="Controller.SubtitleNaming"/>.
+        /// </summary>
+        public string SubtitleLabel { get; set; } = "WhisperSubs";
+
+        /// <summary>
+        /// Template for the plugin's subtitle filenames (without extension). Tokens: <c>{name}</c>
+        /// (media filename, opaque — its dots are preserved), <c>{lang}</c> (language code),
+        /// <c>{label}</c> (see <see cref="SubtitleLabel"/>), <c>{.type}</c> (<c>.translated</c>/<c>.forced</c>
+        /// when applicable, else empty), and <c>{type}</c> (the bare type). Must contain <c>{name}</c>,
+        /// <c>{lang}</c> and <c>{label}</c>; an invalid template falls back to the default at use time.
+        /// Brand-first default <c>{name}.{lang}.{label}{.type}</c> makes the label the picker Title.
+        /// See <see cref="Controller.SubtitleNaming"/>.
+        /// </summary>
+        public string SubtitleFilenameTemplate { get; set; } = "{name}.{lang}.{label}{.type}";
+
+        /// <summary>
         /// Issue #110: cache the per-item "already has subtitles" verdict so repeat scheduled runs skip
         /// the filesystem re-check for unchanged items (a large library can otherwise take many minutes
         /// just to re-confirm existing subtitles every run). The cache keys on the item's change token
