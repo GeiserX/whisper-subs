@@ -66,8 +66,10 @@ namespace WhisperSubs.Controller
 
         /// <summary>
         /// Signature of every config toggle that changes the skip verdict. When it differs from the
-        /// persisted one, the whole cache is discarded on load, so a mode/translation/forced/image or
-        /// language change never reuses a stale "complete" verdict. (Issue #110; guards #82/#83.)
+        /// persisted one, the whole cache is discarded on load, so a mode/translation/forced/image,
+        /// language, or subtitle-naming (template/label) change never reuses a stale "complete" verdict.
+        /// The template/label are included because they change which filenames count as plugin-owned,
+        /// hence which items read as already-satisfied. (Issue #110; guards #82/#83.)
         /// </summary>
         public static string ComputeSignature(PluginConfiguration c) => string.Join(
             "|",
@@ -79,7 +81,9 @@ namespace WhisperSubs.Controller
             c.IgnoreForcedSubtitles ? 1 : 0,
             c.CountImageSubtitlesAsPresent ? 1 : 0,
             c.EnableLyricsGeneration ? 1 : 0,
-            c.DefaultLanguage ?? string.Empty);
+            c.DefaultLanguage ?? string.Empty,
+            c.SubtitleFilenameTemplate ?? string.Empty,
+            c.SubtitleLabel ?? string.Empty);
 
         /// <summary>
         /// True when a cached entry lets us skip the probe for this item now: the entry exists, its

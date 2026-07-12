@@ -166,6 +166,52 @@
                         </div>
                     </div>
 
+                    <!-- ── Subtitle file naming ───────────────────────── -->
+                    <h2>Subtitle file naming</h2>
+                    <div class="fieldDescription" style="margin-bottom:0.5em;">
+                        Controls the label shown in Jellyfin's subtitle picker and the filename pattern used
+                        when saving generated subtitles.
+                    </div>
+
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="txtSubtitleLabel">Subtitle label</label>
+                        <input type="text" id="txtSubtitleLabel" name="SubtitleLabel" class="emby-input" maxlength="64" placeholder="WhisperSubs" />
+                        <div class="fieldDescription">Shown in the Jellyfin subtitle picker, e.g. 'WhisperSubs — English'.</div>
+                    </div>
+
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="txtSubtitleFilenameTemplate">Filename template</label>
+                        <input type="text" id="txtSubtitleFilenameTemplate" name="SubtitleFilenameTemplate" class="emby-input" maxlength="200" placeholder="{name}.{lang}.{label}{.type}" />
+                        <div class="fieldDescription">
+                            Placeholders: <code>{name}</code> media name, <code>{lang}</code> language code,
+                            <code>{label}</code> the label above, <code>{.type}</code> becomes
+                            <code>.translated</code>/<code>.forced</code>/empty depending on the subtitle kind.
+                        </div>
+                        <div id="subtitleTemplateWarning" class="fieldDescription" style="color:#CC7B19; display:none;"></div>
+                    </div>
+
+                    <div style="display:flex; gap:0.6em; flex-wrap:wrap; margin:0 0 1em 0;">
+                        <button is="emby-button" type="button" id="btnPresetBrandFirst" class="raised">
+                            <span>Brand first (recommended)</span>
+                        </button>
+                        <button is="emby-button" type="button" id="btnPresetLabelAtEnd" class="raised">
+                            <span>Label at end</span>
+                        </button>
+                        <button is="emby-button" type="button" id="btnPresetKeepGenerated" class="raised">
+                            <span>Keep .generated</span>
+                        </button>
+                    </div>
+
+                    <div id="subtitleNamingPreview" style="background:rgba(0,0,0,0.15); border-radius:6px; padding:1em; margin-bottom:1.5em;">
+                        <div class="fieldDescription" style="margin-bottom:0.5em;"><strong>Preview</strong> (example media "Episode", language "en"):</div>
+                        <div id="previewTranscription" style="font-family:monospace;"></div>
+                        <div id="previewTranslation" style="font-family:monospace;"></div>
+                        <div id="previewForced" style="font-family:monospace;"></div>
+                        <div class="fieldDescription" style="margin-top:0.5em;">
+                            Jellyfin subtitle picker shows: <span id="previewPickerLabel" style="font-family:monospace;"></span>
+                        </div>
+                    </div>
+
                     <!-- ── Automation ─────────────────────────────────── -->
                     <h2>Automation</h2>
 
@@ -703,6 +749,55 @@
                 // ── Engine management ────────────────────────────────────
                 _engineStatus: null,
                 _catalogModels: [],
+
+                // ── Subtitle file naming (Stream E) ──────────────────────
+                // Mirrors Controller/SubtitleNaming.cs BuildBaseName: {name} is opaque (never split its
+                // dots), {.type} becomes "."+type when type is non-empty else "", {type} becomes type or
+                // "", then ".." collapses to "." and leading/trailing "." is trimmed.
+                buildSubtitleBaseName: function (template, name, lang, label, type) {
+                    var result = (template || '')
+                        .split('{.type}').join(type ? ('.' + type) : '')
+                        .split('{type}').join(type || '')
+                        .split('{name}').join(name)
+                        .split('{lang}').join(lang)
+                        .split('{label}').join(label);
+                    while (result.indexOf('..') !== -1) { result = result.split('..').join('.'); }
+                    return result.replace(/^\.+/, '').replace(/\.+$/, '');
+                },
+
+                // Live preview + non-blocking validation for the naming fields. Renders every value
+                // via textContent (no innerHTML injection of the admin-typed template/label).
+                updateSubtitleNamingPreview: function (page) {
+                    var templateField = page.querySelector('#txtSubtitleFilenameTemplate');
+                    var labelField = page.querySelector('#txtSubtitleLabel');
+                    var warning = page.querySelector('#subtitleTemplateWarning');
+                    if (!templateField || !labelField || !warning) return;
+
+                    var template = (templateField.value || '').trim() || '{name}.{lang}.{label}{.type}';
+                    var label = (labelField.value || '').trim() || 'WhisperSubs';
+
+                    var missing = [];
+                    if (template.indexOf('{name}') === -1) missing.push('{name}');
+                    if (template.indexOf('{lang}') === -1) missing.push('{lang}');
+                    if (template.indexOf('{label}') === -1) missing.push('{label}');
+                    if (missing.length > 0) {
+                        warning.textContent = 'Template must contain {name}, {lang} and {label} (missing ' +
+                            missing.join(', ') + '). It will fall back to the default template.';
+                        warning.style.display = '';
+                    } else {
+                        warning.textContent = '';
+                        warning.style.display = 'none';
+                    }
+
+                    var transcription = WhisperSubsConfig.buildSubtitleBaseName(template, 'Episode', 'en', label, '') + '.srt';
+                    var translation = WhisperSubsConfig.buildSubtitleBaseName(template, 'Episode', 'en', label, 'translated') + '.srt';
+                    var forced = WhisperSubsConfig.buildSubtitleBaseName(template, 'Episode', 'en', label, 'forced') + '.srt';
+
+                    page.querySelector('#previewTranscription').textContent = 'Transcription: ' + transcription;
+                    page.querySelector('#previewTranslation').textContent = 'Translation: ' + translation;
+                    page.querySelector('#previewForced').textContent = 'Forced: ' + forced;
+                    page.querySelector('#previewPickerLabel').textContent = label + ' — English — SUBRIP — External';
+                },
 
                 loadEngine: function () {
                     WhisperSubsConfig.ajaxGet(ApiClient.getUrl('Plugins/WhisperSubs/Setup/Status'))
@@ -1348,6 +1443,9 @@
                             page.querySelector('#selectDefaultLanguage').value = config.DefaultLanguage || 'auto';
                             page.querySelector('#selectAudioLanguageSelection').value = config.AudioLanguageSelection || 'All';
                             page.querySelector('#selectSubtitleMode').value = (config.SubtitleMode != null ? config.SubtitleMode : 0).toString();
+                            page.querySelector('#txtSubtitleLabel').value = config.SubtitleLabel || 'WhisperSubs';
+                            page.querySelector('#txtSubtitleFilenameTemplate').value = config.SubtitleFilenameTemplate || '{name}.{lang}.{label}{.type}';
+                            WhisperSubsConfig.updateSubtitleNamingPreview(page);
                             page.querySelector('#chkEnableAutoGeneration').checked = config.EnableAutoGeneration || false;
                             page.querySelector('#chkEnableLyricsGeneration').checked = config.EnableLyricsGeneration || false;
                             page.querySelector('#chkEnableTranslation').checked = config.EnableTranslation || false;
@@ -1403,6 +1501,8 @@
                         config.DefaultLanguage = page.querySelector('#selectDefaultLanguage').value || 'auto';
                         config.AudioLanguageSelection = page.querySelector('#selectAudioLanguageSelection').value || 'All';
                         config.SubtitleMode = parseInt(page.querySelector('#selectSubtitleMode').value, 10) || 0;
+                        config.SubtitleLabel = (page.querySelector('#txtSubtitleLabel').value || '').trim() || 'WhisperSubs';
+                        config.SubtitleFilenameTemplate = (page.querySelector('#txtSubtitleFilenameTemplate').value || '').trim() || '{name}.{lang}.{label}{.type}';
                         config.EnableAutoGeneration = page.querySelector('#chkEnableAutoGeneration').checked;
                         config.EnableLyricsGeneration = page.querySelector('#chkEnableLyricsGeneration').checked;
                         var subtitleMode = parseInt(page.querySelector('#selectSubtitleMode').value, 10) || 0;
@@ -2236,6 +2336,29 @@
 
             document.querySelector('#btnReinjectScript').addEventListener('click', function () {
                 WhisperSubsConfig.reinjectScript();
+            });
+
+            document.querySelector('#txtSubtitleLabel').addEventListener('input', function () {
+                WhisperSubsConfig.updateSubtitleNamingPreview(document.querySelector('[data-role="page"]'));
+            });
+
+            document.querySelector('#txtSubtitleFilenameTemplate').addEventListener('input', function () {
+                WhisperSubsConfig.updateSubtitleNamingPreview(document.querySelector('[data-role="page"]'));
+            });
+
+            document.querySelector('#btnPresetBrandFirst').addEventListener('click', function () {
+                document.querySelector('#txtSubtitleFilenameTemplate').value = '{name}.{lang}.{label}{.type}';
+                WhisperSubsConfig.updateSubtitleNamingPreview(document.querySelector('[data-role="page"]'));
+            });
+
+            document.querySelector('#btnPresetLabelAtEnd').addEventListener('click', function () {
+                document.querySelector('#txtSubtitleFilenameTemplate').value = '{name}.{lang}{.type}.{label}';
+                WhisperSubsConfig.updateSubtitleNamingPreview(document.querySelector('[data-role="page"]'));
+            });
+
+            document.querySelector('#btnPresetKeepGenerated').addEventListener('click', function () {
+                document.querySelector('#txtSubtitleFilenameTemplate').value = '{name}.{lang}.{label}.generated';
+                WhisperSubsConfig.updateSubtitleNamingPreview(document.querySelector('[data-role="page"]'));
             });
 
             document.querySelector('#btnClearSkipCache').addEventListener('click', function () {
