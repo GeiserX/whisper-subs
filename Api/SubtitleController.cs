@@ -684,7 +684,7 @@ namespace WhisperSubs.Api
                         .Where(f => SubtitleNaming.IsPluginOwnedSubtitle(System.IO.Path.GetFileName(f), label))
                         .ToList();
 
-                    var fullFiles = found.Where(f => !System.IO.Path.GetFileName(f).Contains(".forced.")).ToList();
+                    var fullFiles = found.Where(f => SubtitleNaming.Classify(System.IO.Path.GetFileName(f), label) == SubtitleNaming.OwnedKind.Full).ToList();
                     var forcedFiles = found.Where(f => System.IO.Path.GetFileName(f).Contains(".forced.")).ToList();
 
                     return Ok(new SubtitleStatus
@@ -711,7 +711,7 @@ namespace WhisperSubs.Api
                     .Where(name => SubtitleNaming.IsPluginOwnedSubtitle(name, statusLabel)
                         && name.Contains($".{lang}.", StringComparison.OrdinalIgnoreCase))
                     .ToList();
-                var hasGeneratedSubtitle = ownedForLang.Any(name => !name.Contains(".forced."));
+                var hasGeneratedSubtitle = ownedForLang.Any(name => SubtitleNaming.Classify(name, statusLabel) == SubtitleNaming.OwnedKind.Full);
                 var hasForcedSubtitle = ownedForLang.Any(name => name.Contains(".forced."));
 
                 return Ok(new SubtitleStatus

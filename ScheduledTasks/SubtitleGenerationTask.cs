@@ -311,7 +311,10 @@ namespace WhisperSubs.ScheduledTasks
                             .Where(f => SubtitleNaming.IsPluginOwnedSubtitle(System.IO.Path.GetFileName(f), label))
                             .ToArray();
                         var noForeignMarkers = SubtitleManager.FindGeneratedFiles(item, dir, baseName + ".*.forced.noforeignlang").ToArray();
-                        var hasFullSrt = existingFiles.Any(f => !System.IO.Path.GetFileName(f).Contains(".forced."));
+                        // Only a FULL owned sub satisfies the full pass — a ".translated." owned file is
+                        // NOT full (it's an English translation). Classify restores the pre-feature behavior
+                        // where the "*.generated.srt" glob excluded translated files.
+                        var hasFullSrt = existingFiles.Any(f => SubtitleNaming.Classify(System.IO.Path.GetFileName(f), label) == SubtitleNaming.OwnedKind.Full);
 
                         // Also check for user-provided external subtitle files (non-forced, non-generated).
                         // Issue #83: image sidecars (.sub/.sup) only count when CountImageSubtitlesAsPresent

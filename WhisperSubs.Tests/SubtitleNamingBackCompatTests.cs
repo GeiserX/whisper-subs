@@ -51,6 +51,27 @@ public class SubtitleNamingBackCompatTests
         Assert.Equal(expected, SubtitleNaming.Classify(fileName, Label).ToString());
     }
 
+    // ---- Regression lock: a translated file is NOT a full sub (SubtitleGenerationTask hasFullSrt) --
+
+    [Theory]
+    [InlineData("Movie.en.translated.srt")]            // legacy translated
+    [InlineData("Movie.en.WhisperSubs.translated.srt")] // new-label translated
+    public void TranslatedFile_IsNotCountedAsFull(string fileName)
+    {
+        // The scheduled task's hasFullSrt gate keys off Classify == Full; a translated sub must not
+        // satisfy it (pre-feature the "*.generated.srt" glob excluded translated files).
+        Assert.NotEqual(SubtitleNaming.OwnedKind.Full, SubtitleNaming.Classify(fileName, Label));
+        Assert.Equal(SubtitleNaming.OwnedKind.Translated, SubtitleNaming.Classify(fileName, Label));
+    }
+
+    [Theory]
+    [InlineData("Movie.en.generated.srt")]   // legacy full
+    [InlineData("Movie.en.WhisperSubs.srt")]  // new-label full
+    public void FullFile_IsCountedAsFull(string fileName)
+    {
+        Assert.Equal(SubtitleNaming.OwnedKind.Full, SubtitleNaming.Classify(fileName, Label));
+    }
+
     // ---- Mixed library (pre-upgrade + post-upgrade + real user subs) ----------------------------
 
     [Theory]
