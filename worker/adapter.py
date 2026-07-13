@@ -91,16 +91,29 @@ BACKEND_HOST = _env("WHISPER_BACKEND_HOST", "127.0.0.1")
 BACKEND_PORT = int(_env("WHISPER_BACKEND_PORT", "8081"))
 BACKEND_INFERENCE_PATH = _env("WHISPER_INFERENCE_PATH", "/inference")
 
-# Finite ceiling on a SINGLE upstream inference. The plugin enforces its own per-call
-# deadline and drops the socket (handled by the disconnect-watcher below), so this only
-# has to (a) not guillotine a legitimately long film transcription, and (b) still be short
-# enough that a genuinely WEDGED whisper-server (stuck in a decode loop that never honours
-# the abort_callback) is detected in bounded time instead of holding the single inference
-# slot for a day. With WHISPER_MAX_INFLIGHT serialising the backend to one request at a
-# time, no legitimate single inference approaches this (a 3h film at beam-5 on Apple-Silicon
-# Metal is ~20 min); a request that blows past 1h is wedged, and _proxy_inference recycles
-# the child so the worker self-heals. Override for exotic hardware/models.
-BACKEND_TIMEOUT = float(_env("WHISPER_BACKEND_TIMEOUT", str(60 * 60)))
+# Wedge backstop for a SINGLE upstream inference, computed PER-REQUEST from the audio length
+# (see compute_backend_timeout). A whole-file transcription IS one request, so a flat ceiling
+# would guillotine a legitimately long film on a slow/CPU worker (a 2h15m film at 16 CPU threads
+# is ~1h48m per this repo's own benchmark). The plugin already enforces its OWN per-call deadline
+# (audioSeconds × JobTimeoutRealtimeFactor, clamped ≤12h) and drops the socket at it — the
+# disconnect-watcher below then aborts the upstream — so this backstop only matters if the client
+# never drops, and is deliberately scaled WELL ABOVE the plugin's deadline (factor 12 vs the
+# plugin's 6) so it can never fire before the plugin gives up. It exists solely to recover from a
+# whisper-server truly wedged in a decode loop that ignores the abort. Effective per request:
+# clamp(audioSeconds × FACTOR, FLOOR, CAP). The plugin always sends 16 kHz mono s16le = 32000 B/s.
+BACKEND_TIMEOUT_FLOOR = float(_env("WHISPER_BACKEND_TIMEOUT", str(60 * 60)))          # min backstop (short probes)
+BACKEND_TIMEOUT_FACTOR = float(_env("WHISPER_BACKEND_TIMEOUT_FACTOR", "12"))          # × realtime; ≫ any real decode
+BACKEND_TIMEOUT_CAP = float(_env("WHISPER_BACKEND_TIMEOUT_CAP", str(24 * 60 * 60)))   # absolute ceiling
+_WAV_BYTES_PER_SEC = 16000 * 2  # 16 kHz, mono, s16le — what the plugin always sends
+
+
+def compute_backend_timeout(body_bytes):
+    """Per-request wedge backstop derived from the audio size. Unknown/zero size => the CAP (be
+    lenient — never guillotine), always >= FLOOR so a tiny detection probe still gets a sane minimum."""
+    if body_bytes <= 0:
+        return BACKEND_TIMEOUT_CAP
+    audio_seconds = body_bytes / _WAV_BYTES_PER_SEC
+    return max(BACKEND_TIMEOUT_FLOOR, min(BACKEND_TIMEOUT_CAP, audio_seconds * BACKEND_TIMEOUT_FACTOR))
 
 # Max concurrent inferences forwarded to the upstream whisper-server. whisper.cpp's server
 # runs a SINGLE inference at a time, so a second request that arrives mid-transcription just
@@ -523,9 +536,13 @@ class Handler(BaseHTTPRequestHandler):
         conn = None
         client_gone = threading.Event()
         watch_stop = threading.Event()
+        # Distinguishes a timeout while UPLOADING the body from the client (a client/network stall —
+        # not an upstream fault) from a timeout while awaiting the INFERENCE (a possible backend wedge).
+        # Only the latter may recycle whisper-server.
+        upload_done = False
         try:
             conn = http.client.HTTPConnection(
-                BACKEND_HOST, BACKEND_PORT, timeout=BACKEND_TIMEOUT
+                BACKEND_HOST, BACKEND_PORT, timeout=compute_backend_timeout(total_len)
             )
             conn.putrequest(
                 "POST", BACKEND_INFERENCE_PATH, skip_host=True, skip_accept_encoding=True
@@ -553,6 +570,9 @@ class Handler(BaseHTTPRequestHandler):
                 # upstream connection so whisper-server stops waiting and frees its context.
                 self._send_json(400, '{"error":"client closed request body"}', close=True)
                 return
+
+            # Body is fully upstream. From here a socket.timeout is the INFERENCE wait, not the upload.
+            upload_done = True
 
             # The whole request is now upstream; whisper-server runs the (possibly very long)
             # inference while we block in getresponse(). Watch the CLIENT socket meanwhile: if the
@@ -589,15 +609,21 @@ class Handler(BaseHTTPRequestHandler):
                 log("client disconnected during inference; aborted upstream to free the slot")
                 self.close_connection = True
                 return
-            if isinstance(exc, socket.timeout):
-                # We were the ONLY in-flight request (serialised), yet got no response within
-                # BACKEND_TIMEOUT: whisper-server is wedged — stuck in a decode loop that never
-                # honoured the abort — not merely busy. Recycle the backend so the worker
-                # self-heals: the lifecycle watch thread restarts the process cleanly
-                # (launchd KeepAlive / compose restart) and the plugin requeues the job elsewhere.
+            if upload_done and isinstance(exc, socket.timeout):
+                # We were the ONLY in-flight request (serialised) and the body was fully uploaded, yet
+                # got no response within the (audio-length-scaled) backstop: whisper-server is wedged —
+                # stuck in a decode loop that never honoured the abort — not merely slow. Recycle the
+                # backend so the worker self-heals: the lifecycle watch thread restarts the process
+                # cleanly (launchd KeepAlive / compose restart) and the plugin requeues the job.
+                # (A timeout BEFORE upload_done is a client/upload stall, handled as a 502 below —
+                # never a backend kill.)
                 log("upstream inference exceeded %.0fs with no response — whisper-server wedged; "
-                    "recycling the backend to recover" % BACKEND_TIMEOUT)
+                    "recycling the backend to recover" % compute_backend_timeout(total_len))
                 self._send_json(503, '{"error":"upstream whisper-server wedged; restarting"}', close=True)
+                try:
+                    self.wfile.flush()  # get the 503 out before the watch thread os._exit()s us
+                except Exception:
+                    pass
                 _terminate_child()
                 return
             log("upstream error: %r" % exc)

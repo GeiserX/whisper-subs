@@ -251,10 +251,12 @@ namespace WhisperSubs.Configuration
 
         /// <summary>
         /// Seconds of audio (from each chunk's start) sent for language DETECTION only; 0 = whole
-        /// chunk. Detection needs only a few seconds, so a small window avoids slow/runaway decodes
-        /// on noisy audio without affecting final subtitle quality. Default 15.
+        /// chunk. Detection needs only a short window, so bounding it avoids slow/runaway decodes on
+        /// long/noisy chunks without affecting final subtitle quality (confirmed-foreign segments are
+        /// still transcribed in full). Default 30 — matches whisper's own ~30s language-detection
+        /// window, so detection recall is preserved while still capping oversized chunks.
         /// </summary>
-        public int LanguageDetectionSampleSeconds { get; set; } = 15;
+        public int LanguageDetectionSampleSeconds { get; set; } = 30;
 
         public List<string> EnabledLibraries { get; set; } = new List<string>();
 

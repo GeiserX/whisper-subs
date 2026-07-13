@@ -42,9 +42,12 @@ services:
       #   here — a second request waits on a cancellable queue instead of piling into the
       #   backend's accept queue behind a long job (which would silently blow short probes'
       #   deadlines). Raise ONLY if you run multiple backend instances; 0 disables the cap.
-      # WHISPER_BACKEND_TIMEOUT: "3600"   # Seconds to wait for a SINGLE upstream inference
-      #   before treating whisper-server as wedged and recycling it (self-heal). Default 1h
-      #   is well above any real single transcription; raise for exotic hardware/huge models.
+      # WHISPER_BACKEND_TIMEOUT: "3600"   # FLOOR (seconds) of the per-request wedge backstop. The
+      #   actual backstop scales with audio length (audioSeconds x WHISPER_BACKEND_TIMEOUT_FACTOR,
+      #   capped at WHISPER_BACKEND_TIMEOUT_CAP=86400) so a long film is never guillotined; a request
+      #   that still exceeds it is treated as a wedged whisper-server and the backend self-heals. The
+      #   factor (default 12) is well above the plugin's own 6x deadline, so this only fires if the
+      #   plugin never drops. Raise the floor/factor only for exotic hardware or huge models.
       # Pin a specific Vulkan ICD only if auto-discovery picks the wrong GPU. The
       # exact filename varies (Debian/Mesa often uses the *.x86_64.json form); leave
       # UNSET to auto-discover. Verify with: docker exec ... ls /usr/share/vulkan/icd.d/

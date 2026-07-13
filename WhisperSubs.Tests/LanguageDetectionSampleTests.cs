@@ -49,11 +49,13 @@ public class LanguageDetectionSampleTests
     }
 
     [Fact]
-    public void DefaultConfigValue_ClampsA62SecondChunkTo15()
+    public void DefaultConfigValue_ClampsA62SecondChunkToDefaultWindow()
     {
-        // Mirrors a fresh PluginConfiguration: LanguageDetectionSampleSeconds default 15.
+        // A fresh PluginConfiguration defaults LanguageDetectionSampleSeconds to whisper's own ~30s
+        // language-detection window, so an oversized 62s chunk is bounded to 30s for detection.
         var cfg = new WhisperSubs.Configuration.PluginConfiguration();
+        Assert.Equal(30, cfg.LanguageDetectionSampleSeconds);
         var seconds = SubtitleManager.ClampDetectionSeconds(cfg.LanguageDetectionSampleSeconds, chunkSeconds: 62.0);
-        Assert.Equal(15.0, seconds);
+        Assert.Equal(30.0, seconds);
     }
 }
