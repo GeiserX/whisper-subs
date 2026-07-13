@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using WhisperSubs.Configuration;
 using WhisperSubs.Controller.Workers;
 using Xunit;
@@ -49,4 +50,56 @@ public class WorkerConfigValidationTests
     [Fact]
     public void NegativeCostWeight_Fails()
         => Assert.False(WorkerConfigValidation.Validate(W(cost: -1)).Ok);
+
+    [Theory]
+    [InlineData("http://Host:9010", "http://host:9010/")]
+    [InlineData("http://host:9010", "HTTP://host:9010")]
+    [InlineData("http://host:9010/", "http://host:9010")]
+    public void NormalizeEndpoint_EquivalentUrls_MatchEachOther(string a, string b)
+        => Assert.Equal(WorkerConfigValidation.NormalizeEndpoint(a), WorkerConfigValidation.NormalizeEndpoint(b));
+
+    [Theory]
+    [InlineData("http://host:9010", "http://host:9011")]
+    [InlineData("http://hostA:9010", "http://hostB:9010")]
+    [InlineData("http://host:9010", "https://host:9010")]
+    public void NormalizeEndpoint_DifferentUrls_DoNotMatch(string a, string b)
+        => Assert.NotEqual(WorkerConfigValidation.NormalizeEndpoint(a), WorkerConfigValidation.NormalizeEndpoint(b));
+
+    [Fact]
+    public void CheckDuplicateEndpoints_TwoEnabledSameEndpoint_OneWarning()
+    {
+        var workers = new List<WhisperWorker>
+        {
+            W(url: "http://host:9010"),
+            W(url: "http://Host:9010/"),
+        };
+
+        var warnings = WorkerConfigValidation.CheckDuplicateEndpoints(workers);
+
+        Assert.Single(warnings);
+        Assert.Contains("host:9010", warnings[0]);
+    }
+
+    [Fact]
+    public void CheckDuplicateEndpoints_OneDisabled_NoWarning()
+    {
+        var enabled = W(url: "http://host:9010");
+        var disabled = W(url: "http://Host:9010/");
+        disabled.Enabled = false;
+        var workers = new List<WhisperWorker> { enabled, disabled };
+
+        Assert.Empty(WorkerConfigValidation.CheckDuplicateEndpoints(workers));
+    }
+
+    [Fact]
+    public void CheckDuplicateEndpoints_DistinctEndpoints_NoWarning()
+    {
+        var workers = new List<WhisperWorker>
+        {
+            W(url: "http://host-a:9010"),
+            W(url: "http://host-b:9010"),
+        };
+
+        Assert.Empty(WorkerConfigValidation.CheckDuplicateEndpoints(workers));
+    }
 }

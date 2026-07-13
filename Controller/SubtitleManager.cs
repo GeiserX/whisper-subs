@@ -726,6 +726,22 @@ namespace WhisperSubs.Controller
             || string.Equals(language, "english", StringComparison.OrdinalIgnoreCase);
 
         /// <summary>
+        /// Effective audio window, in seconds from a chunk's start, to send for a language-DETECTION
+        /// probe — as opposed to the full chunk used for actual transcription. Detection only needs a
+        /// few seconds of speech; sending a whole ~30-62s chunk (especially noisy/music audio) invites
+        /// a slow or runaway whisper decode past its per-call deadline (production logs showed chunks
+        /// occasionally exceeding 372s and being skipped). <paramref name="configured"/> is
+        /// <see cref="Configuration.PluginConfiguration.LanguageDetectionSampleSeconds"/>: 0 or negative
+        /// means "no bound — use the whole chunk" (matches pre-fix behavior); otherwise the window is
+        /// clamped to never exceed the chunk's own length. Pure — no I/O.
+        /// </summary>
+        internal static double ClampDetectionSeconds(int configured, double chunkSeconds)
+        {
+            if (configured <= 0 || chunkSeconds <= 0) return chunkSeconds;
+            return Math.Min(configured, chunkSeconds);
+        }
+
+        /// <summary>
         /// Generates a forced subtitle file containing only foreign-language segments.
         /// Uses VAD-based chunking, per-chunk language detection, and selective transcription.
         /// Output: Movie.{lang}.forced.generated.srt
@@ -879,7 +895,13 @@ namespace WhisperSubs.Controller
 
                     try
                     {
-                        await ExtractAudioChunkAsync(fullAudioPath, chunkPath, chunk.Start, chunkDuration, cancellationToken);
+                        // Bound the audio sent for DETECTION to a short leading window (quality-neutral
+                        // for detection; the later selective transcription of a confirmed-foreign segment
+                        // still uses the full chunk — see the `mergedSegments` loop below). Avoids a long/
+                        // noisy chunk driving a slow decode past its per-call deadline.
+                        var detectionSampleConfig = Plugin.Instance?.Configuration?.LanguageDetectionSampleSeconds ?? 15;
+                        var detectionSeconds = ClampDetectionSeconds(detectionSampleConfig, chunkDuration);
+                        await ExtractAudioChunkAsync(fullAudioPath, chunkPath, chunk.Start, detectionSeconds, cancellationToken);
                         var (detectedLang, probability) = await provider.DetectLanguageAsync(chunkPath, cancellationToken);
                         successfulDetections++;
                         consecutiveFailures = 0;

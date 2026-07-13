@@ -505,6 +505,8 @@
 
                         <div id="workerRows"></div>
 
+                        <div id="workerDuplicateWarning" class="fieldDescription" style="color:#CC7B19; display:none; white-space:pre-line;"></div>
+
                         <button is="emby-button" type="button" id="btnAddWorker" class="raised block" style="max-width:220px; margin-top:0.5em;">
                             <span>+ Add worker</span>
                         </button>
@@ -1691,12 +1693,81 @@
                             container.appendChild(WhisperSubsConfig.buildWorkerRow(w));
                         });
                     }
+                    WhisperSubsConfig.updateWorkerDuplicateWarning(document.querySelector('[data-role="page"]'));
                 },
 
                 addWorkerRow: function () {
                     var container = document.querySelector('#workerRows');
                     if (!container) return;
                     container.appendChild(WhisperSubsConfig.buildWorkerRow(null));
+                    WhisperSubsConfig.updateWorkerDuplicateWarning(document.querySelector('[data-role="page"]'));
+                },
+
+                // Normalizes an endpoint URL for client-side duplicate-endpoint detection, mirroring
+                // WorkerConfigValidation.NormalizeEndpoint server-side: trims, lowercases scheme+host,
+                // keeps/defaults the port, strips a trailing path slash — so "http://Host:9010",
+                // "http://host:9010/" and "HTTP://host:9010" all compare equal.
+                _normalizeWorkerEndpoint: function (apiUrl) {
+                    var trimmed = (apiUrl == null ? '' : ('' + apiUrl)).trim();
+                    if (!trimmed) return '';
+                    var m = /^([a-zA-Z][a-zA-Z0-9+.-]*):\/\/([^\/?#]+)(.*)$/.exec(trimmed);
+                    if (!m) return trimmed.replace(/\/+$/, '').toLowerCase();
+                    var scheme = m[1].toLowerCase();
+                    var hostPort = m[2];
+                    var atIdx = hostPort.indexOf('@');
+                    if (atIdx !== -1) hostPort = hostPort.substring(atIdx + 1);
+                    var host = hostPort;
+                    var port = '';
+                    var colonIdx = hostPort.lastIndexOf(':');
+                    if (colonIdx !== -1) {
+                        host = hostPort.substring(0, colonIdx);
+                        port = hostPort.substring(colonIdx + 1);
+                    }
+                    if (!port) port = (scheme === 'https') ? '443' : '80';
+                    var path = (m[3] || '').split(/[?#]/)[0].replace(/\/+$/, '');
+                    return scheme + '://' + host.toLowerCase() + ':' + port + path;
+                },
+
+                // Cross-row, client-side mirror of WorkerConfigValidation.CheckDuplicateEndpoints: warns
+                // (advisory, non-blocking) when 2+ ENABLED worker rows resolve to the same endpoint, since
+                // a single whisper-server handles one request at a time. Rendered via textContent only.
+                updateWorkerDuplicateWarning: function (page) {
+                    page = page || document.querySelector('[data-role="page"]');
+                    if (!page) return;
+                    var warning = page.querySelector('#workerDuplicateWarning');
+                    if (!warning) return;
+
+                    var rows = page.querySelectorAll('.workerRow');
+                    var groups = {};
+                    rows.forEach(function (row) {
+                        var enabledEl = row.querySelector('.wkEnabled');
+                        var urlEl = row.querySelector('.wkUrl');
+                        if (!enabledEl || !urlEl || !enabledEl.checked) return;
+                        var url = (urlEl.value || '').trim();
+                        if (!url) return;
+                        var key = WhisperSubsConfig._normalizeWorkerEndpoint(url);
+                        if (!key) return;
+                        (groups[key] = groups[key] || []).push(url);
+                    });
+
+                    var messages = [];
+                    Object.keys(groups).forEach(function (key) {
+                        var count = groups[key].length;
+                        if (count >= 2) {
+                            messages.push(count + ' enabled workers share the same endpoint (' + key + '). ' +
+                                'A whisper-server instance handles one request at a time, so duplicate ' +
+                                'rows (or an inflated max concurrency) on the same endpoint will ' +
+                                'oversubscribe it and cause request pile-up/timeouts.');
+                        }
+                    });
+
+                    if (messages.length > 0) {
+                        warning.textContent = messages.join('\n');
+                        warning.style.display = '';
+                    } else {
+                        warning.textContent = '';
+                        warning.style.display = 'none';
+                    }
                 },
 
                 buildWorkerRow: function (w) {
@@ -1735,6 +1806,20 @@
                     row.appendChild(WhisperSubsConfig._workerCheckbox('wkTranslate', 'Can translate to English', w.CanTranslate !== false));
                     row.appendChild(WhisperSubsConfig._workerCheckbox('wkEnabled', 'Enabled', w.Enabled !== false));
 
+                    // Re-check for duplicate endpoints whenever this row's URL or Enabled state changes.
+                    var dupUrlInput = row.querySelector('.wkUrl');
+                    if (dupUrlInput) {
+                        dupUrlInput.addEventListener('input', function () {
+                            WhisperSubsConfig.updateWorkerDuplicateWarning(row.closest('[data-role="page"]'));
+                        });
+                    }
+                    var dupEnabledCheckbox = row.querySelector('.wkEnabled');
+                    if (dupEnabledCheckbox) {
+                        dupEnabledCheckbox.addEventListener('change', function () {
+                            WhisperSubsConfig.updateWorkerDuplicateWarning(row.closest('[data-role="page"]'));
+                        });
+                    }
+
                     var btnBar = document.createElement('div');
                     btnBar.style.display = 'flex';
                     btnBar.style.gap = '0.6em';
@@ -1756,7 +1841,9 @@
                     removeBtn.className = 'raised';
                     removeBtn.innerHTML = '<span>Remove</span>';
                     removeBtn.addEventListener('click', function () {
+                        var page = row.closest('[data-role="page"]');
                         if (row.parentNode) row.parentNode.removeChild(row);
+                        WhisperSubsConfig.updateWorkerDuplicateWarning(page);
                     });
                     btnBar.appendChild(removeBtn);
 
