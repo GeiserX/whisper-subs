@@ -91,9 +91,28 @@ BACKEND_HOST = _env("WHISPER_BACKEND_HOST", "127.0.0.1")
 BACKEND_PORT = int(_env("WHISPER_BACKEND_PORT", "8081"))
 BACKEND_INFERENCE_PATH = _env("WHISPER_INFERENCE_PATH", "/inference")
 
-# Long, finite ceiling. The plugin enforces its own per-call deadline and drops
-# the socket; we just must not guillotine a legitimately long film transcription.
-BACKEND_TIMEOUT = float(_env("WHISPER_BACKEND_TIMEOUT", str(24 * 60 * 60)))
+# Finite ceiling on a SINGLE upstream inference. The plugin enforces its own per-call
+# deadline and drops the socket (handled by the disconnect-watcher below), so this only
+# has to (a) not guillotine a legitimately long film transcription, and (b) still be short
+# enough that a genuinely WEDGED whisper-server (stuck in a decode loop that never honours
+# the abort_callback) is detected in bounded time instead of holding the single inference
+# slot for a day. With WHISPER_MAX_INFLIGHT serialising the backend to one request at a
+# time, no legitimate single inference approaches this (a 3h film at beam-5 on Apple-Silicon
+# Metal is ~20 min); a request that blows past 1h is wedged, and _proxy_inference recycles
+# the child so the worker self-heals. Override for exotic hardware/models.
+BACKEND_TIMEOUT = float(_env("WHISPER_BACKEND_TIMEOUT", str(60 * 60)))
+
+# Max concurrent inferences forwarded to the upstream whisper-server. whisper.cpp's server
+# runs a SINGLE inference at a time, so a second request that arrives mid-transcription just
+# sits in the OS accept queue behind the first — invisible to the disconnect-watcher (which
+# can only abort a request whisper-server has actually accepted), so a short language-detection
+# probe stuck behind a full-film transcription silently blows its deadline (head-of-line
+# blocking). Serialising here (default 1) makes the worker robust regardless of how many
+# requests a client fans at it: extra requests wait on this semaphore — where the wait IS
+# cancellable (we poll client liveness) — instead of wedging the backend. 0 disables the cap.
+WHISPER_MAX_INFLIGHT = _parse_int(_env("WHISPER_MAX_INFLIGHT", "1"))
+if WHISPER_MAX_INFLIGHT is None or WHISPER_MAX_INFLIGHT < 0:
+    WHISPER_MAX_INFLIGHT = 1
 
 API_KEY = _env("API_KEY", "")  # empty -> no auth required
 
@@ -160,6 +179,15 @@ TRANSLATE_PATH = "/v1/audio/translations"
 def log(msg):
     sys.stdout.write("[adapter] %s\n" % msg)
     sys.stdout.flush()
+
+
+# Serialises inference forwarding to the single-threaded upstream (see WHISPER_MAX_INFLIGHT).
+# None => uncapped (opt-out). A BoundedSemaphore also self-checks against an accidental
+# extra release (a programming error surfaces as a ValueError instead of silently widening
+# the cap).
+_inflight_sem = (
+    threading.BoundedSemaphore(WHISPER_MAX_INFLIGHT) if WHISPER_MAX_INFLIGHT > 0 else None
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -321,6 +349,40 @@ def _client_disconnected(sock):
         return True
 
 
+def _acquire_inflight_slot(sock):
+    """Block until the single inference slot is free, returning True once held.
+
+    Returns False WITHOUT holding the slot if the client vanished while we waited (its
+    request was cancelled — running it would waste the slot on output nobody reads). We
+    poll the client socket between short semaphore-acquire attempts so a queued-then-cancelled
+    request drops out promptly instead of blocking the line behind a long transcription.
+    Uncapped (WHISPER_MAX_INFLIGHT=0) => always True immediately. Caller MUST release with
+    _release_inflight_slot() iff this returned True.
+    """
+    if _inflight_sem is None:
+        return True
+    while True:
+        if _inflight_sem.acquire(timeout=CLIENT_POLL_INTERVAL):
+            # Got the slot — but if the client gave up during the wait, hand it straight
+            # back so we neither run an abandoned job nor strand the slot.
+            if _client_disconnected(sock):
+                _release_inflight_slot()
+                return False
+            return True
+        if _client_disconnected(sock):
+            return False
+
+
+def _release_inflight_slot():
+    if _inflight_sem is not None:
+        try:
+            _inflight_sem.release()
+        except ValueError:
+            # BoundedSemaphore over-release: a double-release bug. Never crash the worker
+            # over it — log loudly so it's caught, and keep serving.
+            log("BUG: inflight semaphore over-released (ignored)")
+
+
 # --------------------------------------------------------------------------- #
 # HTTP handler
 # --------------------------------------------------------------------------- #
@@ -449,6 +511,15 @@ class Handler(BaseHTTPRequestHandler):
             ).encode("latin-1")
             total_len = body_len + len(prefix)
 
+        # Serialise: hold the single inference slot for the whole upstream exchange (body
+        # upload + inference + response), so a second request can't pile into whisper-server's
+        # accept queue behind this one. A request whose client already vanished while it waited
+        # here for the slot is dropped without running. Released in the finally below.
+        if not _acquire_inflight_slot(self.connection):
+            log("client gone while queued for the inference slot; dropping request")
+            self.close_connection = True
+            return
+
         conn = None
         client_gone = threading.Event()
         watch_stop = threading.Event()
@@ -518,15 +589,28 @@ class Handler(BaseHTTPRequestHandler):
                 log("client disconnected during inference; aborted upstream to free the slot")
                 self.close_connection = True
                 return
+            if isinstance(exc, socket.timeout):
+                # We were the ONLY in-flight request (serialised), yet got no response within
+                # BACKEND_TIMEOUT: whisper-server is wedged — stuck in a decode loop that never
+                # honoured the abort — not merely busy. Recycle the backend so the worker
+                # self-heals: the lifecycle watch thread restarts the process cleanly
+                # (launchd KeepAlive / compose restart) and the plugin requeues the job elsewhere.
+                log("upstream inference exceeded %.0fs with no response — whisper-server wedged; "
+                    "recycling the backend to recover" % BACKEND_TIMEOUT)
+                self._send_json(503, '{"error":"upstream whisper-server wedged; restarting"}', close=True)
+                _terminate_child()
+                return
             log("upstream error: %r" % exc)
             self._send_json(502, '{"error":"upstream whisper-server unavailable"}', close=True)
             return
         finally:
-            # Stop the watcher, then always release the upstream socket — including the exception
-            # path, which previously relied on GC to close it (L4). close() is safe to call twice.
+            # Stop the watcher, always release the upstream socket — including the exception path,
+            # which previously relied on GC to close it (L4). close() is safe to call twice — then
+            # hand back the inference slot so the next queued request can proceed.
             watch_stop.set()
             if conn is not None:
                 conn.close()
+            _release_inflight_slot()
 
         # Relay upstream status + body back to the plugin verbatim.
         self.send_response(resp.status)

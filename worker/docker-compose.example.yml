@@ -37,6 +37,14 @@ services:
       #   attention is already ON by default in whisper.cpp v1.8.4, so passing
       #   --flash-attn is a no-op; use --no-flash-attn only if a buggy Vulkan driver
       #   miscomputes with it.
+      # WHISPER_MAX_INFLIGHT: "1"      # Max concurrent inferences forwarded upstream.
+      #   whisper-server runs ONE inference at a time, so the default 1 serialises requests
+      #   here — a second request waits on a cancellable queue instead of piling into the
+      #   backend's accept queue behind a long job (which would silently blow short probes'
+      #   deadlines). Raise ONLY if you run multiple backend instances; 0 disables the cap.
+      # WHISPER_BACKEND_TIMEOUT: "3600"   # Seconds to wait for a SINGLE upstream inference
+      #   before treating whisper-server as wedged and recycling it (self-heal). Default 1h
+      #   is well above any real single transcription; raise for exotic hardware/huge models.
       # Pin a specific Vulkan ICD only if auto-discovery picks the wrong GPU. The
       # exact filename varies (Debian/Mesa often uses the *.x86_64.json form); leave
       # UNSET to auto-discover. Verify with: docker exec ... ls /usr/share/vulkan/icd.d/
