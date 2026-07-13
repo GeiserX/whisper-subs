@@ -249,6 +249,13 @@ namespace WhisperSubs.Configuration
         /// </summary>
         public int SkipCacheExpiryDays { get; set; } = 30;
 
+        /// <summary>
+        /// Seconds of audio (from each chunk's start) sent for language DETECTION only; 0 = whole
+        /// chunk. Detection needs only a few seconds, so a small window avoids slow/runaway decodes
+        /// on noisy audio without affecting final subtitle quality. Default 15.
+        /// </summary>
+        public int LanguageDetectionSampleSeconds { get; set; } = 15;
+
         public List<string> EnabledLibraries { get; set; } = new List<string>();
 
         // ── Subtitle request queue & named-tier priority (issue #112) ──────────────

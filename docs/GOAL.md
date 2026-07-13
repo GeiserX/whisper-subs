@@ -51,3 +51,11 @@ over the beads
 just delete (dont close) the meo bead, its just for me, not for the project
 extensively check the mac mini (16gb) and then just build whatever needed there to add a worker
 only when all's working then simply continue with the other beads
+
+## 2026-07-13 — continuation (v4.3.1 worker robustness)
+
+So also fix the flakiness / non-robustness issue, this macwhisper should be functioning and sound and safe, right? continue
+
+Scope chosen: "The works" — worker-side hardening (serialisation + wedge self-recovery, DONE) + targeted foreign-language detection-stall fix (lightweight/shorter detection, quality-neutral) + per-physical-endpoint concurrency keying (a single whisper-server can never be oversubscribed by MaxConcurrency>1 or duplicate endpoint rows) + duplicate-endpoint validation & UI warning. Then build/test/review/CodeRabbit → merge → release 4.3.1 → install on Jellyfin.
+
+so /sergio-loop until completion with ralph

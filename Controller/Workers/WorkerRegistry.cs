@@ -30,7 +30,12 @@ namespace WhisperSubs.Controller.Workers
             {
                 case WorkerSource.ExplicitList:
                     // ExplicitList is only returned by WorkerPlan.Decide when Workers.Count > 0, so it is non-null here.
-                    foreach (var w in config.Workers!.Where(x => x.Enabled && !string.IsNullOrWhiteSpace(x.ApiUrl)))
+                    // Collapse rows that point at the SAME physical endpoint first: whisper-server is single-request,
+                    // so two rows (or an accidental duplicate) for one URL would give the pool two independent slots
+                    // and oversubscribe that backend. CollapseByEndpoint keeps the first row and takes the min
+                    // MaxConcurrency, so each physical endpoint becomes exactly one worker (v4.3.1).
+                    var enabledRows = config.Workers!.Where(x => x.Enabled && !string.IsNullOrWhiteSpace(x.ApiUrl));
+                    foreach (var w in WorkerEndpointDedup.CollapseByEndpoint(enabledRows))
                     {
                         workers.Add(BuildRemote(
                             id: string.IsNullOrWhiteSpace(w.Id) ? w.ApiUrl : w.Id,
