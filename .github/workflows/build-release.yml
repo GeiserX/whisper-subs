@@ -225,9 +225,34 @@ jobs:
 
       - name: Create plugin package
         run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          if [[ ! "$VERSION" =~ ^[0-9]+(\.[0-9]+){3}$ ]]; then
+            echo "::error::Invalid plugin version: $VERSION"
+            exit 1
+          fi
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           mkdir -p release
           cp bin/Release/net9.0/WhisperSubs.dll release/
-          cp bin/Release/net9.0/WhisperSubs.pdb release/ 2>/dev/null || true
+          cp bin/Release/net9.0/WhisperSubs.pdb release/
+          jq -n \
+            --arg version "$VERSION" \
+            --arg timestamp "$TIMESTAMP" \
+            '{
+              category: "Subtitles",
+              changelog: "See https://github.com/GeiserX/whisper-subs/releases",
+              description: "Automated subtitle generation for Jellyfin using local Whisper AI models.",
+              guid: "97124bd9-c8cd-4a53-a213-e593aa3fef52",
+              name: "WhisperSubs",
+              overview: "Generate subtitles using local or remote Whisper workers.",
+              owner: "GeiserX",
+              targetAbi: "10.11.0.0",
+              timestamp: $timestamp,
+              version: $version,
+              status: "Active",
+              autoUpdate: true,
+              imagePath: "",
+              assemblies: ["WhisperSubs.dll"]
+            }' > release/meta.json
           cd release && zip -r ../WhisperSubs_${{ steps.version.outputs.version }}.zip .
 
       - name: Calculate checksum
