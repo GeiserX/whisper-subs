@@ -444,3 +444,14 @@ Synthesize → propose approach → implement (likely: FT integration with direc
 - **Adversarial review found real backward-compat bugs (all fixed, commit 4d027d2):** translated/forced generate-guards only checked the NEW filename → a legacy `.translated.`/`.forced.generated.` sub got re-transcribed on upgrade (dup track + wasted passes); `hasFullSrt`/status miscounted a translated file as full. FIX: guards glob `*.srt` + `Classify` (legacy OR new); `hasFullSrt` + status full-bucket use `Classify==Full`; delete resumed legacy partial after canonical write. +4 regression tests → **1059 tests, 0 warnings**.
 - **Merged PR #134 → main (squash 8c13fb7).** CI green on the fix commit; **CodeRabbit re-reviewed the fix range (a936ade→4d027d2): 0 actionable, 0 inline.** main verified intact (naming engine + v4.2 worker pool both present, version 4.3.0.0).
 - **NOW:** Build-and-Release workflow in_progress on 8c13fb7 → then sideload `WhisperSubs_4.3.0.0/` (WhisperSubs.dll + meta.json) to `/mnt/user/appdata/arr/jellyfin/config/plugins/` on watchtower + restart Jellyfin (Sergio pre-authorized this release restart) → verify picker reads "WhisperSubs — English".
+
+---
+
+## Issues #138 and #139 — remote JSON responses + worker speech alignment (2026-07-28)
+
+### Entry — loop kickoff
+- **Goal:** implement the two newest reports: support OpenAI-compatible transcription endpoints that return JSON rather than SRT (#138), and apply the existing optional post-VAD speech-alignment correction to worker-generated subtitles (#139).
+- **Acceptance:** preserve current SRT-provider behavior; parse supported JSON response shapes into valid SRT without trusting malformed timestamps or text; make worker alignment use the same opt-in configuration and timing-correction path as local transcription; add focused regression tests; build and test; release the next version; thank both reporters, ask them to test that version, and close both issues.
+- **Loop:** `/research! → /implement! → /review-pr! → (back to research)`.
+- **Tally:** 0 closed / 2 open.
+- **Evidence:** issues #138 and #139 confirmed as the newest open reports; implementation research started from clean `main` on branch `feat/issues-138-139`.

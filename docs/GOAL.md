@@ -59,3 +59,8 @@ So also fix the flakiness / non-robustness issue, this macwhisper should be func
 Scope chosen: "The works" — worker-side hardening (serialisation + wedge self-recovery, DONE) + targeted foreign-language detection-stall fix (lightweight/shorter detection, quality-neutral) + per-physical-endpoint concurrency keying (a single whisper-server can never be oversubscribed by MaxConcurrency>1 or duplicate endpoint rows) + duplicate-endpoint validation & UI warning. Then build/test/review/CodeRabbit → merge → release 4.3.1 → install on Jellyfin.
 
 so /sergio-loop until completion with ralph
+
+## 2026-07-28 — continuation
+
+focus on whisper subs, the latest 2 new issues https://github.com/GeiserX/whisper-subs/issues 
+/sergio-loop and do them and close them thanking and making it real , asking to test it in the next version
