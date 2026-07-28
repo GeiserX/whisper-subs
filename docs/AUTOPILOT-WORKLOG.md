@@ -506,3 +506,12 @@ Synthesize → propose approach → implement (likely: FT integration with direc
 - Watchtower is live on WhisperSubs **4.4.0.0 Active**. VAD v6.2.0 is downloaded (885,098 bytes); native VAD, speech alignment, worker/VAD post-alignment, and audio-offset compensation are enabled. Both `large-v3` remotes plus the local worker are active and processing the real queue with zero queue failures.
 - **Packaging bug discovered through real deployment:** the release ZIP contains only DLL/PDB. Jellyfin therefore generates `meta.json` with `assemblies: []`; because the assembly is named `WhisperSubs.dll` rather than `Jellyfin.Plugin.*`, Jellyfin discards it on restart. Watchtower required package-manager registration followed by an `assemblies: ["WhisperSubs.dll"]` metadata patch.
 - **Follow-up 4.4.0.1:** include a complete package `meta.json` in the ZIP with the nonstandard assembly declared, so normal catalog installs survive restart without manual intervention.
+
+### Entry — loop complete: v4.4.0.1 packaged correctly and live on watchtower
+- PR [#141](https://github.com/GeiserX/whisper-subs/pull/141) merged (squash `5146ea6`) after CI, GitGuardian, Codecov, and a full CodeRabbit review. Release workflow 30366608414 succeeded.
+- v4.4.0.1 is first in the live catalog manifest and has 10 release assets. `WhisperSubs_4.4.0.1.zip` contains DLL + PDB + `meta.json`; metadata validates `version=4.4.0.1` and `assemblies=["WhisperSubs.dll"]`.
+- A clean watchtower package-API install generated the correct metadata without manual patching and survived restart. Live API reports **WhisperSubs 4.4.0.1 Active**.
+- Live VAD proof: v6.2.0 selected; the 885,098-byte model exists at the configured path; native VAD, speech alignment, VAD/worker post-alignment, and audio-offset compensation are enabled.
+- Live worker proof: geiserback UHD 770, Mac mini M4 Metal, and local watchtower workers are all enabled at `large-v3`, each has one real job in flight, the queue is processing, and failed count is 0. Jellyfin is healthy and recent startup has 0 WhisperSubs errors.
+- Reporter follow-up: #138 comment [5104644837](https://github.com/GeiserX/whisper-subs/issues/138#issuecomment-5104644837) + closed; #139 comment [5104645330](https://github.com/GeiserX/whisper-subs/issues/139#issuecomment-5104645330) + closed. Both were thanked and asked to test the released version.
+- **Goal met and verified end to end.** Tally: 2 issues released/replied/closed; 0 open implementation/deployment items. Cancel the persistent loop.
