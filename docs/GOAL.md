@@ -64,3 +64,7 @@ so /sergio-loop until completion with ralph
 
 focus on whisper subs, the latest 2 new issues https://github.com/GeiserX/whisper-subs/issues 
 /sergio-loop and do them and close them thanking and making it real , asking to test it in the next version
+
+## 2026-07-28 — continuation
+
+Also when finishing, make sure i have the best version with all the VAD stuff improvements in my jellyfin instance in watchtower server

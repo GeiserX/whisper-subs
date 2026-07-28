@@ -455,3 +455,15 @@ Synthesize → propose approach → implement (likely: FT integration with direc
 - **Loop:** `/research! → /implement! → /review-pr! → (back to research)`.
 - **Tally:** 0 closed / 2 open.
 - **Evidence:** issues #138 and #139 confirmed as the newest open reports; implementation research started from clean `main` on branch `feat/issues-138-139`.
+
+### Entry — research synthesized + implementation verified locally
+- **#138 finding:** plain `json` contains transcript text but no timestamps, so it cannot produce synchronized subtitles. Timestamped `verbose_json` is the interoperable format supported by the bundled whisper.cpp worker, Groq, OpenRouter-compatible providers, and OpenAI `whisper-1`; newer OpenAI transcription models that expose only text-only JSON remain unsuitable for subtitle generation.
+- **#138 implementation:** remote full/translated jobs preserve direct SRT as the first choice; format-level 400/406/415/422 responses negotiate once to `verbose_json` with segment granularity and cache the successful format separately per operation. A pure, fail-closed converter validates ordered segments' finite non-negative `start`, increasing `end`, and normalized string `text`, then emits invariant millisecond SRT. Raw SRT still passes through unchanged; plain or malformed JSON fails clearly instead of saving unsynchronized text. Remote responses are bounded and error text is single-line/truncated. Test Connection mirrors the same SRT→timestamped-JSON negotiation.
+- **#139 root cause + fix:** `ApplyTimingCorrectionsAsync` returned immediately whenever the legacy remote URL field was populated, even though worker output and the locally extracted WAV share the same timeline. That global skip is removed. Remote timing is treated as provider-owned/VAD timing, so the extra FFmpeg forward-snap remains opt-in through `AlignSubtitlesToSpeechWithVad`; enabling it now applies to worker output without silently re-timing every remote subtitle by default.
+- **Release target:** `4.3.1.0` → `4.4.0.0` (two additive enhancements).
+- **Verification:** focused response/alignment matrix: 30/30 pass; full suite: **1119/1119 pass**; clean Release build: **0 warnings / 0 errors**; worker adapter `py_compile` pass; `git diff --check` pass. Coverage run and independent review are in progress.
+- **Tally:** 2 implemented + locally verified / 0 implementation items open; release, replies, and issue closure remain.
+
+### Continuation — deploy the finished release to watchtower
+- After `4.4.0.0` is released and the catalog manifest is live, upgrade the watchtower Jellyfin instance to that release and verify the active plugin/config includes the complete VAD stack: native Silero VAD, selectable/tunable VAD settings, `AlignSubtitlesToSpeechWithVad`, worker-side VAD defaults, and the #139 worker post-alignment path.
+- Preserve the existing worker pool and model choices. Perform the required Jellyfin restart only as part of this requested deployment, preferably when playback is idle; then verify the plugin version, worker status, VAD configuration, and a real generation path.
