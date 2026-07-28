@@ -444,3 +444,58 @@ Synthesize → propose approach → implement (likely: FT integration with direc
 - **Adversarial review found real backward-compat bugs (all fixed, commit 4d027d2):** translated/forced generate-guards only checked the NEW filename → a legacy `.translated.`/`.forced.generated.` sub got re-transcribed on upgrade (dup track + wasted passes); `hasFullSrt`/status miscounted a translated file as full. FIX: guards glob `*.srt` + `Classify` (legacy OR new); `hasFullSrt` + status full-bucket use `Classify==Full`; delete resumed legacy partial after canonical write. +4 regression tests → **1059 tests, 0 warnings**.
 - **Merged PR #134 → main (squash 8c13fb7).** CI green on the fix commit; **CodeRabbit re-reviewed the fix range (a936ade→4d027d2): 0 actionable, 0 inline.** main verified intact (naming engine + v4.2 worker pool both present, version 4.3.0.0).
 - **NOW:** Build-and-Release workflow in_progress on 8c13fb7 → then sideload `WhisperSubs_4.3.0.0/` (WhisperSubs.dll + meta.json) to `/mnt/user/appdata/arr/jellyfin/config/plugins/` on watchtower + restart Jellyfin (Sergio pre-authorized this release restart) → verify picker reads "WhisperSubs — English".
+
+---
+
+## Issues #138 and #139 — remote JSON responses + worker speech alignment (2026-07-28)
+
+### Entry — loop kickoff
+- **Goal:** implement the two newest reports: support OpenAI-compatible transcription endpoints that return JSON rather than SRT (#138), and apply the existing optional post-VAD speech-alignment correction to worker-generated subtitles (#139).
+- **Acceptance:** preserve current SRT-provider behavior; parse supported JSON response shapes into valid SRT without trusting malformed timestamps or text; make worker alignment use the same opt-in configuration and timing-correction path as local transcription; add focused regression tests; build and test; release the next version; thank both reporters, ask them to test that version, and close both issues.
+- **Loop:** `/research! → /implement! → /review-pr! → (back to research)`.
+- **Tally:** 0 closed / 2 open.
+- **Evidence:** issues #138 and #139 confirmed as the newest open reports; implementation research started from clean `main` on branch `feat/issues-138-139`.
+
+### Entry — research synthesized + implementation verified locally
+- **#138 finding:** plain `json` contains transcript text but no timestamps, so it cannot produce synchronized subtitles. Timestamped `verbose_json` is the interoperable format supported by the bundled whisper.cpp worker, Groq, OpenRouter-compatible providers, and OpenAI `whisper-1`; newer OpenAI transcription models that expose only text-only JSON remain unsuitable for subtitle generation.
+- **#138 implementation:** remote full/translated jobs preserve direct SRT as the first choice; format-level 400/406/415/422 responses negotiate once to `verbose_json` with segment granularity and cache the successful format separately per operation. A pure, fail-closed converter validates ordered segments' finite non-negative `start`, increasing `end`, and normalized string `text`, then emits invariant millisecond SRT. Raw SRT still passes through unchanged; plain or malformed JSON fails clearly instead of saving unsynchronized text. Remote responses are bounded and error text is single-line/truncated. Test Connection mirrors the same SRT→timestamped-JSON negotiation.
+- **#139 root cause + fix:** `ApplyTimingCorrectionsAsync` returned immediately whenever the legacy remote URL field was populated, even though worker output and the locally extracted WAV share the same timeline. That global skip is removed. Remote timing is treated as provider-owned/VAD timing, so the extra FFmpeg forward-snap remains opt-in through `AlignSubtitlesToSpeechWithVad`; enabling it now applies to worker output without silently re-timing every remote subtitle by default.
+- **Release target:** `4.3.1.0` → `4.4.0.0` (two additive enhancements).
+- **Verification:** focused response/alignment matrix: 30/30 pass; full suite: **1119/1119 pass**; clean Release build: **0 warnings / 0 errors**; worker adapter `py_compile` pass; `git diff --check` pass. Coverage run and independent review are in progress.
+- **Tally:** 2 implemented + locally verified / 0 implementation items open; release, replies, and issue closure remain.
+
+### Continuation — deploy the finished release to watchtower
+- After `4.4.0.0` is released and the catalog manifest is live, upgrade the watchtower Jellyfin instance to that release and verify the active plugin/config includes the complete VAD stack: native Silero VAD, selectable/tunable VAD settings, `AlignSubtitlesToSpeechWithVad`, worker-side VAD defaults, and the #139 worker post-alignment path.
+- Preserve the existing worker pool and model choices. Perform the required Jellyfin restart only as part of this requested deployment, preferably when playback is idle; then verify the plugin version, worker status, VAD configuration, and a real generation path.
+
+### Entry — five-lens review findings fixed + reverified
+- **Review verdict before fixes:** changes requested (correctness, timing architecture, security, tests, simplicity). Real findings included translation sending an invalid source-language field, response/error-body buffering and leakage, broad retries, raw-body/probe false positives, mixed offset/alignment timebases, wrong-stream offset probing, resume anchoring, misleading remote-`UsesVad` semantics, 100+ hour incompatibility, and PR CI silently targeting the non-test project.
+- **Fixes:** SRT-first negotiation now retries only explicit format errors (plus a narrow 2xx untimed-JSON case) and caches only a converted success; separate transcription/translation caches; translation omits `language`; bounded streaming reads (32 MiB transcript / 4 KiB private error detail); generic logged HTTP errors; BOM/raw-SRT validation; normalized cue text; segment/raw-SRT chronology + audio-duration bounds; 99:59:59,999 ceiling matching downstream parsers; Test Connection DNS-pins its validated address, disables redirects, bounds/validates the body, and checks timestamped JSON shape.
+- **Timing fixes:** renamed the provider contract to the truthful `RequiresSpeechAlignmentOptIn`; alignment now runs in extracted-WAV time before selected-stream container offset compensation; every path explicitly maps the requested/default-or-first stream so extraction and offset probing agree; resumed input seeking stays in FFmpeg's container/playback time, then re-anchors the fresh tail once.
+- **CI:** `ci.yml` now explicitly tests `WhisperSubs.Tests/WhisperSubs.Tests.csproj`, requires a coverage file, and treats Codecov upload failure as a failed check.
+- **Scope truth:** hosted-provider format compatibility is shipped, but full-WAV upload/time limits remain provider-specific; README states the 25 MiB ≈ 13-minute constraint and tells admins to disable translation for providers without `/audio/translations`.
+- **Fresh evidence:** exact corrected CI command: **1153/1153 tests pass**, coverage artifact produced; clean Release build **0 warnings / 0 errors**; worker adapter **10/10 pass**; `git diff --check` clean. New response/timing helpers are strongly covered (converter 98.36% line / 98% branch; bounded reader 94.44% line; raw SRT + resume helpers 100%).
+- **Tally:** 2 implemented + review-fixed + verified / 0 code items open; PR, release, issue replies/closure, and watchtower deployment remain.
+
+### Entry — clean-CI and final edge-case review complete
+- Clean-run simulation (`dotnet clean` → restore test project → build test project → `dotnet test --no-build`) proved the corrected workflow from empty outputs. CI no longer succeeds without executing tests.
+- Final review follow-ups: Test Connection now retries only body-confirmed format errors or 2xx untimed JSON; empty silent-probe output is a yellow warning, not false verification; all validated DNS addresses are attempted while remaining rebinding-pinned; IPv4-mapped link-local is blocked; cached verbose JSON can recover through one SRT retry; strict raw-SRT cue parsing rejects surrounding junk and reserializes normalized content.
+- Format caches are proven independent on one provider (transcription may use verbose JSON while translation remains SRT), and failed conversion is proven not to poison either cache.
+- Resume now probes both container `format.start_time` and the selected stream start, then computes FFmpeg input seek from playback resume, effective compensation, stream start, and format start. Audio selection is deterministic for every path: requested language, else default-disposition stream, else first stream; extraction and offset probing use the same explicit index.
+- **Fresh final evidence:** **1176/1176 C# tests pass**, coverage artifact produced; clean Release build **0 warnings / 0 errors**; worker adapter **10/10 pass**; `git diff --check` clean.
+
+### Watchtower pre-deployment baseline
+- Jellyfin 10.11.11 is healthy; installed plugin is **4.3.0.0**.
+- Existing safe state to preserve: local worker enabled; native VAD enabled; base speech alignment enabled; audio-offset compensation enabled; VAD tuning fields use whisper defaults; both configured remote workers use `large-v3`.
+- `AlignSubtitlesToSpeechWithVad` is currently off and `VadModelVersion` is empty (effective default v5.1.2). After release, deploy 4.4.0.0, select the newer v6.2.0 local VAD model, enable the reviewed VAD/worker post-alignment option, preserve both workers/models, and verify the effective live path after an idle-safe restart.
+
+### Entry — release candidate approved
+- Final independent gates: correctness, timing architecture, security, and tests all approved after iterative fixes. No critical/high/medium/low findings remain.
+- Final timing formula: `input seek = playback resume - effective compensation + selected-stream start - container format start`; regression coverage includes both reproduced non-zero-start layouts and compensation-off behavior.
+- **Release-candidate evidence:** **1181/1181 C# tests pass**, coverage artifact produced; clean Release build **0 warnings / 0 errors**; worker adapter **10/10 pass**; `git diff --check` clean.
+- **Next:** commit/push → PR to main → CI + CodeRabbit → merge → verify v4.4.0.0 release/manifest → thank reporters + ask them to test + close #138/#139 → deploy and verify watchtower.
+
+### Entry — PR #140 green + CodeRabbit findings addressed
+- PR [#140](https://github.com/GeiserX/whisper-subs/pull/140) opened against main. Initial CI, Codecov project/patch, GitGuardian, and CodeRabbit checks passed.
+- CodeRabbit posted 11 comments. Valid fixes: fork-safe tokenless Codecov path; task-bounded DNS; one shared 30-second probe deadline; stale timing signature; unresolved-stream no-compensation safety; untimed retry guard; capped initial response allocation; quoted blockquote separator; clearer status-candidate naming. `GOAL.md` wording/heading changes were deliberately skipped because the loop contract requires the directive verbatim. No extra restart question is needed: the current user explicitly requested the watchtower deployment.
+- **Post-fix evidence:** **1182/1182 C# tests pass**, focused review tests **117/117**, clean Release build **0 warnings / 0 errors**, worker adapter **10/10 pass**, `git diff --check` clean.

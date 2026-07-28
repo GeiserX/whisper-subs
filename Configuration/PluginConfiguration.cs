@@ -103,7 +103,8 @@ namespace WhisperSubs.Configuration
         /// When enabled, subtitle start times are snapped forward to detected speech onsets
         /// so a subtitle no longer appears during the silence before its line is spoken.
         /// whisper.cpp emits gapless segments (next.start == prev.end); this re-introduces
-        /// the natural gaps using FFmpeg silence detection. Local whisper-cli only.
+        /// the natural gaps using FFmpeg silence detection over the locally extracted audio.
+        /// Applies to local whisper-cli and timestamped remote/worker output.
         ///
         /// Note: this is the older energy-based fallback. When <see cref="EnableVad"/> is on
         /// (the default) this FFmpeg pass is skipped, because native VAD usually handles speech-onset
@@ -118,7 +119,8 @@ namespace WhisperSubs.Configuration
         /// before speech, so on some content lines still appear early. Enabling this layers the
         /// forward-snap on top of VAD — it only ever moves an early cue later, never earlier.
         /// Off by default (the energy-based detector can be unreliable on some material); requires
-        /// <see cref="AlignSubtitlesToSpeech"/> to be on. Local whisper-cli only. (Issue #78.)
+        /// <see cref="AlignSubtitlesToSpeech"/> to be on. Also enables the pass for remote/worker
+        /// output, whose timestamping is treated as provider-owned. (Issues #78 and #139.)
         /// </summary>
         public bool AlignSubtitlesToSpeechWithVad { get; set; } = false;
 
@@ -176,7 +178,7 @@ namespace WhisperSubs.Configuration
         /// <summary>
         /// When enabled, compensates for a container audio start-time offset (the audio stream
         /// not starting at 0:00) by shifting all subtitle timestamps forward by that offset,
-        /// keeping subtitles in sync with playback. Local whisper-cli only.
+        /// keeping subtitles in sync with playback. Applies to local and timestamped remote output.
         /// </summary>
         public bool CompensateAudioOffset { get; set; } = true;
 
