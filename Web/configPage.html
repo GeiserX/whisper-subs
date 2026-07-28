@@ -374,23 +374,25 @@
                             using an extra FFmpeg silence-detection pass. <strong>Used only when "Use speech detection (VAD)"
                             above is off</strong> — VAD does this more reliably. Leave on as a fallback.
                             <br />
-                            Applies only to locally-generated subtitles (whisper-cli), not the remote API or forced subtitles.
+                            Runs over the audio extracted on this Jellyfin server, so it can correct both local and
+                            worker-generated full/translated subtitles. It does not affect forced subtitles.
                         </div>
                     </div>
 
                     <div class="checkboxContainer checkboxContainer-withDescription">
                         <label>
                             <input is="emby-checkbox" type="checkbox" id="chkAlignSubtitlesToSpeechWithVad" name="AlignSubtitlesToSpeechWithVad" />
-                            <span>Also align to speech when VAD is on</span>
+                            <span>Also align VAD / worker timestamps to speech</span>
                         </label>
                         <div class="fieldDescription">
-                            If subtitles still appear <strong>early</strong> with "Use speech detection (VAD)" enabled, turn this on
-                            to also run the speech-alignment pass above on top of VAD. VAD improves transcription but doesn't always
+                            If subtitles still appear <strong>early</strong> with local VAD or worker-generated timestamps, turn this on
+                            to also run the speech-alignment pass above. VAD/provider timing improves transcription but doesn't always
                             correct whisper's tendency to start a line slightly early; this snaps those starts forward — it only ever
                             moves a line later, never earlier (though on coarse audio the energy-based detector may push a few starts
                             slightly late). Off by default. Requires "Align subtitles to speech" to be on.
                             <br />
-                            Applies only to locally-generated subtitles (whisper-cli), not the remote API or forced subtitles.
+                            Also enables this correction for remote workers, including the bundled worker whose VAD is on
+                            by default. It does not affect forced subtitles.
                         </div>
                     </div>
 
@@ -454,7 +456,7 @@
                         <div class="fieldDescription">
                             Keeps subtitles in sync when a file's audio doesn't start exactly at 0:00. <strong>Recommended.</strong>
                             <br />
-                            Applies only to locally-generated subtitles (whisper-cli), not the remote API or forced subtitles.
+                            Applies to local and worker-generated full/translated subtitles, not forced subtitles.
                         </div>
                     </div>
 

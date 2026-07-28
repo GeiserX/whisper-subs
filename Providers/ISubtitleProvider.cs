@@ -8,11 +8,11 @@ namespace WhisperSubs.Providers
         string Name { get; }
 
         /// <summary>
-        /// True when this provider emits subtitles already aligned to speech onset (e.g. via
-        /// whisper-cli native VAD), so the FFmpeg silence-detection alignment pass should be
-        /// skipped. Single source of truth — avoids re-resolving VAD state elsewhere.
+        /// True when the provider's timing should not be rewritten unless the admin explicitly
+        /// enables the extra speech-alignment pass. Local native VAD and remote/provider-owned
+        /// timestamps both require that opt-in.
         /// </summary>
-        bool UsesVad { get; }
+        bool RequiresSpeechAlignmentOptIn { get; }
 
         Task<string> TranscribeAsync(string audioPath, string language, CancellationToken cancellationToken, bool translate = false);
 

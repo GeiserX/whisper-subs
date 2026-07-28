@@ -376,6 +376,8 @@ The live queue view shows which worker is transcribing which item, so you can se
 
 > **Need a worker to point at?** [`worker/`](worker/README.md) is a ready-to-run whisper.cpp + Vulkan worker image (with notes for CPU/NVIDIA/AMD backends). Any server that implements the OpenAI `/v1/audio/transcriptions` and `/v1/audio/translations` endpoints -- e.g. [Speaches](https://github.com/speaches-ai/speaches) -- also works.
 
+> **Hosted-provider limits still apply.** WhisperSubs sends the full extracted 16 kHz mono WAV. A service with a 25 MB multipart limit accepts only about 13 minutes of this audio, even when its response format is compatible; use a self-hosted worker or a provider whose upload and processing limits fit your media. Turn off **Can translate** for providers that do not expose `/v1/audio/translations`.
+>
 > **Note:** the automatic scheduled sweep currently processes its backlog one item at a time; manual **Generate** / **Generate All** already fan out across the whole pool. Parallelizing the scheduled sweep is on the [roadmap](ROADMAP.md).
 
 ## Configuration
@@ -394,7 +396,7 @@ After installation, navigate to **Dashboard** > **Plugins** > **WhisperSubs** to
 | **Whisper Model Path** | *(Advanced)* Absolute path to the GGML model file. Leave empty to use the auto-downloaded model. |
 | **Whisper Thread Count** | *(Advanced)* Number of CPU threads for whisper inference. `0` = whisper default (4). Set to your CPU core count for faster transcription. |
 | **Also use this server as a worker** (`EnableLocalWorker`) | *(Worker Pool)* Whether this Jellyfin host's own whisper participates in the pool. On by default. Turn it off to transcribe **only** on the remote workers below -- e.g. a weak NAS offloading entirely to a beefier box. |
-| **Workers** | *(Worker Pool)* A list of extra OpenAI-compatible transcription endpoints to pool alongside (or instead of) this server. Empty by default. Each row has an endpoint URL, optional API key, optional model, max concurrency, cost weight, and a "can translate" flag. See [Distributed Transcription](#distributed-transcription-worker-pool). |
+| **Workers** | *(Worker Pool)* A list of extra OpenAI-compatible transcription endpoints to pool alongside (or instead of) this server. Empty by default. Each row has an endpoint URL, optional API key, optional model, max concurrency, cost weight, and a "can translate" flag. WhisperSubs preserves direct SRT for existing servers; if an endpoint rejects SRT, it negotiates once to timestamped `verbose_json` segments (supported by Groq, OpenRouter-compatible providers, and OpenAI `whisper-1`), converts them to SRT, and caches that choice. Text-only JSON models cannot produce synchronized subtitles because they return no timestamps. See [Distributed Transcription](#distributed-transcription-worker-pool). |
 | **Job timeout -- real-time factor** (`JobTimeoutRealtimeFactor`) | *(Advanced)* Upper bound on how much slower than real-time a remote worker may run before a single call is presumed hung and cancelled. Per-call deadline = audio length x this factor (clamped by the min/max below). Default `6`. A slow-but-working pass is never cut off; a dead endpoint is. |
 | **Job timeout -- minimum seconds** (`JobMinTimeoutSeconds`) | *(Advanced)* Floor for the per-call deadline, so a tiny detection clip still gets a sane minimum. Default `60`. |
 | **Job timeout -- maximum hours** (`JobMaxTimeoutHours`) | *(Advanced)* Absolute cap for the per-call deadline; a genuinely long film's worst case still fits under it. Default `12`. |
@@ -440,12 +442,12 @@ whisper.cpp emits subtitle segments back-to-back with no gaps, so the next line 
 | **VAD speech pad** | Padding in milliseconds added around each detected speech chunk (`--vad-speech-pad-ms`). Default: `30`. |
 | **VAD samples overlap** | Overlap fraction between consecutive analysis windows (`--vad-samples-overlap`). Default: `0.1`. |
 | **Align subtitles to speech** | Older, energy-based fallback. Snaps each subtitle's start to the detected speech onset using a quick FFmpeg silence-detection pass over the audio. Used only when **Enable VAD** is off (native VAD handles this more reliably). |
-| **Also align to speech when VAD is on** | If lines still appear early with **Enable VAD** on, also runs the forward-snap above on top of VAD -- native VAD improves transcription but doesn't always correct whisper's slightly-early cue starts. Off by default; requires **Align subtitles to speech** on. Only moves a start later, never earlier (though on coarse audio it may push a few starts slightly late). |
+| **Also align VAD / worker timestamps to speech** | If lines still appear early with local VAD or worker/provider timestamps, also runs the forward-snap above. Off by default; requires **Align subtitles to speech** on. Only moves a start later, never earlier (though on coarse audio it may push a few starts slightly late). |
 | **Compensate audio start offset** | Shifts all subtitle timestamps by the audio stream's container start time, keeping subtitles in sync when a file's audio doesn't begin exactly at 0:00. |
 
-> These corrections apply only to **locally-generated subtitles** (whisper-cli) -- both full and translated subtitles. They do not affect the remote Whisper API or forced subtitles.
+> These corrections run against the audio extracted on the Jellyfin server, so they apply to both local whisper-cli output and timestamped remote/worker output for full and translated subtitles. Remote/provider-owned timing requires the explicit **Also align VAD / worker timestamps to speech** opt-in. Forced subtitles are unaffected.
 >
-> With native VAD enabled (the default), the FFmpeg silence-detection pass is skipped -- unless **Also align to speech when VAD is on** is enabled, which layers it on top of VAD for content where lines still appear early.
+> With native VAD enabled (the default), the FFmpeg silence-detection pass is skipped -- unless **Also align VAD / worker timestamps to speech** is enabled, which layers it on top for content where lines still appear early.
 
 ## Usage
 

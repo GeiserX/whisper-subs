@@ -1,3 +1,4 @@
+using System.Net;
 using WhisperSubs.Controller.Workers;
 using Xunit;
 
@@ -12,6 +13,19 @@ namespace WhisperSubs.Tests;
 /// </summary>
 public class WorkerProbeTests
 {
+    [Theory]
+    [InlineData("169.254.169.254", true)]
+    [InlineData("::ffff:169.254.169.254", true)]
+    [InlineData("fe80::1", true)]
+    [InlineData("127.0.0.1", false)]
+    [InlineData("192.168.1.10", false)]
+    [InlineData("::1", false)]
+    public void LinkLocalGuard_HandlesMappedIpv4AndLegitimateWorkerAddresses(
+        string address, bool expected)
+    {
+        Assert.Equal(expected, WorkerProbe.IsBlockedLinkLocal(IPAddress.Parse(address)));
+    }
+
     [Fact]
     public void NotReachable_IsHardFailure()
     {

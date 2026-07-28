@@ -69,7 +69,9 @@ translations path to `translate=true`. Hence a minimal body-aware adapter:
 
 The adapter is ~430 lines of Python standard library — **no pip dependencies** —
 in [`adapter.py`](adapter.py). `response_format=srt` and `verbose_json` are both
-native to `whisper-server`, so no response rewriting is needed.
+native to `whisper-server`, so no response rewriting is needed. The plugin keeps
+SRT as the first choice and negotiates to timestamped JSON only for hosted providers
+that reject SRT.
 
 > **One model per worker.** `whisper-server` serves a single model, fixed at
 > startup by `WHISPER_MODEL`. The plugin's per-worker **Model** field is sent but
@@ -228,7 +230,9 @@ compliant server works. Pick by hardware:
   accelerate on Intel iGPUs** — which is exactly why this whisper.cpp + Vulkan image
   exists for the Intel/AMD-iGPU case.
 - **Any other OpenAI `/v1/audio/*` server** (self-hosted or otherwise) that returns
-  SRT for `response_format=srt` and a `language` field for `verbose_json`.
+  timestamped `segments` for `response_format=verbose_json`, or legacy SRT for
+  `response_format=srt`, plus a `language` field for detection. Plain `json` with
+  only a transcript cannot be synchronized because it contains no timestamps.
 
 Whatever you choose, point the plugin's worker **Endpoint** at its base URL and set
 **MaxConcurrency** to match how many streams that backend can really run at once.

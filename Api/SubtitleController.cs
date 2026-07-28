@@ -364,44 +364,82 @@ namespace WhisperSubs.Api
             // SSRF hardening (v4.0.1): this admin endpoint makes the server POST to an arbitrary URL. Block
             // the cloud-metadata link-local range (169.254.0.0/16 and IPv6 fe80::/10) — never a real worker,
             // the highest-value SSRF target. Loopback/LAN stay allowed (legitimate worker locations).
-            static bool IsLinkLocal(System.Net.IPAddress ip)
+            if (!System.Uri.TryCreate(worker.ApiUrl.Trim(), System.UriKind.Absolute, out var probeUri))
             {
-                if (ip.IsIPv6LinkLocal) return true;
-                if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
-                {
-                    var b = ip.GetAddressBytes();
-                    return b[0] == 169 && b[1] == 254;
-                }
-                return false;
+                return Ok(new { ok = false, message = "Endpoint URL is invalid." });
             }
-            if (System.Uri.TryCreate(worker.ApiUrl.Trim(), System.UriKind.Absolute, out var probeUri))
+
+            System.Net.IPAddress[] pinnedAddresses;
+            if (System.Net.IPAddress.TryParse(probeUri.Host, out var probeIp))
             {
-                if (System.Net.IPAddress.TryParse(probeUri.Host, out var probeIp))
+                if (Controller.Workers.WorkerProbe.IsBlockedLinkLocal(probeIp))
                 {
-                    if (IsLinkLocal(probeIp))
-                    {
-                        return Ok(new { ok = false, message = "Endpoint host is link-local (169.254.0.0/16), which is blocked." });
-                    }
+                    return Ok(new { ok = false, message = "Endpoint host is link-local (169.254.0.0/16), which is blocked." });
                 }
-                else
+                pinnedAddresses = [probeIp];
+            }
+            else
+            {
+                try
                 {
-                    // A hostname can resolve to the link-local range too (e.g. a DNS name pointing at
-                    // 169.254.169.254), so check what it actually resolves to — best-effort: the probe
-                    // client re-resolves at connect time, but this closes the plain-DNS bypass of the
-                    // literal check above. Resolution failure just fails the test (never throws).
-                    try
+                    var resolved = await System.Net.Dns.GetHostAddressesAsync(probeUri.Host)
+                        .WaitAsync(TimeSpan.FromSeconds(8));
+                    if (resolved.Length == 0)
                     {
-                        var resolved = await System.Net.Dns.GetHostAddressesAsync(probeUri.Host);
-                        if (resolved.Any(IsLinkLocal))
+                        return Ok(new { ok = false, message = "Endpoint hostname did not resolve to an address." });
+                    }
+                    if (resolved.Any(Controller.Workers.WorkerProbe.IsBlockedLinkLocal))
+                    {
+                        return Ok(new { ok = false, message = "Endpoint hostname resolves to a link-local address (169.254.0.0/16), which is blocked." });
+                    }
+                    pinnedAddresses = resolved;
+                }
+                catch (System.Exception)
+                {
+                    return Ok(new { ok = false, message = "Endpoint hostname did not resolve (DNS lookup failed)." });
+                }
+            }
+
+            System.Net.Http.SocketsHttpHandler CreatePinnedHandler(TimeSpan connectTimeout)
+            {
+                var handler = new System.Net.Http.SocketsHttpHandler
+                {
+                    AllowAutoRedirect = false,
+                    ConnectTimeout = connectTimeout
+                };
+                // SECURITY-REVIEW: pin both probe connections to the address validated above so DNS
+                // rebinding cannot switch the hostname to link-local metadata between validation and use.
+                handler.ConnectCallback = async (context, cancellationToken) =>
+                {
+                    Exception? lastError = null;
+                    foreach (var pinnedAddress in pinnedAddresses)
+                    {
+                        var socket = new System.Net.Sockets.Socket(
+                            pinnedAddress.AddressFamily,
+                            System.Net.Sockets.SocketType.Stream,
+                            System.Net.Sockets.ProtocolType.Tcp);
+                        try
                         {
-                            return Ok(new { ok = false, message = "Endpoint hostname resolves to a link-local address (169.254.0.0/16), which is blocked." });
+                            await socket.ConnectAsync(
+                                new System.Net.IPEndPoint(pinnedAddress, context.DnsEndPoint.Port),
+                                cancellationToken);
+                            return new System.Net.Sockets.NetworkStream(socket, ownsSocket: true);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            socket.Dispose();
+                            throw;
+                        }
+                        catch (Exception ex)
+                        {
+                            socket.Dispose();
+                            lastError = ex;
                         }
                     }
-                    catch (System.Exception)
-                    {
-                        return Ok(new { ok = false, message = "Endpoint hostname did not resolve (DNS lookup failed)." });
-                    }
-                }
+                    throw new System.Net.Http.HttpRequestException(
+                        "No validated endpoint address accepted the connection", lastError);
+                };
+                return handler;
             }
 
             var url = worker.ApiUrl.TrimEnd('/') + "/v1/audio/transcriptions";
@@ -420,17 +458,18 @@ namespace WhisperSubs.Api
             {
                 baseUrl = baseUri.Scheme + "://" + baseUri.Authority + "/";
             }
-            using (var reachHandler = new System.Net.Http.SocketsHttpHandler
+            using (var reachHandler = CreatePinnedHandler(TimeSpan.FromSeconds(8)))
+            using (var reachHttp = new System.Net.Http.HttpClient(reachHandler)
             {
-                AllowAutoRedirect = false,
-                ConnectTimeout = TimeSpan.FromSeconds(8)
+                Timeout = TimeSpan.FromSeconds(8),
+                MaxResponseContentBufferSize = 64 * 1024
             })
-            using (var reachHttp = new System.Net.Http.HttpClient(reachHandler) { Timeout = TimeSpan.FromSeconds(8) })
             {
                 try
                 {
                     using var getReq = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Get, baseUrl);
-                    using var getResp = await reachHttp.SendAsync(getReq);
+                    using var getResp = await reachHttp.SendAsync(
+                        getReq, System.Net.Http.HttpCompletionOption.ResponseHeadersRead);
                     // Any HTTP status answered (even 401/404) proves the host is reachable — fall through to transcribe.
                 }
                 catch (System.Net.Http.HttpRequestException ex)
@@ -448,39 +487,118 @@ namespace WhisperSubs.Api
                 }
             }
 
-            using var content = new System.Net.Http.MultipartFormDataContent();
-            var fileContent = new System.Net.Http.ByteArrayContent(wav);
-            fileContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("audio/wav");
-            content.Add(fileContent, "file", "test.wav");
-            content.Add(new System.Net.Http.StringContent(model), "model");
-            content.Add(new System.Net.Http.StringContent("srt"), "response_format");
-
-            using var probe = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Post, url) { Content = content };
-            if (!string.IsNullOrWhiteSpace(worker.ApiKey))
-            {
-                probe.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", worker.ApiKey.Trim());
-            }
-
             // Dedicated no-redirect client (v4.0.1): a real transcribe endpoint never 302s, so disabling
             // auto-redirect blocks a redirect-based SSRF pivot to an arbitrary URL. Overall timeout is 30s (v4.1.1,
             // up from 20s): reachability is already confirmed, so a timeout here means "reachable and it accepted the
             // audio but the decode is slow" — surfaced as a warning (worker still usable), never a hard failure.
-            using var handler = new System.Net.Http.SocketsHttpHandler
+            using var handler = CreatePinnedHandler(TimeSpan.FromSeconds(10));
+            using var http = new System.Net.Http.HttpClient(handler)
             {
-                AllowAutoRedirect = false,
-                ConnectTimeout = TimeSpan.FromSeconds(10)
+                Timeout = TimeSpan.FromSeconds(30),
+                MaxResponseContentBufferSize = 1024 * 1024
             };
-            using var http = new System.Net.Http.HttpClient(handler) { Timeout = TimeSpan.FromSeconds(30) };
 
+            async Task<(System.Net.HttpStatusCode StatusCode, string Body)> SendProbeAsync(
+                string responseFormat, CancellationToken cancellationToken)
+            {
+                using var content = new System.Net.Http.MultipartFormDataContent();
+                var fileContent = new System.Net.Http.ByteArrayContent(wav);
+                fileContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("audio/wav");
+                content.Add(fileContent, "file", "test.wav");
+                content.Add(new System.Net.Http.StringContent(model), "model");
+                content.Add(new System.Net.Http.StringContent(responseFormat), "response_format");
+                if (string.Equals(responseFormat, "verbose_json", StringComparison.Ordinal))
+                {
+                    content.Add(new System.Net.Http.StringContent("segment"), "timestamp_granularities[]");
+                }
+
+                using var probe = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Post, url)
+                {
+                    Content = content
+                };
+                if (!string.IsNullOrWhiteSpace(worker.ApiKey))
+                {
+                    probe.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue(
+                        "Bearer", worker.ApiKey.Trim());
+                }
+
+                // SECURITY-REVIEW: the admin-supplied URL passed link-local/DNS checks above and this
+                // dedicated client disables redirects; do not replace it with the shared redirecting client.
+                using var response = await http.SendAsync(
+                    probe,
+                    System.Net.Http.HttpCompletionOption.ResponseHeadersRead,
+                    cancellationToken);
+                var body = await Providers.RemoteWhisperProvider.ReadUtf8BoundedAsync(
+                    response.Content, 1024 * 1024, cancellationToken);
+                return (response.StatusCode, body);
+            }
+
+            static bool IsValidSrtProbeBody(string body)
+            {
+                try
+                {
+                    Providers.RemoteWhisperProvider.ConvertTranscriptionResponseToSrt(body);
+                    return true;
+                }
+                catch (InvalidOperationException)
+                {
+                    return false;
+                }
+            }
+
+            using var probeCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
             var sw = System.Diagnostics.Stopwatch.StartNew();
             try
             {
-                using var resp = await http.SendAsync(probe);
+                // Match the runtime negotiation: preserve SRT-first behavior for existing workers, then
+                // retry timestamped JSON only when a Groq/OpenRouter-style endpoint rejects that format.
+                var responseFormat = "srt";
+                var response = await SendProbeAsync(responseFormat, probeCts.Token);
+                if (Providers.RemoteWhisperProvider.ShouldRetryProbeAsVerbose(
+                        response.StatusCode, response.Body))
+                {
+                    responseFormat = "verbose_json";
+                    response = await SendProbeAsync(responseFormat, probeCts.Token);
+                }
+
                 sw.Stop();
+                var status = (int)response.StatusCode;
+                var (ok, warning, msg) = Controller.Workers.WorkerProbe.ClassifyProbeOutcome(
+                    reachable: true, httpStatus: status, timedOut: false);
+                if (ok && !warning)
+                {
+                    var emptyResult = string.Equals(responseFormat, "verbose_json", StringComparison.Ordinal)
+                        ? Providers.RemoteWhisperProvider.HasEmptyTimestampedSegmentsArray(response.Body)
+                        : string.IsNullOrWhiteSpace(response.Body);
+                    if (emptyResult)
+                    {
+                        return Ok(new
+                        {
+                            ok = true,
+                            warning = true,
+                            status,
+                            latencyMs = sw.ElapsedMilliseconds,
+                            message = "Endpoint is reachable and accepted the audio, but the silent probe produced no cues. Test with real speech if you need content verification."
+                        });
+                    }
+
+                    var validBody = string.Equals(responseFormat, "verbose_json", StringComparison.Ordinal)
+                        ? Providers.RemoteWhisperProvider.HasTimestampedSegmentsArray(response.Body)
+                        : IsValidSrtProbeBody(response.Body);
+                    if (!validBody)
+                    {
+                        return Ok(new
+                        {
+                            ok = false,
+                            warning = false,
+                            status,
+                            latencyMs = sw.ElapsedMilliseconds,
+                            message = "Endpoint responded, but did not return timestamped subtitles."
+                        });
+                    }
+                }
+
                 // Do NOT echo the upstream response body (SSRF response-disclosure) — status + latency only.
-                var status = (int)resp.StatusCode;
-                var (ok, warning, msg) = Controller.Workers.WorkerProbe.ClassifyProbeOutcome(reachable: true, httpStatus: status, timedOut: false);
-                // The 2xx result is a stem; append the measured round-trip so the admin sees how fast it was.
                 var message = (ok && !warning) ? (msg + " (" + sw.ElapsedMilliseconds + " ms).") : msg;
                 return Ok(new { ok, warning, status, latencyMs = sw.ElapsedMilliseconds, message });
             }
