@@ -382,7 +382,8 @@ namespace WhisperSubs.Api
             {
                 try
                 {
-                    var resolved = await System.Net.Dns.GetHostAddressesAsync(probeUri.Host);
+                    var resolved = await System.Net.Dns.GetHostAddressesAsync(probeUri.Host)
+                        .WaitAsync(TimeSpan.FromSeconds(8));
                     if (resolved.Length == 0)
                     {
                         return Ok(new { ok = false, message = "Endpoint hostname did not resolve to an address." });
@@ -497,7 +498,8 @@ namespace WhisperSubs.Api
                 MaxResponseContentBufferSize = 1024 * 1024
             };
 
-            async Task<(System.Net.HttpStatusCode StatusCode, string Body)> SendProbeAsync(string responseFormat)
+            async Task<(System.Net.HttpStatusCode StatusCode, string Body)> SendProbeAsync(
+                string responseFormat, CancellationToken cancellationToken)
             {
                 using var content = new System.Net.Http.MultipartFormDataContent();
                 var fileContent = new System.Net.Http.ByteArrayContent(wav);
@@ -522,13 +524,12 @@ namespace WhisperSubs.Api
 
                 // SECURITY-REVIEW: the admin-supplied URL passed link-local/DNS checks above and this
                 // dedicated client disables redirects; do not replace it with the shared redirecting client.
-                using var probeCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
                 using var response = await http.SendAsync(
                     probe,
                     System.Net.Http.HttpCompletionOption.ResponseHeadersRead,
-                    probeCts.Token);
+                    cancellationToken);
                 var body = await Providers.RemoteWhisperProvider.ReadUtf8BoundedAsync(
-                    response.Content, 1024 * 1024, probeCts.Token);
+                    response.Content, 1024 * 1024, cancellationToken);
                 return (response.StatusCode, body);
             }
 
@@ -545,18 +546,19 @@ namespace WhisperSubs.Api
                 }
             }
 
+            using var probeCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
             var sw = System.Diagnostics.Stopwatch.StartNew();
             try
             {
                 // Match the runtime negotiation: preserve SRT-first behavior for existing workers, then
                 // retry timestamped JSON only when a Groq/OpenRouter-style endpoint rejects that format.
                 var responseFormat = "srt";
-                var response = await SendProbeAsync(responseFormat);
+                var response = await SendProbeAsync(responseFormat, probeCts.Token);
                 if (Providers.RemoteWhisperProvider.ShouldRetryProbeAsVerbose(
                         response.StatusCode, response.Body))
                 {
                     responseFormat = "verbose_json";
-                    response = await SendProbeAsync(responseFormat);
+                    response = await SendProbeAsync(responseFormat, probeCts.Token);
                 }
 
                 sw.Stop();

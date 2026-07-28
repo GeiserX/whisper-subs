@@ -312,6 +312,41 @@ public class RemoteTranscriptionResponseTests
     }
 
     [Fact]
+    public async Task RejectionRetryReturningUntimedJson_DoesNotFlipBackAgain()
+    {
+        var handler = new RecordingHandler(
+            new HttpResponseMessage(HttpStatusCode.BadRequest)
+            {
+                Content = new StringContent("""{"error":"response_format srt unsupported"}""")
+            },
+            new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("""{"text":"still untimed"}""")
+            });
+        using var client = new HttpClient(handler);
+        var provider = new RemoteWhisperProvider(
+            NullLogger<RemoteWhisperProvider>.Instance,
+            "https://worker.example",
+            "whisper-1",
+            httpClient: client);
+        var wav = CreateOneSecondWav();
+        try
+        {
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => provider.TranscribeAsync(wav, "auto", CancellationToken.None));
+            Assert.Contains("without timestamped segments", exception.Message);
+        }
+        finally
+        {
+            File.Delete(wav);
+        }
+
+        Assert.Equal(
+            ["srt", "verbose_json"],
+            handler.Requests.Select(request => request.Fields["response_format"]));
+    }
+
+    [Fact]
     public void VerboseJsonSegments_AreConvertedToSrt()
     {
         const string json =
@@ -533,7 +568,7 @@ public class RemoteTranscriptionResponseTests
     public void ResponseFormatFallback_IsLimitedToFormatRelatedStatuses(
         HttpStatusCode? statusCode, bool expected)
     {
-        Assert.Equal(expected, RemoteWhisperProvider.IsResponseFormatRejection(statusCode));
+        Assert.Equal(expected, RemoteWhisperProvider.IsFormatRejectionCandidateStatus(statusCode));
     }
 
     [Theory]

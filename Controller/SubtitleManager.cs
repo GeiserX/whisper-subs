@@ -485,12 +485,13 @@ namespace WhisperSubs.Controller
             try
             {
                 var audioStreamIndex = await ResolveAudioStreamIndexAsync(mediaPath, lang, cancellationToken);
-                var audioStartTime = config?.CompensateAudioOffset == true || resumeOffsetSeconds > 0
+                var audioStartTime = audioStreamIndex >= 0
+                    && (config?.CompensateAudioOffset == true || resumeOffsetSeconds > 0)
                     ? await GetAudioStartTimeAsync(mediaPath, audioStreamIndex, cancellationToken)
                     : 0;
                 var effectiveAudioOffset = EffectiveAudioOffset(
                     config?.CompensateAudioOffset == true, audioStartTime);
-                var containerStartTime = resumeOffsetSeconds > 0
+                var containerStartTime = resumeOffsetSeconds > 0 && audioStreamIndex >= 0
                     ? await GetContainerStartTimeAsync(mediaPath, cancellationToken)
                     : 0;
                 var extractionOffset = ResumeExtractionOffset(
@@ -709,7 +710,8 @@ namespace WhisperSubs.Controller
             {
                 var timingConfig = Plugin.Instance?.Configuration;
                 var audioStreamIndex = await ResolveAudioStreamIndexAsync(mediaPath, sourceLanguage, cancellationToken);
-                var audioStartTime = timingConfig?.CompensateAudioOffset == true
+                var audioStartTime = audioStreamIndex >= 0
+                    && timingConfig?.CompensateAudioOffset == true
                     ? await GetAudioStartTimeAsync(mediaPath, audioStreamIndex, cancellationToken)
                     : 0;
                 var effectiveAudioOffset = EffectiveAudioOffset(

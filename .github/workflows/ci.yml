@@ -43,9 +43,22 @@ jobs:
         run: test -n "$(compgen -G 'WhisperSubs.Tests/TestResults/*/coverage.cobertura.xml')"
 
       - name: Upload coverage to Codecov
-        if: always()
+        if: >-
+          always() &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.fork == false)
         uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
+          files: '**/TestResults/**/coverage.cobertura.xml'
+          fail_ci_if_error: true
+
+      - name: Upload coverage to Codecov (fork)
+        if: >-
+          always() &&
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.fork == true
+        uses: codecov/codecov-action@v7
+        with:
           files: '**/TestResults/**/coverage.cobertura.xml'
           fail_ci_if_error: true

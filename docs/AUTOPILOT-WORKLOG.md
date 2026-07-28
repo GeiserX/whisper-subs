@@ -494,3 +494,8 @@ Synthesize → propose approach → implement (likely: FT integration with direc
 - Final timing formula: `input seek = playback resume - effective compensation + selected-stream start - container format start`; regression coverage includes both reproduced non-zero-start layouts and compensation-off behavior.
 - **Release-candidate evidence:** **1181/1181 C# tests pass**, coverage artifact produced; clean Release build **0 warnings / 0 errors**; worker adapter **10/10 pass**; `git diff --check` clean.
 - **Next:** commit/push → PR to main → CI + CodeRabbit → merge → verify v4.4.0.0 release/manifest → thank reporters + ask them to test + close #138/#139 → deploy and verify watchtower.
+
+### Entry — PR #140 green + CodeRabbit findings addressed
+- PR [#140](https://github.com/GeiserX/whisper-subs/pull/140) opened against main. Initial CI, Codecov project/patch, GitGuardian, and CodeRabbit checks passed.
+- CodeRabbit posted 11 comments. Valid fixes: fork-safe tokenless Codecov path; task-bounded DNS; one shared 30-second probe deadline; stale timing signature; unresolved-stream no-compensation safety; untimed retry guard; capped initial response allocation; quoted blockquote separator; clearer status-candidate naming. `GOAL.md` wording/heading changes were deliberately skipped because the loop contract requires the directive verbatim. No extra restart question is needed: the current user explicitly requested the watchtower deployment.
+- **Post-fix evidence:** **1182/1182 C# tests pass**, focused review tests **117/117**, clean Release build **0 warnings / 0 errors**, worker adapter **10/10 pass**, `git diff --check` clean.

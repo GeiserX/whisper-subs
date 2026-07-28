@@ -377,7 +377,7 @@ The live queue view shows which worker is transcribing which item, so you can se
 > **Need a worker to point at?** [`worker/`](worker/README.md) is a ready-to-run whisper.cpp + Vulkan worker image (with notes for CPU/NVIDIA/AMD backends). Any server that implements the OpenAI `/v1/audio/transcriptions` and `/v1/audio/translations` endpoints -- e.g. [Speaches](https://github.com/speaches-ai/speaches) -- also works.
 
 > **Hosted-provider limits still apply.** WhisperSubs sends the full extracted 16 kHz mono WAV. A service with a 25 MB multipart limit accepts only about 13 minutes of this audio, even when its response format is compatible; use a self-hosted worker or a provider whose upload and processing limits fit your media. Turn off **Can translate** for providers that do not expose `/v1/audio/translations`.
-
+>
 > **Note:** the automatic scheduled sweep currently processes its backlog one item at a time; manual **Generate** / **Generate All** already fan out across the whole pool. Parallelizing the scheduled sweep is on the [roadmap](ROADMAP.md).
 
 ## Configuration

@@ -117,6 +117,7 @@ namespace WhisperSubs.Providers
             var responseFormat = (translate
                 ? Volatile.Read(ref _translationResponseFormat)
                 : Volatile.Read(ref _transcriptionResponseFormat)) ?? "srt";
+            var negotiatedByFormatRejection = false;
             string response;
             try
             {
@@ -130,6 +131,7 @@ namespace WhisperSubs.Providers
                 // negotiate once to timestamped verbose_json and cache the successful format. If a
                 // provider's capability changes later, the reverse retry also recovers automatically.
                 responseFormat = AlternateResponseFormat(responseFormat);
+                negotiatedByFormatRejection = true;
                 _logger.LogWarning(
                     "Remote API rejected response format; retrying with {ResponseFormat}", responseFormat);
                 response = await PostTranscriptionAsync(
@@ -137,7 +139,7 @@ namespace WhisperSubs.Providers
                     .ConfigureAwait(false);
             }
 
-            if (IsUntimedJsonResponse(response))
+            if (IsUntimedJsonResponse(response) && !negotiatedByFormatRejection)
             {
                 responseFormat = AlternateResponseFormat(responseFormat);
                 _logger.LogWarning(
@@ -203,7 +205,7 @@ namespace WhisperSubs.Providers
             return await PostAudioAsync(endpoint, content, audioBytes, cancellationToken).ConfigureAwait(false);
         }
 
-        internal static bool IsResponseFormatRejection(HttpStatusCode? statusCode)
+        internal static bool IsFormatRejectionCandidateStatus(HttpStatusCode? statusCode)
             => statusCode is HttpStatusCode.BadRequest
                 or HttpStatusCode.NotAcceptable
                 or HttpStatusCode.UnsupportedMediaType
@@ -649,7 +651,7 @@ namespace WhisperSubs.Providers
 
             await using var stream = await content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
             var initialCapacity = content.Headers.ContentLength is long length
-                ? (int)Math.Min(length, maxBytes)
+                ? (int)Math.Min(Math.Min(length, 64 * 1024), maxBytes)
                 : Math.Min(8192, maxBytes);
             using var output = new MemoryStream(initialCapacity);
             var buffer = new byte[Math.Min(8192, maxBytes)];
