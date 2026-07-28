@@ -19,7 +19,7 @@ public class WorkerPoolReconcileTests
     private sealed class FakeProvider : ISubtitleProvider
     {
         public string Name => "fake";
-        public bool UsesVad => false;
+        public bool RequiresSpeechAlignmentOptIn => false;
         public Task<string> TranscribeAsync(string audioPath, string language, CancellationToken ct, bool translate = false)
             => Task.FromResult(string.Empty);
         public Task<(string Language, float Probability)> DetectLanguageAsync(string audioPath, CancellationToken ct)

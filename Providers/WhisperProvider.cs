@@ -55,6 +55,8 @@ namespace WhisperSubs.Providers
         /// </summary>
         public bool UsesVad => !string.IsNullOrEmpty(_vadModelPath) && File.Exists(_vadModelPath);
 
+        public bool RequiresSpeechAlignmentOptIn => UsesVad;
+
         public WhisperProvider(ILogger<WhisperProvider> logger, string modelPath, string binaryPath = "", int threadCount = 0, string customArgs = "", string vadModelPath = "", string detectionModelPath = "", VadTuning? vadTuning = null)
         {
             _logger = logger;

@@ -25,16 +25,22 @@ jobs:
           cache-dependency-path: '**/*.csproj'
 
       - name: Restore dependencies
-        run: dotnet restore
+        run: dotnet restore WhisperSubs.Tests/WhisperSubs.Tests.csproj
 
       - name: Build
-        run: dotnet build --configuration Release --no-restore
+        run: >
+          dotnet build WhisperSubs.Tests/WhisperSubs.Tests.csproj
+          --configuration Release --no-restore
 
       - name: Test with coverage
         run: >
-          dotnet test --configuration Release --no-build --verbosity normal
+          dotnet test WhisperSubs.Tests/WhisperSubs.Tests.csproj
+          --configuration Release --no-build --verbosity normal
           --collect:"XPlat Code Coverage"
           -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=cobertura
+
+      - name: Require coverage output
+        run: test -n "$(compgen -G 'WhisperSubs.Tests/TestResults/*/coverage.cobertura.xml')"
 
       - name: Upload coverage to Codecov
         if: always()
@@ -42,4 +48,4 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: '**/TestResults/**/coverage.cobertura.xml'
-          fail_ci_if_error: false
+          fail_ci_if_error: true

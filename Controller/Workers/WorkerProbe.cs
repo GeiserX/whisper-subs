@@ -1,3 +1,6 @@
+using System.Net;
+using System.Net.Sockets;
+
 namespace WhisperSubs.Controller.Workers
 {
     /// <summary>
@@ -16,6 +19,22 @@ namespace WhisperSubs.Controller.Workers
     /// </summary>
     internal static class WorkerProbe
     {
+        internal static bool IsBlockedLinkLocal(IPAddress address)
+        {
+            var ip = address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address;
+            if (ip.IsIPv6LinkLocal)
+            {
+                return true;
+            }
+            if (ip.AddressFamily != AddressFamily.InterNetwork)
+            {
+                return false;
+            }
+
+            var bytes = ip.GetAddressBytes();
+            return bytes[0] == 169 && bytes[1] == 254;
+        }
+
         /// <summary>
         /// The transcribe-timeout warning copy, kept as a const so the wording has a single source of truth.
         /// The "30s" here must stay in step with the transcribe probe's overall timeout in the controller.

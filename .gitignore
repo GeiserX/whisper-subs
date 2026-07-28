@@ -1,6 +1,12 @@
 # Build outputs
 bin/
 obj/
+publish/
+WhisperSubs.Tests/TestResults/
+worker/__pycache__/
+
+# Local autonomous-session state
+.omc/
 
 # IDE
 .vs/

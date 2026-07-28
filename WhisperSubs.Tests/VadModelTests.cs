@@ -172,6 +172,7 @@ public class VadModelTests
         var logger = NullLoggerFactory.Instance.CreateLogger<WhisperProvider>();
         var provider = new WhisperProvider(logger, "/tmp/m.bin", "", 0, "", vadModelPath: "");
         Assert.False(provider.UsesVad);
+        Assert.False(provider.RequiresSpeechAlignmentOptIn);
     }
 
     [Fact]
@@ -181,6 +182,7 @@ public class VadModelTests
         var provider = new WhisperProvider(logger, "/tmp/m.bin", "", 0, "",
             vadModelPath: Path.Combine(Path.GetTempPath(), "nonexistent-" + Guid.NewGuid().ToString("N") + ".bin"));
         Assert.False(provider.UsesVad);
+        Assert.False(provider.RequiresSpeechAlignmentOptIn);
     }
 
     [Fact]
@@ -193,6 +195,7 @@ public class VadModelTests
             var logger = NullLoggerFactory.Instance.CreateLogger<WhisperProvider>();
             var provider = new WhisperProvider(logger, "/tmp/m.bin", "", 0, "", vadModelPath: modelPath);
             Assert.True(provider.UsesVad);
+            Assert.True(provider.RequiresSpeechAlignmentOptIn);
         }
         finally
         {
