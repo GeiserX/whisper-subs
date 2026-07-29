@@ -1807,7 +1807,7 @@
 
                     row.appendChild(WhisperSubsConfig._workerField(
                         'Max upload size (MB)', 'number', 'wkMaxUpload', { min: '0', step: '1', placeholder: '0 = unlimited' },
-                        (w.MaxUploadBytes != null && w.MaxUploadBytes > 0) ? Math.round(w.MaxUploadBytes / 1048576) : '',
+                        (w.MaxUploadBytes != null && w.MaxUploadBytes > 0) ? Math.round(w.MaxUploadBytes / 1000000) : '',
                         'Largest file this endpoint accepts. 0 (default) = unlimited. OpenAI and Groq free tier are 25; Groq dev tier 100. Oversized titles then fail fast with a clear message instead of a bare HTTP 413.'));
                     row.appendChild(WhisperSubsConfig._workerSelect(
                         'Upload format', 'wkUploadCodec',
@@ -1976,7 +1976,7 @@
                         var maxUploadMb = parseFloat(maxUploadRaw);
                         var maxUploadBytes = (isNaN(maxUploadMb) || maxUploadMb <= 0)
                             ? 0
-                            : Math.round(maxUploadMb * 1048576);
+                            : Math.round(maxUploadMb * 1000000);
 
                         workers.push({
                             Id: row.getAttribute('data-worker-id') || WhisperSubsConfig.genWorkerId(),

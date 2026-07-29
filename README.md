@@ -404,7 +404,7 @@ So a 25 MB cap (OpenAI, and Groq's free tier) accepts only about **13 minutes** 
 - **OpenRouter** requires a namespaced slug (`openai/whisper-large-v3-turbo`, not `whisper-1`); a bare name returns `400`. It also rejects `response_format=srt` outright -- WhisperSubs negotiates to timestamped JSON automatically -- and has **no `/v1/audio/translations` endpoint**, so turn **Can translate** off for it. Timestamps are only available on its OpenAI-compatible models; models that return text without timings cannot produce synchronized subtitles.
 - **OpenAI**: timestamps and SRT are available on `whisper-1` only. `gpt-4o-transcribe` / `gpt-4o-mini-transcribe` return `json`/`text` with no timings, so they cannot be used for subtitles.
 - Turn off **Can translate** for any provider that does not expose `/v1/audio/translations`.
->
+
 > **Note:** the automatic scheduled sweep currently processes its backlog one item at a time; manual **Generate** / **Generate All** already fan out across the whole pool. Parallelizing the scheduled sweep is on the [roadmap](ROADMAP.md).
 
 ## Configuration

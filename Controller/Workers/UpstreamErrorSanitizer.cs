@@ -63,8 +63,10 @@ namespace WhisperSubs.Controller.Workers
             @"id[_\-]?token|client[_\-]?secret|secret|password|passwd|pwd|token|signature|sig)\b" +
             @"\s*[""']?\s*[:=]\s*[""']?(?<v>[^\s""',&}\]]{4,})", Opts, Budget);
 
-        // Long high-entropy runs: no English word is 40 chars, and a 32+ hex run is a key, hash or request id.
-        private static readonly Regex LongBase64 = new(@"\b[A-Za-z0-9+/]{40,}={0,2}\b", Opts, Budget);
+        // Long high-entropy runs: no English word is 40 chars, and a 32+ hex run is a key, hash or request
+        // id. '/' is deliberately NOT in the class — including it made any long URL path match, so a
+        // perfectly innocent endpoint path was redacted out of the message the admin needed to read.
+        private static readonly Regex LongBase64 = new(@"\b[A-Za-z0-9+]{40,}={0,2}\b", Opts, Budget);
         private static readonly Regex LongHex = new(@"\b[0-9a-f]{32,}\b", Opts, Budget);
 
         private static readonly Regex Email = new(
@@ -124,6 +126,11 @@ namespace WhisperSubs.Controller.Workers
                 s = LongBase64.Replace(s, Redacted);
                 s = LongHex.Replace(s, Redacted);
                 s = Email.Replace(s, "[email]");
+
+                // STEP 3 - flatten to one safe line. Inside the try: these carry the same regex budget, and
+                // a timeout escaping here would propagate out past the caller's status handling.
+                s = ControlChars.Replace(s, " ");
+                s = WhitespaceRun.Replace(s, " ").Trim();
             }
             catch (RegexMatchTimeoutException)
             {
@@ -131,10 +138,6 @@ namespace WhisperSubs.Controller.Workers
                 // through to the raw text.
                 return "[error detail withheld: could not be sanitized]";
             }
-
-            // STEP 3 - flatten to one safe line.
-            s = ControlChars.Replace(s, " ");
-            s = WhitespaceRun.Replace(s, " ").Trim();
 
             // STEP 4 - cap LAST, so truncation can never re-expose a partially redacted secret.
             if (s.Length > maxLength)
@@ -149,6 +152,12 @@ namespace WhisperSubs.Controller.Workers
         /// Sanitizes an endpoint URL for display or logging: drops userinfo and the entire query string.
         /// An admin may legitimately paste a key into the URL (Azure-style "?api-version=", proxy
         /// "?api_key="); without this that string reaches jellyfin.log and the config page verbatim.
+        /// <para>
+        /// Scope, stated honestly: this covers the userinfo and query-string forms only. A credential
+        /// embedded in the PATH (some gateways use /v1/&lt;account&gt;/…) is preserved, because the path is
+        /// usually the single most useful thing in a "wrong endpoint" diagnosis and blanket-masking it
+        /// would hide exactly what the admin needs.
+        /// </para>
         /// </summary>
         public static string SanitizeEndpoint(string? url)
         {

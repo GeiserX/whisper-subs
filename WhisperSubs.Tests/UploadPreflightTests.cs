@@ -65,8 +65,9 @@ public class UploadPreflightTests
     [Fact]
     public void FormatBytesIsInvariantAndReadable()
     {
-        Assert.Equal("25.0 MB", RemoteErrorGuidance.FormatBytes(25L * 1024 * 1024));
-        Assert.Equal("1.0 GB", RemoteErrorGuidance.FormatBytes(1024L * 1024 * 1024));
+        // Decimal units, matching the README, the config page and how providers quote their caps.
+        Assert.Equal("25.0 MB", RemoteErrorGuidance.FormatBytes(25_000_000));
+        Assert.Equal("1.0 GB", RemoteErrorGuidance.FormatBytes(1_000_000_000));
     }
 
     [Theory]

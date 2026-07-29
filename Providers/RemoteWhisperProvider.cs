@@ -42,15 +42,19 @@ namespace WhisperSubs.Providers
         internal static string BuildRemoteApiMessage(HttpStatusCode statusCode, string? detail)
         {
             var message = $"Remote Whisper API returned HTTP {(int)statusCode}";
-            if (!string.IsNullOrWhiteSpace(detail))
-            {
-                message += $": {detail}";
-            }
 
+            // Guidance FIRST: this message is surfaced through the queue's last-error, which the config page
+            // truncates. Appending the advice after up to 400 characters of upstream detail meant the admin
+            // reliably saw the diagnosis and never the fix — the opposite of the point.
             var guidance = RemoteErrorGuidance.For(statusCode);
             if (!string.IsNullOrWhiteSpace(guidance))
             {
                 message += $" — {guidance}";
+            }
+
+            if (!string.IsNullOrWhiteSpace(detail))
+            {
+                message += $" [endpoint said: {detail}]";
             }
 
             return message;
@@ -75,8 +79,14 @@ namespace WhisperSubs.Providers
         /// </summary>
         internal static string DescribeUpstreamErrorBody(string? body, string? apiKey, string? mediaType)
         {
-            if (!string.IsNullOrWhiteSpace(mediaType)
-                && mediaType.Equals("text/html", StringComparison.OrdinalIgnoreCase))
+            // Classify by CONTENT as well as header: proxies and load balancers routinely return an HTML
+            // error page with no Content-Type at all, which would otherwise sail through the allow-list.
+            var trimmed = (body ?? string.Empty).TrimStart();
+            if ((!string.IsNullOrWhiteSpace(mediaType)
+                    && mediaType.Equals("text/html", StringComparison.OrdinalIgnoreCase))
+                || trimmed.StartsWith("<!DOCTYPE", StringComparison.OrdinalIgnoreCase)
+                || trimmed.StartsWith("<html", StringComparison.OrdinalIgnoreCase)
+                || trimmed.StartsWith("<", StringComparison.Ordinal))
             {
                 return "the endpoint returned a web page, not an API response";
             }
@@ -115,6 +125,11 @@ namespace WhisperSubs.Providers
         private readonly HttpClient _httpClient;
         private readonly long _maxUploadBytes;
         private readonly string _uploadCodec;
+        // Set once a blind (body-didn't-say-so) format retry has been spent for this provider instance.
+        // The cached format only fills on SUCCESS, so without this a worker that always 4xxs — e.g. the bare
+        // OpenRouter model slug this release's README warns about — would upload the full audio twice on
+        // EVERY job, and the queue retries each item JobMaxRetries times on top of that.
+        private int _blindNegotiationSpent;
         private string? _transcriptionResponseFormat;
         private string? _translationResponseFormat;
 
@@ -190,7 +205,10 @@ namespace WhisperSubs.Providers
             // Re-encode for the wire when this worker asks for it (default wav = no-op), then refuse to
             // upload at all if the result still exceeds the worker's configured cap: a fail-fast with real
             // numbers beats pushing 77 MB to earn a bare HTTP 413.
-            var (uploadPath, uploadIsTemporary) = await RemoteAudioEncoder
+            // effectiveCodec is what the file ACTUALLY is, which differs from _uploadCodec whenever the
+            // re-encode fell back to the source WAV (no ffmpeg, encode failed, or output was not smaller).
+            // Labelling WAV bytes as audio.ogg would be rejected or mis-decoded by the provider.
+            var (uploadPath, uploadIsTemporary, effectiveCodec) = await RemoteAudioEncoder
                 .PrepareUploadAsync(audioPath, _uploadCodec, _logger, cancellationToken).ConfigureAwait(false);
             try
             {
@@ -199,11 +217,11 @@ namespace WhisperSubs.Providers
                 {
                     throw new InvalidOperationException(
                         UploadPreflight.ExplainIfBlocked(
-                            sourceAudioBytes, uploadBytes, _maxUploadBytes, _uploadCodec));
+                            sourceAudioBytes, uploadBytes, _maxUploadBytes, effectiveCodec));
                 }
 
                 return await TranscribeUploadAsync(
-                    endpoint, uploadPath, sourceAudioBytes, language, translate, cancellationToken)
+                    endpoint, uploadPath, sourceAudioBytes, effectiveCodec, language, translate, cancellationToken)
                     .ConfigureAwait(false);
             }
             finally
@@ -220,6 +238,7 @@ namespace WhisperSubs.Providers
             string endpoint,
             string audioPath,
             long sourceAudioBytes,
+            string uploadCodec,
             string language,
             bool translate,
             CancellationToken cancellationToken)
@@ -231,14 +250,15 @@ namespace WhisperSubs.Providers
             // format-candidate rejection is worth one retry even when the body does not name the parameter
             // (OpenRouter rejects response_format=srt with a bare 400). Bounded: once the format is cached,
             // only an explicit format complaint triggers a retry again.
-            var formatNotYetNegotiated = cachedResponseFormat is null;
+            var formatNotYetNegotiated =
+                cachedResponseFormat is null && Volatile.Read(ref _blindNegotiationSpent) == 0;
             var responseFormat = cachedResponseFormat ?? "srt";
             var negotiatedByFormatRejection = false;
             string response;
             try
             {
                 response = await PostTranscriptionAsync(
-                    endpoint, audioPath, sourceAudioBytes, language, responseFormat, includeLanguage: !translate, cancellationToken: cancellationToken)
+                    endpoint, audioPath, sourceAudioBytes, uploadCodec, language, responseFormat, includeLanguage: !translate, cancellationToken: cancellationToken)
                     .ConfigureAwait(false);
             }
             catch (HttpRequestException ex) when (ShouldNegotiateAlternateFormat(ex, formatNotYetNegotiated))
@@ -246,6 +266,13 @@ namespace WhisperSubs.Providers
                 // Preserve existing SRT providers as the first choice. Groq/OpenRouter reject SRT, so
                 // negotiate once to timestamped verbose_json and cache the successful format. If a
                 // provider's capability changes later, the reverse retry also recovers automatically.
+                // Spend the blind-retry budget before re-posting, so a permanently-failing endpoint cannot
+                // double every future upload.
+                if (formatNotYetNegotiated && !IsResponseFormatRejection(ex))
+                {
+                    Interlocked.Exchange(ref _blindNegotiationSpent, 1);
+                }
+
                 responseFormat = AlternateResponseFormat(responseFormat);
                 negotiatedByFormatRejection = true;
                 // Information, not Warning: this is expected, successful, self-healing behavior on Groq and
@@ -254,7 +281,7 @@ namespace WhisperSubs.Providers
                 _logger.LogInformation(
                     "Remote API rejected response format; retrying with {ResponseFormat}", responseFormat);
                 response = await PostTranscriptionAsync(
-                    endpoint, audioPath, sourceAudioBytes, language, responseFormat, includeLanguage: !translate, cancellationToken: cancellationToken)
+                    endpoint, audioPath, sourceAudioBytes, uploadCodec, language, responseFormat, includeLanguage: !translate, cancellationToken: cancellationToken)
                     .ConfigureAwait(false);
             }
 
@@ -264,7 +291,7 @@ namespace WhisperSubs.Providers
                 _logger.LogInformation(
                     "Remote API returned untimed JSON; retrying with {ResponseFormat}", responseFormat);
                 response = await PostTranscriptionAsync(
-                    endpoint, audioPath, sourceAudioBytes, language, responseFormat, includeLanguage: !translate, cancellationToken: cancellationToken)
+                    endpoint, audioPath, sourceAudioBytes, uploadCodec, language, responseFormat, includeLanguage: !translate, cancellationToken: cancellationToken)
                     .ConfigureAwait(false);
             }
 
@@ -293,6 +320,7 @@ namespace WhisperSubs.Providers
             string endpoint,
             string audioPath,
             long sourceAudioBytes,
+            string uploadCodec,
             string language,
             string responseFormat,
             bool includeLanguage,
@@ -306,8 +334,8 @@ namespace WhisperSubs.Providers
             var fileContent = new StreamContent(File.OpenRead(audioPath));
             // Name and media type must match the actual bytes: providers routinely sniff the format from the
             // file EXTENSION, so a FLAC body called "audio.wav" is rejected or mis-decoded.
-            fileContent.Headers.ContentType = new MediaTypeHeaderValue(RemoteUploadFormat.ContentType(_uploadCodec));
-            content.Add(fileContent, "file", RemoteUploadFormat.FileName(_uploadCodec));
+            fileContent.Headers.ContentType = new MediaTypeHeaderValue(RemoteUploadFormat.ContentType(uploadCodec));
+            content.Add(fileContent, "file", RemoteUploadFormat.FileName(uploadCodec));
             content.Add(new StringContent(_model), "model");
             content.Add(new StringContent(responseFormat), "response_format");
             if (string.Equals(responseFormat, "verbose_json", StringComparison.Ordinal))
@@ -345,9 +373,9 @@ namespace WhisperSubs.Providers
         /// this the negotiation never fires and the endpoint simply never works (issue #138).
         /// </para>
         /// <para>
-        /// The cost of a wrong guess is bounded: exactly one extra upload, once per worker, and only until a
-        /// format is successfully cached. After that a retry needs an explicit format complaint again, so a
-        /// misconfiguration (say a bad model name) cannot cause a repeated large re-upload on every job.
+        /// The cost of a wrong guess is bounded twice over: at most ONE extra upload within a job, and the
+        /// blind form is spent at most once per provider instance (see _blindNegotiationSpent). A worker
+        /// that always 4xxs therefore pays the double upload once, not on every job.
         /// </para>
         /// </summary>
         internal static bool ShouldNegotiateAlternateFormat(HttpRequestException exception, bool formatNotYetNegotiated)
@@ -776,7 +804,7 @@ namespace WhisperSubs.Providers
                 if (!response.IsSuccessStatusCode)
                 {
                     var errorBody = await ReadUtf8BoundedAsync(
-                        response.Content, MaxErrorResponseBytes, timeoutCts.Token).ConfigureAwait(false);
+                        response.Content, MaxErrorResponseBytes, timeoutCts.Token, truncate: true).ConfigureAwait(false);
                     // Echo the provider's own explanation, sanitized and media-type gated, so the admin can
                     // see WHY without turning on debug logging (#138). The raw body is retained on the
                     // exception for the response-format negotiation matcher.
@@ -797,14 +825,23 @@ namespace WhisperSubs.Providers
             }
         }
 
+        /// <param name="truncate">
+        /// When true, an oversized body is TRUNCATED to <paramref name="maxBytes"/> instead of throwing.
+        /// Use this for ERROR bodies only: an endpoint behind a proxy answers a failure with a multi-KB HTML
+        /// page, and throwing there loses the status code, the guidance and the format negotiation (the
+        /// thrown type is not HttpRequestException, so the negotiation catch never runs) — which defeats the
+        /// entire point of surfacing provider errors. A TRANSCRIPT must still throw: silently truncating one
+        /// would produce subtitles that are quietly missing their tail.
+        /// </param>
         internal static async Task<string> ReadUtf8BoundedAsync(
-            HttpContent content, int maxBytes, CancellationToken cancellationToken)
+            HttpContent content, int maxBytes, CancellationToken cancellationToken, bool truncate = false)
         {
             if (maxBytes < 1)
             {
                 throw new ArgumentOutOfRangeException(nameof(maxBytes));
             }
-            if (content.Headers.ContentLength is long declaredLength && declaredLength > maxBytes)
+            if (!truncate
+                && content.Headers.ContentLength is long declaredLength && declaredLength > maxBytes)
             {
                 throw new InvalidOperationException("Remote Whisper API response exceeded the size limit");
             }
@@ -824,7 +861,19 @@ namespace WhisperSubs.Providers
                 }
                 if (output.Length + read > maxBytes)
                 {
-                    throw new InvalidOperationException("Remote Whisper API response exceeded the size limit");
+                    if (!truncate)
+                    {
+                        throw new InvalidOperationException("Remote Whisper API response exceeded the size limit");
+                    }
+
+                    // Keep what fits and stop reading; the sanitizer caps it far shorter anyway.
+                    var remaining = (int)(maxBytes - output.Length);
+                    if (remaining > 0)
+                    {
+                        output.Write(buffer, 0, remaining);
+                    }
+
+                    break;
                 }
                 output.Write(buffer, 0, read);
             }

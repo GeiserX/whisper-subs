@@ -25,9 +25,6 @@ namespace WhisperSubs.Controller.Workers
         public const string Flac = "flac";
         public const string Opus = "opus";
 
-        /// <summary>Bytes per second of the extracted 16 kHz mono s16le PCM source.</summary>
-        public const double SourceBytesPerSecond = 32000.0;
-
         /// <summary>Opus bitrate used for uploads. 24 kbps mono keeps a 2-hour film near 20 MB.</summary>
         public const int OpusBitrateKbps = 24;
 
@@ -113,28 +110,6 @@ namespace WhisperSubs.Controller.Workers
                 sourceWavPath,
                 codecArgs,
                 targetPath);
-        }
-
-        /// <summary>
-        /// Approximate uploaded size for a codec, from the SOURCE PCM size. Ratios are measured on real
-        /// film audio with this project's ffmpeg build, not vendor claims. Used only for advice/estimates —
-        /// never as a substitute for the real file length.
-        /// </summary>
-        public static long EstimateUploadBytes(long sourceBytes, string? codec)
-        {
-            if (sourceBytes <= 0)
-            {
-                return 0;
-            }
-
-            var ratio = Normalize(codec) switch
-            {
-                Flac => 0.53,
-                Opus => 0.091,
-                _ => 1.0,
-            };
-
-            return (long)Math.Round(sourceBytes * ratio, MidpointRounding.AwayFromZero);
         }
     }
 }
