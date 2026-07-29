@@ -1,3 +1,4 @@
+using System.IO;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
@@ -79,5 +80,72 @@ public class BoundedResponseReadTests
 
         Assert.True(RemoteWhisperProvider.IsResponseFormatRejection(
             System.Net.HttpStatusCode.BadRequest, read));
+    }
+
+    [Fact]
+    public async Task TruncationWritesThePartialBufferWhenTheLimitIsNotBufferAligned()
+    {
+        // maxBytes > the 8 KB read buffer, so the overflowing read must contribute its first N bytes
+        // rather than being dropped whole — otherwise the snippet would silently lose up to 8 KB.
+        var content = Content(new string('z', 40_000));
+
+        var read = await RemoteWhisperProvider.ReadUtf8BoundedAsync(
+            content, maxBytes: 10_000, CancellationToken.None, truncate: true);
+
+        Assert.Equal(10_000, read.Length);
+    }
+
+    [Fact]
+    public async Task UndeclaredLengthTranscriptStillThrowsWhenItOverflows()
+    {
+        // No Content-Length (a chunked/streamed response), so the declared-length short-circuit cannot
+        // fire and the in-loop guard is what has to stop an unbounded transcript read.
+        var content = new StreamContent(new NonSeekableStream(
+            System.Text.Encoding.UTF8.GetBytes(new string('s', 40_000))));
+        Assert.Null(content.Headers.ContentLength);
+
+        await Assert.ThrowsAsync<System.InvalidOperationException>(
+            () => RemoteWhisperProvider.ReadUtf8BoundedAsync(
+                content, maxBytes: 10_000, CancellationToken.None));
+    }
+
+    /// <summary>A forward-only stream, so StreamContent cannot infer a Content-Length from it.</summary>
+    private sealed class NonSeekableStream(byte[] data) : Stream
+    {
+        private readonly MemoryStream _inner = new(data);
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new System.NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new System.NotSupportedException();
+            set => throw new System.NotSupportedException();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) => _inner.Read(buffer, offset, count);
+
+        public override void Flush() => _inner.Flush();
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new System.NotSupportedException();
+
+        public override void SetLength(long value) => throw new System.NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new System.NotSupportedException();
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                _inner.Dispose();
+            }
+
+            base.Dispose(disposing);
+        }
     }
 }
