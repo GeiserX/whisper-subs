@@ -555,6 +555,11 @@ See [ROADMAP.md](ROADMAP.md) for planned features and design details.
 - [jellyfin-telegram-channel-sync](https://github.com/GeiserX/jellyfin-telegram-channel-sync) — Sync Jellyfin access with Telegram channel membership
 
 
+## Supporters
+
+> This project is made possible by generous supporters:
+> **yskaa001**
+
 ## License
 
 This project is licensed under the **GNU General Public License v3.0**. See the [LICENSE](LICENSE) file for the full text.
