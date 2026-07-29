@@ -515,3 +515,21 @@ Synthesize → propose approach → implement (likely: FT integration with direc
 - Live worker proof: geiserback UHD 770, Mac mini M4 Metal, and local watchtower workers are all enabled at `large-v3`, each has one real job in flight, the queue is processing, and failed count is 0. Jellyfin is healthy and recent startup has 0 WhisperSubs errors.
 - Reporter follow-up: #138 comment [5104644837](https://github.com/GeiserX/whisper-subs/issues/138#issuecomment-5104644837) + closed; #139 comment [5104645330](https://github.com/GeiserX/whisper-subs/issues/139#issuecomment-5104645330) + closed. Both were thanked and asked to test the released version.
 - **Goal met and verified end to end.** Tally: 2 issues released/replied/closed; 0 open implementation/deployment items. Cancel the persistent loop.
+
+### Entry — #138 reopened: the 413 and OpenRouter (2026-07-29, v4.5.0.0)
+
+**Why reopened:** @ARLBR10 tested 4.4.0.0. Groq worked, but a 40-minute title returned HTTP 413, and OpenRouter failed with no visible reason.
+
+**Research (8-agent panel).** Root cause was payload size, not response format: the plugin uploads 16 kHz mono PCM WAV at 1.92 MB/min, so 40 min = 76.8 MB and 2 h = 219.7 MB against 25 MB hosted caps. Compounded by a diagnosability failure — `RemoteApiException` captured the provider's explanation and never surfaced it, so the admin saw a bare `HTTP 413`. The reporter's "I can't enable debug logging" was a misdiagnosis: the error was already at Error level, just empty.
+
+**Two findings that changed the design:**
+- **Measured on watchtower's own ffmpeg:** Groq's *published* FLAC command (`-acodec flac -ac 1 -ar 16000`) yields a file LARGER than PCM (19,713,918 vs 19,200,102 bytes) because ffmpeg defaults FLAC to 24-bit. `-sample_fmt s16` is mandatory. Corrected FLAC = 52.6% of PCM; Opus 24k = 9.1% (2 h film → ~20 MB, fits every hosted cap). Timing drift: FLAC 0 ms, Opus +6.5 ms fixed/non-cumulative, MP3 +84 ms (avoided).
+- **An adversarial critic rejected the first plan.** Compressing would have broken hard: duration/deadline were derived from the UPLOADED byte count (`RemoteWhisperProvider.cs:152`), which is also the segment-timestamp sanity bound — compression would have collapsed the deadline and thrown on every valid late segment. And the repo's OWN worker image ships `INSTALL_FFMPEG=false`/`CONVERT=false` (whisper.cpp decodes WAV only), so a compressed default would break all three self-hosted workers.
+
+**Shipped (PR #143, squash 7623ea5, v4.5.0.0):** source-bytes decoupling (prerequisite); `UpstreamErrorSanitizer` + `RemoteErrorGuidance` surfacing the provider's error safely (redact-before-truncate, \p{C} strip, fail-closed regex budget, 4xx/5xx + json/text-plain only, html classified, 2xx never echoed, raw body retained for negotiation); per-worker `MaxUploadBytes` (default 0 = unlimited) + pre-flight; bounded format-negotiation retry on a bare 4xx (fixes OpenRouter's srt rejection); per-worker `UploadCodec` (default wav); endpoint sanitizing (a key pasted in the URL query used to reach jellyfin.log and the config page); README size table + per-provider base URLs/model limits.
+
+**Cut deliberately:** audio chunking (Opus removes the need; 4 unresolved blockers) and any speculative OpenRouter URL change (the double-`/v1` theory is self-defeating — Groq's own base URL also ends in `/v1` and Groq worked).
+
+**Evidence:** 1252 tests, 0 warnings, on the merged main. GitGuardian green (a JWT-shaped *test fixture* tripped it; the unmerged branch was squashed to purge it). CodeRabbit clean. Back-compat proven by test: a pre-4.5 config XML deserializes to unlimited + wav, so self-hosted workers are byte-identical.
+
+**Reporter:** #138 comment [5116102015](https://github.com/GeiserX/whisper-subs/issues/138#issuecomment-5116102015) + closed. Told plainly that FLAC alone would NOT fit his 40-minute file (contradicting Groq's own recommendation) and that Opus is the answer; and that OpenRouter has no translations endpoint and OpenAI timestamps are whisper-1-only. Asked for URL/model/status + a short-clip retest, since the OpenRouter cause is unproven.
