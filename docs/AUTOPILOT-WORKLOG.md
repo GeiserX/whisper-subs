@@ -515,3 +515,19 @@ Synthesize → propose approach → implement (likely: FT integration with direc
 - Live worker proof: geiserback UHD 770, Mac mini M4 Metal, and local watchtower workers are all enabled at `large-v3`, each has one real job in flight, the queue is processing, and failed count is 0. Jellyfin is healthy and recent startup has 0 WhisperSubs errors.
 - Reporter follow-up: #138 comment [5104644837](https://github.com/GeiserX/whisper-subs/issues/138#issuecomment-5104644837) + closed; #139 comment [5104645330](https://github.com/GeiserX/whisper-subs/issues/139#issuecomment-5104645330) + closed. Both were thanked and asked to test the released version.
 - **Goal met and verified end to end.** Tally: 2 issues released/replied/closed; 0 open implementation/deployment items. Cancel the persistent loop.
+
+### Entry — #138 follow-up: 4.5.0.1 (2026-07-29)
+
+**Why a follow-up release.** Two independent review passes ran after 4.5.0.0 shipped (an architect verification against the acceptance criteria, and an adversarial code review). They **agreed on the same HIGH findings**, all real:
+
+1. **Upload mislabelled on every re-encode fallback.** `PostTranscriptionAsync` used the CONFIGURED codec for the multipart filename/Content-Type, but `PrepareUploadAsync` returns the untouched source WAV whenever the re-encode cannot run (no ffmpeg, non-zero exit, output not smaller, exception). So WAV bytes went out as `audio.ogg` — providers sniff by extension — while the log said "uploading the original WAV instead". Exactly the invisible mismatch #138 was filed about. `PrepareUploadAsync` now returns the EFFECTIVE codec.
+2. **ffmpeg orphaned on cancellation.** `WaitForExitAsync` abandons the wait without stopping the child, and `TryDelete` then unlinked a file ffmpeg still held (on Unraid `/tmp` that is RAM). It was the only spawn site in the repo missing the kill every other one has.
+3. **The blind format retry was bounded only WITHIN a job.** The format cache fills only on success, so a permanently-4xx worker (the bare OpenRouter slug the README warns about) re-uploaded the full audio on EVERY job, times `JobMaxRetries` — ~614 MB per 40-minute title. Now spent once per provider instance, proven by a two-job test asserting 2 requests then 1.
+
+Also fixed: an oversized error body **threw** instead of truncating, losing the status, the guidance AND the negotiation (the thrown type is not `HttpRequestException`); guidance was appended after up to 400 chars of detail so the UI's truncation cut it off; the sanitizer's `/` in its high-entropy class redacted legitimate endpoint paths; HTML with no `Content-Type` slipped the allow-list; MB was MiB in the config field while docs/providers quote decimal (~5% dead band where pre-flight passed and the provider still 413'd).
+
+**Coverage caught two tests that were not testing what they claimed.** The truncation tests used long single-character runs, which the redaction rule collapsed to `[redacted]` before truncation was ever reached; and the bounded-read tests used `StringContent`, which always declares a length, so the streaming partial-write and undeclared-length paths were never exercised. Both rewritten; patch coverage 100%.
+
+**Process note worth keeping:** 4.5.0.0 was merged before the review agents finished, and three real defects shipped as a result. 4.5.0.1 waited for all five checks (build, GitGuardian, CodeRabbit, codecov/patch, codecov/project). Wait for the reviewers.
+
+**Evidence:** merged `63304aa`, released [v4.5.0.1](https://github.com/GeiserX/whisper-subs/releases/tag/v4.5.0.1), manifest lists it as latest. 1298 tests, 0 warnings. Reporter told to take 4.5.0.1 over 4.5.0.0: comment [5116590834](https://github.com/GeiserX/whisper-subs/issues/138#issuecomment-5116590834).
