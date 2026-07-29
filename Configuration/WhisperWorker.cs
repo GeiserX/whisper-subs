@@ -33,5 +33,28 @@ namespace WhisperSubs.Configuration
 
         /// <summary>Whether this worker can translate to English. Default true.</summary>
         public bool CanTranslate { get; set; } = true;
+
+        /// <summary>
+        /// Largest upload this endpoint accepts, in bytes. <c>0</c> (default) means unlimited, which is the
+        /// pre-existing behaviour and what every self-hosted worker wants. Set it for a hosted provider
+        /// (OpenAI and Groq free tier are 25 MB; Groq dev tier 100 MB) so an oversized title fails fast with
+        /// a useful message instead of a bare HTTP 413 after the whole file has been uploaded.
+        /// There is deliberately no non-zero default: real caps differ by ~440x, so a guess would break
+        /// working setups.
+        /// </summary>
+        public long MaxUploadBytes { get; set; }
+
+        /// <summary>
+        /// Audio format used when uploading to THIS worker: <c>wav</c> (default), <c>flac</c> or
+        /// <c>opus</c>. The plugin always extracts 16 kHz mono PCM WAV — 1.92 MB per minute — so a
+        /// 40-minute title is 76.8 MB and exceeds every hosted provider's cap. FLAC is lossless and about
+        /// half the size; Opus (24 kbps mono) is about a tenth, enough for a feature film.
+        /// <para>
+        /// Default is <c>wav</c> ON PURPOSE: whisper.cpp's whisper-server decodes WAV only, and this
+        /// project's own worker image ships without ffmpeg, so anything else would break every self-hosted
+        /// worker. Only enable a compressed format on an endpoint documented to accept it.
+        /// </para>
+        /// </summary>
+        public string UploadCodec { get; set; } = "wav";
     }
 }
