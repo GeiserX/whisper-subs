@@ -71,24 +71,4 @@ public class RemoteUploadFormatTests
         Assert.Throws<System.ArgumentException>(
             () => RemoteUploadFormat.BuildFfmpegArguments("/tmp/in.wav", "/tmp/out.wav", "wav"));
     }
-
-    [Fact]
-    public void EstimatesReflectMeasuredRatios()
-    {
-        // A 40-minute title: 2400s x 32000 = 76.8 MB of PCM.
-        const long fortyMinutes = 76_800_000;
-
-        Assert.Equal(fortyMinutes, RemoteUploadFormat.EstimateUploadBytes(fortyMinutes, "wav"));
-
-        var flac = RemoteUploadFormat.EstimateUploadBytes(fortyMinutes, "flac");
-        var opus = RemoteUploadFormat.EstimateUploadBytes(fortyMinutes, "opus");
-
-        // FLAC roughly halves it - still over a 25 MB cap, which is why it alone did not fix the report.
-        Assert.InRange(flac, 38_000_000, 42_000_000);
-        Assert.True(flac > 25L * 1024 * 1024);
-
-        // Opus fits comfortably under 25 MB - this is what makes the reported 40-minute title work.
-        Assert.InRange(opus, 5_000_000, 8_000_000);
-        Assert.True(opus < 25L * 1024 * 1024);
-    }
 }

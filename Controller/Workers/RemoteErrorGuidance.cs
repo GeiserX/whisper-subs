@@ -55,7 +55,13 @@ namespace WhisperSubs.Controller.Workers
                 allowedMinutes);
         }
 
-        /// <summary>Human-friendly byte size (invariant culture, so logs never drift with locale).</summary>
+        /// <summary>
+        /// Human-friendly byte size (invariant culture, so logs never drift with locale). DECIMAL units, to
+        /// match how providers quote their limits ("25 MB"), how the README states sizes, and how the config
+        /// page converts its "max upload size (MB)" field. Using binary units here would print a different
+        /// number than the docs for the same file, and would set a cap ~5% larger than the admin intended -
+        /// enough to let an upload through pre-flight and still earn a real 413.
+        /// </summary>
         public static string FormatBytes(long bytes)
         {
             if (bytes < 0)
@@ -63,11 +69,11 @@ namespace WhisperSubs.Controller.Workers
                 bytes = 0;
             }
 
-            return bytes >= 1024L * 1024L * 1024L
-                ? string.Format(CultureInfo.InvariantCulture, "{0:F1} GB", bytes / 1024.0 / 1024.0 / 1024.0)
-                : bytes >= 1024L * 1024L
-                    ? string.Format(CultureInfo.InvariantCulture, "{0:F1} MB", bytes / 1024.0 / 1024.0)
-                    : string.Format(CultureInfo.InvariantCulture, "{0:F0} KB", Math.Ceiling(bytes / 1024.0));
+            return bytes >= 1_000_000_000L
+                ? string.Format(CultureInfo.InvariantCulture, "{0:F1} GB", bytes / 1_000_000_000.0)
+                : bytes >= 1_000_000L
+                    ? string.Format(CultureInfo.InvariantCulture, "{0:F1} MB", bytes / 1_000_000.0)
+                    : string.Format(CultureInfo.InvariantCulture, "{0:F0} KB", Math.Ceiling(bytes / 1000.0));
         }
     }
 }
