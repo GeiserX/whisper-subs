@@ -129,4 +129,55 @@ public class UploadCodecFallbackTests
             };
         }
     }
+
+    [Fact]
+    public async Task BlindFormatRetryIsSpentOnceAcrossJobsNotOncePerJob()
+    {
+        // The HIGH finding: the format cache fills only on SUCCESS, so a permanently-4xx worker (e.g. the
+        // bare OpenRouter model slug the README warns about) used to re-upload the full audio on EVERY job.
+        // Job 1 may spend the one blind retry (2 requests); job 2 must not (1 request).
+        var handler = new CountingBadRequestHandler();
+        using var client = new HttpClient(handler);
+        var provider = new RemoteWhisperProvider(
+            NullLogger<RemoteWhisperProvider>.Instance,
+            "https://worker.example",
+            "wrong-model",
+            httpClient: client);
+
+        var wav = Path.GetTempFileName();
+        try
+        {
+            await Assert.ThrowsAnyAsync<System.Exception>(
+                () => provider.TranscribeAsync(wav, "auto", CancellationToken.None));
+            var afterFirstJob = handler.Count;
+
+            await Assert.ThrowsAnyAsync<System.Exception>(
+                () => provider.TranscribeAsync(wav, "auto", CancellationToken.None));
+            var secondJobRequests = handler.Count - afterFirstJob;
+
+            Assert.Equal(2, afterFirstJob);        // one blind retry, spent
+            Assert.Equal(1, secondJobRequests);    // budget gone: no second upload
+        }
+        finally
+        {
+            File.Delete(wav);
+        }
+    }
+
+    /// <summary>Always answers 400 with a body that names no format, and counts requests.</summary>
+    private sealed class CountingBadRequestHandler : HttpMessageHandler
+    {
+        public int Count { get; private set; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Count++;
+            await Task.Yield();
+            return new HttpResponseMessage(HttpStatusCode.BadRequest)
+            {
+                Content = new StringContent("""{"error":"model does not exist"}"""),
+            };
+        }
+    }
 }
