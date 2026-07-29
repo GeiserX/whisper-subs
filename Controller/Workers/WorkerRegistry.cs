@@ -46,6 +46,8 @@ namespace WhisperSubs.Controller.Workers
                             maxConcurrency: w.MaxConcurrency,
                             costWeight: w.CostWeight,
                             canTranslate: w.CanTranslate,
+                            maxUploadBytes: w.MaxUploadBytes,
+                            uploadCodec: w.UploadCodec,
                             config: config,
                             loggerFactory: loggerFactory));
                     }
@@ -59,6 +61,7 @@ namespace WhisperSubs.Controller.Workers
                         key: (config.RemoteWhisperApiKey ?? string.Empty).Trim(),
                         model: config.RemoteWhisperModel,
                         maxConcurrency: 1, costWeight: 0, canTranslate: true,
+                        maxUploadBytes: 0, uploadCodec: null,
                         config: config, loggerFactory: loggerFactory));
                     break;
             }
@@ -79,13 +82,15 @@ namespace WhisperSubs.Controller.Workers
         private static ITranscriptionWorker BuildRemote(
             string id, string name, string url, string key, string model,
             int maxConcurrency, double costWeight, bool canTranslate,
+            long maxUploadBytes, string? uploadCodec,
             PluginConfiguration config, ILoggerFactory loggerFactory)
         {
             var resolvedModel = string.IsNullOrWhiteSpace(model) ? "Systran/faster-whisper-large-v3" : model.Trim();
             var provider = new RemoteWhisperProvider(
                 loggerFactory.CreateLogger<RemoteWhisperProvider>(),
                 url, resolvedModel, key,
-                config.JobTimeoutRealtimeFactor, config.JobMinTimeoutSeconds, config.JobMaxTimeoutHours);
+                config.JobTimeoutRealtimeFactor, config.JobMinTimeoutSeconds, config.JobMaxTimeoutHours,
+                httpClient: null, maxUploadBytes: maxUploadBytes, uploadCodec: uploadCodec);
 
             return new TranscriptionWorker(id, name, provider, new WorkerCapabilities
             {

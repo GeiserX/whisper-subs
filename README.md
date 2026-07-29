@@ -376,7 +376,34 @@ The live queue view shows which worker is transcribing which item, so you can se
 
 > **Need a worker to point at?** [`worker/`](worker/README.md) is a ready-to-run whisper.cpp + Vulkan worker image (with notes for CPU/NVIDIA/AMD backends). Any server that implements the OpenAI `/v1/audio/transcriptions` and `/v1/audio/translations` endpoints -- e.g. [Speaches](https://github.com/speaches-ai/speaches) -- also works.
 
-> **Hosted-provider limits still apply.** WhisperSubs sends the full extracted 16 kHz mono WAV. A service with a 25 MB multipart limit accepts only about 13 minutes of this audio, even when its response format is compatible; use a self-hosted worker or a provider whose upload and processing limits fit your media. Turn off **Can translate** for providers that do not expose `/v1/audio/translations`.
+### Hosted providers: upload size, base URLs and model names
+
+WhisperSubs extracts 16 kHz mono PCM WAV, which is **1.92 MB per minute** of audio. That matters as soon as you point a worker at a hosted API:
+
+| Audio length | WAV (default) | FLAC | Opus 24k |
+|---|---|---|---|
+| 13 minutes | ~25 MB | ~13 MB | ~2 MB |
+| 40 minutes | 76.8 MB | ~39 MB | ~7 MB |
+| 2 hours | 219.7 MB | ~116 MB | ~20 MB |
+
+So a 25 MB cap (OpenAI, and Groq's free tier) accepts only about **13 minutes** of the default WAV upload, and rejects anything longer with `HTTP 413`. Two per-worker settings fix that:
+
+- **Max upload size (MB)** -- what this endpoint accepts. `0` (default) means unlimited, which is right for every self-hosted worker. Set it (25 for OpenAI/Groq free, 100 for Groq dev tier) and an oversized title fails immediately with a message telling you the size, the cap and roughly how many minutes fit -- instead of uploading the whole file to earn a bare 413.
+- **Upload format** -- `WAV` (default), `FLAC` (lossless, about half) or `Opus 24k` (about a tenth; a 2-hour film lands near 20 MB). **Keep WAV for self-hosted workers**: whisper.cpp's `whisper-server` decodes WAV only, and the [`worker/`](worker/README.md) image ships without ffmpeg. Only choose a compressed format on a hosted endpoint documented to accept it (Groq accepts FLAC and OGG and explicitly recommends FLAC for size reduction; OpenAI's documented list is mp3/mp4/mpeg/mpga/m4a/wav/webm).
+
+**Base URL form** -- enter only the base; WhisperSubs appends `/v1/audio/transcriptions` itself, so the URL must **not** already end in `/v1`:
+
+| Provider | Enter this |
+|---|---|
+| Groq | `https://api.groq.com/openai` |
+| OpenRouter | `https://openrouter.ai/api` |
+| OpenAI | `https://api.openai.com` |
+
+**Model names and provider limitations:**
+
+- **OpenRouter** requires a namespaced slug (`openai/whisper-large-v3-turbo`, not `whisper-1`); a bare name returns `400`. It also rejects `response_format=srt` outright -- WhisperSubs negotiates to timestamped JSON automatically -- and has **no `/v1/audio/translations` endpoint**, so turn **Can translate** off for it. Timestamps are only available on its OpenAI-compatible models; models that return text without timings cannot produce synchronized subtitles.
+- **OpenAI**: timestamps and SRT are available on `whisper-1` only. `gpt-4o-transcribe` / `gpt-4o-mini-transcribe` return `json`/`text` with no timings, so they cannot be used for subtitles.
+- Turn off **Can translate** for any provider that does not expose `/v1/audio/translations`.
 >
 > **Note:** the automatic scheduled sweep currently processes its backlog one item at a time; manual **Generate** / **Generate All** already fan out across the whole pool. Parallelizing the scheduled sweep is on the [roadmap](ROADMAP.md).
 
@@ -396,7 +423,7 @@ After installation, navigate to **Dashboard** > **Plugins** > **WhisperSubs** to
 | **Whisper Model Path** | *(Advanced)* Absolute path to the GGML model file. Leave empty to use the auto-downloaded model. |
 | **Whisper Thread Count** | *(Advanced)* Number of CPU threads for whisper inference. `0` = whisper default (4). Set to your CPU core count for faster transcription. |
 | **Also use this server as a worker** (`EnableLocalWorker`) | *(Worker Pool)* Whether this Jellyfin host's own whisper participates in the pool. On by default. Turn it off to transcribe **only** on the remote workers below -- e.g. a weak NAS offloading entirely to a beefier box. |
-| **Workers** | *(Worker Pool)* A list of extra OpenAI-compatible transcription endpoints to pool alongside (or instead of) this server. Empty by default. Each row has an endpoint URL, optional API key, optional model, max concurrency, cost weight, and a "can translate" flag. WhisperSubs preserves direct SRT for existing servers; if an endpoint rejects SRT, it negotiates once to timestamped `verbose_json` segments (supported by Groq, OpenRouter-compatible providers, and OpenAI `whisper-1`), converts them to SRT, and caches that choice. Text-only JSON models cannot produce synchronized subtitles because they return no timestamps. See [Distributed Transcription](#distributed-transcription-worker-pool). |
+| **Workers** | *(Worker Pool)* A list of extra OpenAI-compatible transcription endpoints to pool alongside (or instead of) this server. Empty by default. Each row has an endpoint URL, optional API key, optional model, max concurrency, cost weight, **max upload size** (`0` = unlimited), **upload format** (`wav` default / `flac` / `opus`), and a "can translate" flag. WhisperSubs preserves direct SRT for existing servers; if an endpoint rejects SRT, it negotiates once to timestamped `verbose_json` segments (supported by Groq, OpenRouter-compatible providers, and OpenAI `whisper-1`), converts them to SRT, and caches that choice. Text-only JSON models cannot produce synchronized subtitles because they return no timestamps. See [Distributed Transcription](#distributed-transcription-worker-pool). |
 | **Job timeout -- real-time factor** (`JobTimeoutRealtimeFactor`) | *(Advanced)* Upper bound on how much slower than real-time a remote worker may run before a single call is presumed hung and cancelled. Per-call deadline = audio length x this factor (clamped by the min/max below). Default `6`. A slow-but-working pass is never cut off; a dead endpoint is. |
 | **Job timeout -- minimum seconds** (`JobMinTimeoutSeconds`) | *(Advanced)* Floor for the per-call deadline, so a tiny detection clip still gets a sane minimum. Default `60`. |
 | **Job timeout -- maximum hours** (`JobMaxTimeoutHours`) | *(Advanced)* Absolute cap for the per-call deadline; a genuinely long film's worst case still fits under it. Default `12`. |

@@ -1805,6 +1805,16 @@
                         (w.CostWeight != null && w.CostWeight >= 0) ? w.CostWeight : '',
                         '0 = free/local, preferred; >0 = only used when local workers are busy.'));
 
+                    row.appendChild(WhisperSubsConfig._workerField(
+                        'Max upload size (MB)', 'number', 'wkMaxUpload', { min: '0', step: '1', placeholder: '0 = unlimited' },
+                        (w.MaxUploadBytes != null && w.MaxUploadBytes > 0) ? Math.round(w.MaxUploadBytes / 1048576) : '',
+                        'Largest file this endpoint accepts. 0 (default) = unlimited. OpenAI and Groq free tier are 25; Groq dev tier 100. Oversized titles then fail fast with a clear message instead of a bare HTTP 413.'));
+                    row.appendChild(WhisperSubsConfig._workerSelect(
+                        'Upload format', 'wkUploadCodec',
+                        [['wav', 'WAV (default, uncompressed)'], ['flac', 'FLAC (lossless, ~half)'], ['opus', 'Opus 24k (~a tenth)']],
+                        (w.UploadCodec || 'wav'),
+                        'Audio sent to THIS worker. WAV is 1.92 MB per minute, so a 40-minute title is 76.8 MB and exceeds hosted caps. Keep WAV for self-hosted workers (whisper.cpp decodes WAV only); use FLAC or Opus only on a hosted endpoint documented to accept it.'));
+
                     row.appendChild(WhisperSubsConfig._workerCheckbox('wkTranslate', 'Can translate to English', w.CanTranslate !== false));
                     row.appendChild(WhisperSubsConfig._workerCheckbox('wkEnabled', 'Enabled', w.Enabled !== false));
 
@@ -1887,6 +1897,37 @@
                     return container;
                 },
 
+                _workerSelect: function (labelText, cls, options, value, descText) {
+                    var id = 'wk_' + (++WhisperSubsConfig._workerSeq);
+                    var container = document.createElement('div');
+                    container.className = 'selectContainer';
+                    var label = document.createElement('label');
+                    label.className = 'selectLabel';
+                    label.setAttribute('for', id);
+                    label.textContent = labelText;
+                    container.appendChild(label);
+                    var select = document.createElement('select');
+                    select.id = id;
+                    select.setAttribute('is', 'emby-select');
+                    select.className = 'emby-select ' + cls;
+                    options.forEach(function (pair) {
+                        var option = document.createElement('option');
+                        option.value = pair[0];
+                        // textContent, never innerHTML: option labels are rendered as text only.
+                        option.textContent = pair[1];
+                        select.appendChild(option);
+                    });
+                    select.value = value || options[0][0];
+                    container.appendChild(select);
+                    if (descText) {
+                        var desc = document.createElement('div');
+                        desc.className = 'fieldDescription';
+                        desc.textContent = descText;
+                        container.appendChild(desc);
+                    }
+                    return container;
+                },
+
                 _workerCheckbox: function (cls, labelText, checked) {
                     var container = document.createElement('div');
                     container.className = 'checkboxContainer';
@@ -1917,11 +1958,13 @@
                         var model = (row.querySelector('.wkModel').value || '').trim();
                         var concRaw = (row.querySelector('.wkConcurrency').value || '').trim();
                         var costRaw = (row.querySelector('.wkCost').value || '').trim();
+                        var maxUploadRaw = (row.querySelector('.wkMaxUpload').value || '').trim();
+                        var uploadCodec = (row.querySelector('.wkUploadCodec').value || 'wav').trim();
                         var canTranslate = row.querySelector('.wkTranslate').checked;
                         var enabled = row.querySelector('.wkEnabled').checked;
 
                         // Skip a row the user never filled in (all text/number fields blank).
-                        if (!name && !url && !key && !model && concRaw === '' && costRaw === '') {
+                        if (!name && !url && !key && !model && concRaw === '' && costRaw === '' && maxUploadRaw === '') {
                             return;
                         }
 
@@ -1929,6 +1972,11 @@
                         if (isNaN(conc) || conc < 1) conc = 1;
                         var cost = parseFloat(costRaw);
                         if (isNaN(cost) || cost < 0) cost = 0;
+                        // Entered in MB for humans, stored in bytes. 0/blank = unlimited.
+                        var maxUploadMb = parseFloat(maxUploadRaw);
+                        var maxUploadBytes = (isNaN(maxUploadMb) || maxUploadMb <= 0)
+                            ? 0
+                            : Math.round(maxUploadMb * 1048576);
 
                         workers.push({
                             Id: row.getAttribute('data-worker-id') || WhisperSubsConfig.genWorkerId(),
@@ -1939,6 +1987,8 @@
                             Model: model,
                             MaxConcurrency: conc,
                             CostWeight: cost,
+                            MaxUploadBytes: maxUploadBytes,
+                            UploadCodec: uploadCodec,
                             CanTranslate: canTranslate
                         });
                     });

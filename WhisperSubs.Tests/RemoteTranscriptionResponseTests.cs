@@ -213,9 +213,20 @@ public class RemoteTranscriptionResponseTests
     }
 
     [Fact]
-    public async Task NonFormatBadRequest_DoesNotRetryFullAudio()
+    public async Task NonFormatBadRequest_RetriesFormatOnceThenSurfacesTheProvidersOwnError()
     {
+        // Two deliberate behavior changes (issue #138):
+        //  1. While a worker's format is still un-negotiated, ANY format-candidate 4xx earns ONE alternate
+        //     format retry — OpenRouter rejects response_format=srt with a bare 400 that names no parameter,
+        //     and without this its endpoint never works at all.
+        //  2. The provider's own explanation is now surfaced (sanitized) instead of discarded, so an admin
+        //     can see WHY without enabling debug logging.
         var handler = new RecordingHandler(
+            new HttpResponseMessage(HttpStatusCode.BadRequest)
+            {
+                Content = new StringContent("""{"error":"model does not exist"}""")
+            },
+            // The one bounded retry also fails: a bad model name is not a format problem.
             new HttpResponseMessage(HttpStatusCode.BadRequest)
             {
                 Content = new StringContent("""{"error":"model does not exist"}""")
@@ -231,15 +242,20 @@ public class RemoteTranscriptionResponseTests
         {
             var exception = await Assert.ThrowsAnyAsync<HttpRequestException>(
                 () => provider.TranscribeAsync(wav, "auto", CancellationToken.None));
-            Assert.DoesNotContain("model does not exist", exception.Message);
             Assert.Contains("HTTP 400", exception.Message);
+            // The upstream explanation is now visible — this is the whole point of the fix.
+            Assert.Contains("model does not exist", exception.Message);
         }
         finally
         {
             File.Delete(wav);
         }
 
-        Assert.Single(handler.Requests);
+        // BOUNDED: exactly one retry, never a retry storm. A 77 MB upload must not be repeated
+        // indefinitely because a model name is wrong.
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.Equal(["srt", "verbose_json"],
+            handler.Requests.Select(request => request.Fields["response_format"]));
     }
 
     [Fact]

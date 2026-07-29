@@ -13,18 +13,77 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using WhisperSubs.Controller;
+using WhisperSubs.Controller.Workers;
 
 namespace WhisperSubs.Providers
 {
     public class RemoteWhisperProvider : ISubtitleProvider
     {
-        private sealed class RemoteApiException(HttpStatusCode statusCode, string responseBody)
+        private sealed class RemoteApiException(HttpStatusCode statusCode, string responseBody, string detail)
             : HttpRequestException(
-                $"Remote Whisper API returned HTTP {(int)statusCode}",
+                BuildRemoteApiMessage(statusCode, detail),
                 inner: null,
                 statusCode)
         {
+            /// <summary>
+            /// The RAW upstream body. Kept verbatim because the response-format negotiation pattern-matches
+            /// against it; sanitizing here would regress that. SECURITY-REVIEW: never surface this directly —
+            /// everything user-visible goes through <see cref="UpstreamErrorSanitizer"/> (see Message).
+            /// </summary>
             public string ResponseBody { get; } = responseBody;
+        }
+
+        /// <summary>
+        /// Builds the admin-visible message for an upstream failure: the status, the provider's own
+        /// (already sanitized) explanation when we are allowed to echo it, and one line of actionable advice.
+        /// Before this, the message was a bare "returned HTTP 413" and the provider's explanation was
+        /// discarded — the root reason issue #138 was undiagnosable without debug logging.
+        /// </summary>
+        internal static string BuildRemoteApiMessage(HttpStatusCode statusCode, string? detail)
+        {
+            var message = $"Remote Whisper API returned HTTP {(int)statusCode}";
+            if (!string.IsNullOrWhiteSpace(detail))
+            {
+                message += $": {detail}";
+            }
+
+            var guidance = RemoteErrorGuidance.For(statusCode);
+            if (!string.IsNullOrWhiteSpace(guidance))
+            {
+                message += $" — {guidance}";
+            }
+
+            return message;
+        }
+
+        /// <summary>
+        /// Whether an upstream ERROR body may be echoed to the admin, by media type.
+        /// SECURITY-REVIEW: <c>text/html</c> is refused deliberately — a LAN web UI answers HTML, and
+        /// echoing it would both leak page content and carry markup into the UI; the classification
+        /// ("this is a web page, not an API") is the better diagnostic anyway. A 2xx body is never passed
+        /// here at all: it is the media transcript, i.e. the user's own content.
+        /// </summary>
+        internal static bool MaySnippetUpstreamBody(string? mediaType)
+            => string.IsNullOrWhiteSpace(mediaType)
+                || mediaType.Equals("application/json", StringComparison.OrdinalIgnoreCase)
+                || mediaType.Equals("application/problem+json", StringComparison.OrdinalIgnoreCase)
+                || mediaType.Equals("text/plain", StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// The admin-safe description of an upstream error body: a sanitized snippet when the media type
+        /// allows it, an explicit classification for HTML, and nothing at all otherwise.
+        /// </summary>
+        internal static string DescribeUpstreamErrorBody(string? body, string? apiKey, string? mediaType)
+        {
+            if (!string.IsNullOrWhiteSpace(mediaType)
+                && mediaType.Equals("text/html", StringComparison.OrdinalIgnoreCase))
+            {
+                return "the endpoint returned a web page, not an API response";
+            }
+
+            return MaySnippetUpstreamBody(mediaType)
+                ? UpstreamErrorSanitizer.Sanitize(body, apiKey)
+                : string.Empty;
         }
 
         internal const int MaxTranscriptionResponseBytes = 32 * 1024 * 1024;
@@ -54,6 +113,8 @@ namespace WhisperSubs.Providers
         private readonly int _minTimeoutSeconds;
         private readonly int _maxTimeoutHours;
         private readonly HttpClient _httpClient;
+        private readonly long _maxUploadBytes;
+        private readonly string _uploadCodec;
         private string? _transcriptionResponseFormat;
         private string? _translationResponseFormat;
 
@@ -69,7 +130,7 @@ namespace WhisperSubs.Providers
         [ExcludeFromCodeCoverage(Justification = "Construction + HTTPS-key warning; no unit-testable logic")]
         public RemoteWhisperProvider(ILogger logger, string apiUrl, string model, string apiKey = "",
             double realtimeFactor = 6.0, int minTimeoutSeconds = 60, int maxTimeoutHours = 12,
-            HttpClient? httpClient = null)
+            HttpClient? httpClient = null, long maxUploadBytes = 0, string? uploadCodec = null)
         {
             _logger = logger;
             _apiUrl = apiUrl.TrimEnd('/');
@@ -79,6 +140,10 @@ namespace WhisperSubs.Providers
             _minTimeoutSeconds = minTimeoutSeconds;
             _maxTimeoutHours = maxTimeoutHours;
             _httpClient = httpClient ?? SharedHttpClient;
+            // 0 = unlimited and "wav" = no re-encode: the defaults reproduce pre-existing behaviour exactly,
+            // so an unconfigured or self-hosted worker is untouched.
+            _maxUploadBytes = maxUploadBytes;
+            _uploadCodec = RemoteUploadFormat.Normalize(uploadCodec);
 
             if (!string.IsNullOrEmpty(_apiKey) &&
                 Uri.TryCreate(_apiUrl, UriKind.Absolute, out var uri) &&
@@ -110,46 +175,100 @@ namespace WhisperSubs.Providers
                 ? $"{_apiUrl}/v1/audio/translations"
                 : $"{_apiUrl}/v1/audio/transcriptions";
 
+            // SanitizeEndpoint, not the raw endpoint: an admin may legitimately paste a key into the URL
+            // (Azure-style "?api-version=", proxy "?api_key="), and this line lands in jellyfin.log — the
+            // file users paste into public issues.
             _logger.LogInformation("Sending audio to remote Whisper API: {Endpoint} [lang={Language}, translate={Translate}]",
-                endpoint, language, translate);
+                UpstreamErrorSanitizer.SanitizeEndpoint(endpoint), language, translate);
 
-            var audioBytes = new FileInfo(audioPath).Length;
-            var responseFormat = (translate
+            // SOURCE bytes = the extracted 16 kHz mono PCM WAV. Every duration/deadline decision must be
+            // derived from THIS, never from whatever we end up uploading: the upload may be a compressed
+            // re-encode (per-worker codec), and deriving duration from compressed bytes would both collapse
+            // the per-call deadline and make ConvertTranscriptionResponseToSrt reject every segment past the
+            // (wrongly shortened) duration as "out-of-order". Uploaded bytes are for the body only.
+            var sourceAudioBytes = new FileInfo(audioPath).Length;
+            // Re-encode for the wire when this worker asks for it (default wav = no-op), then refuse to
+            // upload at all if the result still exceeds the worker's configured cap: a fail-fast with real
+            // numbers beats pushing 77 MB to earn a bare HTTP 413.
+            var (uploadPath, uploadIsTemporary) = await RemoteAudioEncoder
+                .PrepareUploadAsync(audioPath, _uploadCodec, _logger, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var uploadBytes = new FileInfo(uploadPath).Length;
+                if (!UploadPreflight.IsAllowed(uploadBytes, _maxUploadBytes))
+                {
+                    throw new InvalidOperationException(
+                        UploadPreflight.ExplainIfBlocked(
+                            sourceAudioBytes, uploadBytes, _maxUploadBytes, _uploadCodec));
+                }
+
+                return await TranscribeUploadAsync(
+                    endpoint, uploadPath, sourceAudioBytes, language, translate, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            finally
+            {
+                if (uploadIsTemporary)
+                {
+                    RemoteAudioEncoder.TryDelete(uploadPath);
+                }
+            }
+        }
+
+        [ExcludeFromCodeCoverage(Justification = "HTTP I/O; the pure deadline policy is tested in TranscriptionTimeoutTests")]
+        private async Task<string> TranscribeUploadAsync(
+            string endpoint,
+            string audioPath,
+            long sourceAudioBytes,
+            string language,
+            bool translate,
+            CancellationToken cancellationToken)
+        {
+            var cachedResponseFormat = translate
                 ? Volatile.Read(ref _translationResponseFormat)
-                : Volatile.Read(ref _transcriptionResponseFormat)) ?? "srt";
+                : Volatile.Read(ref _transcriptionResponseFormat);
+            // Nothing cached yet = we have never successfully negotiated a format with this endpoint, so a
+            // format-candidate rejection is worth one retry even when the body does not name the parameter
+            // (OpenRouter rejects response_format=srt with a bare 400). Bounded: once the format is cached,
+            // only an explicit format complaint triggers a retry again.
+            var formatNotYetNegotiated = cachedResponseFormat is null;
+            var responseFormat = cachedResponseFormat ?? "srt";
             var negotiatedByFormatRejection = false;
             string response;
             try
             {
                 response = await PostTranscriptionAsync(
-                    endpoint, audioPath, language, responseFormat, includeLanguage: !translate, cancellationToken: cancellationToken)
+                    endpoint, audioPath, sourceAudioBytes, language, responseFormat, includeLanguage: !translate, cancellationToken: cancellationToken)
                     .ConfigureAwait(false);
             }
-            catch (HttpRequestException ex) when (IsResponseFormatRejection(ex))
+            catch (HttpRequestException ex) when (ShouldNegotiateAlternateFormat(ex, formatNotYetNegotiated))
             {
                 // Preserve existing SRT providers as the first choice. Groq/OpenRouter reject SRT, so
                 // negotiate once to timestamped verbose_json and cache the successful format. If a
                 // provider's capability changes later, the reverse retry also recovers automatically.
                 responseFormat = AlternateResponseFormat(responseFormat);
                 negotiatedByFormatRejection = true;
-                _logger.LogWarning(
+                // Information, not Warning: this is expected, successful, self-healing behavior on Groq and
+                // OpenRouter. Warning on every job trains admins to ignore warnings — which is part of why
+                // the real failure in #138 went unnoticed.
+                _logger.LogInformation(
                     "Remote API rejected response format; retrying with {ResponseFormat}", responseFormat);
                 response = await PostTranscriptionAsync(
-                    endpoint, audioPath, language, responseFormat, includeLanguage: !translate, cancellationToken: cancellationToken)
+                    endpoint, audioPath, sourceAudioBytes, language, responseFormat, includeLanguage: !translate, cancellationToken: cancellationToken)
                     .ConfigureAwait(false);
             }
 
             if (IsUntimedJsonResponse(response) && !negotiatedByFormatRejection)
             {
                 responseFormat = AlternateResponseFormat(responseFormat);
-                _logger.LogWarning(
+                _logger.LogInformation(
                     "Remote API returned untimed JSON; retrying with {ResponseFormat}", responseFormat);
                 response = await PostTranscriptionAsync(
-                    endpoint, audioPath, language, responseFormat, includeLanguage: !translate, cancellationToken: cancellationToken)
+                    endpoint, audioPath, sourceAudioBytes, language, responseFormat, includeLanguage: !translate, cancellationToken: cancellationToken)
                     .ConfigureAwait(false);
             }
 
-            var audioDurationSeconds = audioBytes / TranscriptionTimeout.BytesPerAudioSecond;
+            var audioDurationSeconds = SourceAudioDurationSeconds(sourceAudioBytes);
             var srt = ConvertTranscriptionResponseToSrt(response, audioDurationSeconds);
 
             if (string.IsNullOrWhiteSpace(srt))
@@ -173,21 +292,22 @@ namespace WhisperSubs.Providers
         private async Task<string> PostTranscriptionAsync(
             string endpoint,
             string audioPath,
+            long sourceAudioBytes,
             string language,
             string responseFormat,
             bool includeLanguage,
             CancellationToken cancellationToken)
         {
-            long audioBytes = new FileInfo(audioPath).Length;
-
             using var content = new MultipartFormDataContent();
             // SECURITY-REVIEW: audioPath is an application-created temporary path; never accept a request path here.
             // Stream the WAV rather than File.ReadAllBytes: a 2h film is ~260 MB, and N parallel workers
             // buffering that in RAM is a direct OOM path. StreamContent's file stream is disposed with the
             // MultipartFormDataContent.
             var fileContent = new StreamContent(File.OpenRead(audioPath));
-            fileContent.Headers.ContentType = new MediaTypeHeaderValue("audio/wav");
-            content.Add(fileContent, "file", "audio.wav");
+            // Name and media type must match the actual bytes: providers routinely sniff the format from the
+            // file EXTENSION, so a FLAC body called "audio.wav" is rejected or mis-decoded.
+            fileContent.Headers.ContentType = new MediaTypeHeaderValue(RemoteUploadFormat.ContentType(_uploadCodec));
+            content.Add(fileContent, "file", RemoteUploadFormat.FileName(_uploadCodec));
             content.Add(new StringContent(_model), "model");
             content.Add(new StringContent(responseFormat), "response_format");
             if (string.Equals(responseFormat, "verbose_json", StringComparison.Ordinal))
@@ -202,8 +322,37 @@ namespace WhisperSubs.Providers
                 content.Add(new StringContent(language), "language");
             }
 
-            return await PostAudioAsync(endpoint, content, audioBytes, cancellationToken).ConfigureAwait(false);
+            // sourceAudioBytes (the uncompressed WAV), NOT the uploaded body length: the deadline must track
+            // how long the audio actually is, not how well it compressed.
+            return await PostAudioAsync(endpoint, content, sourceAudioBytes, cancellationToken).ConfigureAwait(false);
         }
+
+        /// <summary>
+        /// Audio duration implied by the SOURCE (uncompressed 16 kHz mono s16le PCM) byte count. This is the
+        /// only correct input for the per-call deadline and for the segment-timestamp sanity bound: a
+        /// compressed upload has the same duration but a fraction of the bytes, so deriving duration from the
+        /// uploaded size would shrink the deadline and make valid late segments look "out of order".
+        /// </summary>
+        internal static double SourceAudioDurationSeconds(long sourceAudioBytes)
+            => Math.Max(0, sourceAudioBytes) / TranscriptionTimeout.BytesPerAudioSecond;
+
+        /// <summary>
+        /// Whether to retry once with the alternate response format.
+        /// <para>
+        /// An explicit format complaint always qualifies. Additionally, while a worker's format is still
+        /// UN-NEGOTIATED, any format-candidate status (400/406/415/422) qualifies — OpenRouter rejects
+        /// <c>response_format=srt</c> with a bare 400 whose body need not name the parameter, and without
+        /// this the negotiation never fires and the endpoint simply never works (issue #138).
+        /// </para>
+        /// <para>
+        /// The cost of a wrong guess is bounded: exactly one extra upload, once per worker, and only until a
+        /// format is successfully cached. After that a retry needs an explicit format complaint again, so a
+        /// misconfiguration (say a bad model name) cannot cause a repeated large re-upload on every job.
+        /// </para>
+        /// </summary>
+        internal static bool ShouldNegotiateAlternateFormat(HttpRequestException exception, bool formatNotYetNegotiated)
+            => IsResponseFormatRejection(exception)
+                || (formatNotYetNegotiated && IsFormatRejectionCandidateStatus(exception.StatusCode));
 
         internal static bool IsFormatRejectionCandidateStatus(HttpStatusCode? statusCode)
             => statusCode is HttpStatusCode.BadRequest
@@ -567,9 +716,11 @@ namespace WhisperSubs.Providers
                 throw new FileNotFoundException($"Audio file not found: {audioPath}");
             }
 
-            _logger.LogInformation("Detecting language via remote Whisper API for {AudioPath}", audioPath);
+            // Debug + file name only: a full media path at default level discloses the library layout, and
+            // default-level logs get pasted into public issues (repo rule: don't log private paths).
+            _logger.LogDebug("Detecting language via remote Whisper API for {AudioFile}", Path.GetFileName(audioPath));
 
-            long audioBytes = new FileInfo(audioPath).Length;
+            long sourceAudioBytes = new FileInfo(audioPath).Length;
 
             using var content = new MultipartFormDataContent();
             var fileContent = new StreamContent(File.OpenRead(audioPath));
@@ -580,7 +731,7 @@ namespace WhisperSubs.Providers
             content.Add(new StringContent("verbose_json"), "response_format");
 
             var endpoint = $"{_apiUrl}/v1/audio/transcriptions";
-            var json = await PostAudioAsync(endpoint, content, audioBytes, cancellationToken).ConfigureAwait(false);
+            var json = await PostAudioAsync(endpoint, content, sourceAudioBytes, cancellationToken).ConfigureAwait(false);
 
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
@@ -604,12 +755,14 @@ namespace WhisperSubs.Providers
         /// of hanging (the multi-day stuck-task class of bug).
         /// </summary>
         [ExcludeFromCodeCoverage(Justification = "HTTP I/O; the pure deadline policy is tested in TranscriptionTimeoutTests")]
-        private async Task<string> PostAudioAsync(string endpoint, MultipartFormDataContent content, long audioBytes, CancellationToken cancellationToken)
+        // sourceAudioBytes is the UNCOMPRESSED source WAV length, which is what the deadline must scale with —
+        // never the (possibly compressed) uploaded body length. See SourceAudioDurationSeconds.
+        private async Task<string> PostAudioAsync(string endpoint, MultipartFormDataContent content, long sourceAudioBytes, CancellationToken cancellationToken)
         {
             using var request = new HttpRequestMessage(HttpMethod.Post, endpoint) { Content = content };
             ApplyAuthorization(request);
 
-            var deadline = TranscriptionTimeout.Compute(audioBytes, _realtimeFactor, _minTimeoutSeconds, _maxTimeoutHours);
+            var deadline = TranscriptionTimeout.Compute(sourceAudioBytes, _realtimeFactor, _minTimeoutSeconds, _maxTimeoutHours);
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeoutCts.CancelAfter(deadline);
 
@@ -624,7 +777,12 @@ namespace WhisperSubs.Providers
                 {
                     var errorBody = await ReadUtf8BoundedAsync(
                         response.Content, MaxErrorResponseBytes, timeoutCts.Token).ConfigureAwait(false);
-                    throw new RemoteApiException(response.StatusCode, errorBody);
+                    // Echo the provider's own explanation, sanitized and media-type gated, so the admin can
+                    // see WHY without turning on debug logging (#138). The raw body is retained on the
+                    // exception for the response-format negotiation matcher.
+                    var detail = DescribeUpstreamErrorBody(
+                        errorBody, _apiKey, response.Content.Headers.ContentType?.MediaType);
+                    throw new RemoteApiException(response.StatusCode, errorBody, detail);
                 }
 
                 return await ReadUtf8BoundedAsync(
@@ -632,8 +790,10 @@ namespace WhisperSubs.Providers
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
+                // This message reaches the queue's last-error and therefore the browser — sanitize the
+                // endpoint so a key pasted into the URL query cannot surface there.
                 throw new TimeoutException(
-                    $"Remote Whisper API call exceeded its {deadline.TotalSeconds:F0}s deadline (endpoint slow or unreachable): {endpoint}");
+                    $"Remote Whisper API call exceeded its {deadline.TotalSeconds:F0}s deadline (endpoint slow or unreachable): {UpstreamErrorSanitizer.SanitizeEndpoint(endpoint)}");
             }
         }
 
