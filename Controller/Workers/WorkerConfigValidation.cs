@@ -27,6 +27,16 @@ namespace WhisperSubs.Controller.Workers
                 return (false, "Max concurrency must be at least 1.");
             if (worker.CostWeight < 0)
                 return (false, "Cost weight cannot be negative.");
+            if (worker.MaxUploadBytes < 0)
+                return (false, "Max upload size cannot be negative (use 0 for unlimited).");
+            if (!string.IsNullOrWhiteSpace(worker.UploadCodec)
+                && !string.Equals(
+                    RemoteUploadFormat.Normalize(worker.UploadCodec),
+                    worker.UploadCodec.Trim(),
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return (false, "Upload format must be wav, flac or opus.");
+            }
             return (true, null);
         }
 
