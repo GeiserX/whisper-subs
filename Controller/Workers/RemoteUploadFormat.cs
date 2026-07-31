@@ -8,7 +8,7 @@ namespace WhisperSubs.Controller.Workers
     /// Pure policy for the audio format a REMOTE worker is uploaded in (issue #138).
     /// <para>
     /// The plugin extracts 16 kHz mono s16le PCM WAV — 32,000 bytes per audio-second, i.e. 1.92 MB per
-    /// minute. Hosted providers cap uploads (OpenAI 25 MB, Groq 25 MB free / 100 MB dev), so a 40-minute
+    /// minute. Hosted providers cap uploads (OpenAI 25 MB; Groq 25 MB for a direct upload on BOTH tiers), so a 40-minute
     /// title at 76.8 MB is refused with HTTP 413 and a 2-hour film has no chance. Re-encoding for the
     /// upload fixes that without touching the extracted WAV that the LOCAL whisper-cli path uses.
     /// </para>

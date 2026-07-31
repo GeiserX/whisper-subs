@@ -338,10 +338,12 @@ namespace WhisperSubs.Providers
             content.Add(fileContent, "file", RemoteUploadFormat.FileName(uploadCodec));
             content.Add(new StringContent(_model), "model");
             content.Add(new StringContent(responseFormat), "response_format");
-            if (string.Equals(responseFormat, "verbose_json", StringComparison.Ordinal))
-            {
-                content.Add(new StringContent("segment"), "timestamp_granularities[]");
-            }
+            // NOTE: we deliberately do NOT send timestamp_granularities[]. verbose_json already returns
+            // segment timestamps by default (segment IS the default granularity), and we only ever read
+            // "segments" from the response — never "words". Sending it is therefore redundant for us, and
+            // actively harmful: OpenRouter accepts the field only when the requested model happens to route
+            // to an OpenAI-compatible backend and returns HTTP 400 otherwise, which made every OpenRouter
+            // transcription fail regardless of format negotiation (issue #138).
 
             if (includeLanguage
                 && !string.IsNullOrWhiteSpace(language) &&
