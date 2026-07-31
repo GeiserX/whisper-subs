@@ -1808,7 +1808,7 @@
                     row.appendChild(WhisperSubsConfig._workerField(
                         'Max upload size (MB)', 'number', 'wkMaxUpload', { min: '0', step: '1', placeholder: '0 = unlimited' },
                         (w.MaxUploadBytes != null && w.MaxUploadBytes > 0) ? Math.round(w.MaxUploadBytes / 1000000) : '',
-                        'Largest file this endpoint accepts. 0 (default) = unlimited. OpenAI and Groq free tier are 25; Groq dev tier 100. Oversized titles then fail fast with a clear message instead of a bare HTTP 413.'));
+                        'Largest file this endpoint accepts. 0 (default) = unlimited. OpenAI and Groq are 25 on both tiers (Groq's 100 applies only to URL-fetched audio, which is not used here). Oversized titles then fail fast with a clear message instead of a bare HTTP 413.'));
                     row.appendChild(WhisperSubsConfig._workerSelect(
                         'Upload format', 'wkUploadCodec',
                         [['wav', 'WAV (default, uncompressed)'], ['flac', 'FLAC (lossless, ~half)'], ['opus', 'Opus 24k (~a tenth)']],
