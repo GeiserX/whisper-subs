@@ -116,6 +116,18 @@ namespace WhisperSubs.Controller.Workers
 
         private static int Clamp(int concurrency) => concurrency < 1 ? 1 : concurrency;
 
+        /// <summary>
+        /// Copies a configured row. <b>Every</b> property of <see cref="WhisperWorker"/> must be carried
+        /// across: <c>WorkerRegistry.BuildWorkers</c> reads each worker's settings off this copy, so anything
+        /// omitted here is silently reset to its default for every worker on the system — the admin's
+        /// configuration is discarded with no error anywhere.
+        /// <para>
+        /// That is not theoretical: <c>MaxUploadBytes</c> and <c>UploadCodec</c> were added in 4.5.0.0 and
+        /// missed here, so a worker set to Opus silently uploaded raw WAV (issue #138). If you add a property
+        /// to <see cref="WhisperWorker"/>, add it here too — <c>WorkerCloneCompletenessTests</c> fails by
+        /// reflection if you forget.
+        /// </para>
+        /// </summary>
         private static WhisperWorker Clone(WhisperWorker w) => new WhisperWorker
         {
             Id = w.Id,
@@ -127,6 +139,8 @@ namespace WhisperSubs.Controller.Workers
             MaxConcurrency = w.MaxConcurrency,
             CostWeight = w.CostWeight,
             CanTranslate = w.CanTranslate,
+            MaxUploadBytes = w.MaxUploadBytes,
+            UploadCodec = w.UploadCodec,
         };
     }
 }

@@ -96,7 +96,10 @@ public class RemoteTranscriptionResponseTests
         Assert.Equal(3, handler.Requests.Count);
         Assert.Equal("srt", handler.Requests[0].Fields["response_format"]);
         Assert.Equal("verbose_json", handler.Requests[1].Fields["response_format"]);
-        Assert.Equal("segment", handler.Requests[1].Fields["timestamp_granularities[]"]);
+        // timestamp_granularities[] is deliberately NOT sent: segment is already the default for
+        // verbose_json, and OpenRouter 400s on it unless the model routes to an OpenAI-compatible
+        // backend (issue #138).
+        Assert.DoesNotContain("timestamp_granularities[]", handler.Requests[1].Fields.Keys);
         Assert.Equal("verbose_json", handler.Requests[2].Fields["response_format"]);
         Assert.Equal("es", handler.Requests[0].Fields["language"]);
         Assert.Equal("whisper-large-v3", handler.Requests[0].Fields["model"]);
@@ -651,5 +654,46 @@ public class RemoteTranscriptionResponseTests
             alignEnabled: true, requiresOptIn: provider.RequiresSpeechAlignmentOptIn, alignWithVad: false));
         Assert.True(Controller.SubtitleManager.ShouldAlignToSpeech(
             alignEnabled: true, requiresOptIn: provider.RequiresSpeechAlignmentOptIn, alignWithVad: true));
+    }
+
+    [Fact]
+    public async Task RequestNeverSendsTimestampGranularities()
+    {
+        // OpenRouter accepts timestamp_granularities[] only when the requested model happens to route to an
+        // OpenAI-compatible backend, and returns 400 otherwise — which made every OpenRouter transcription
+        // fail (issue #138). The field is redundant for us anyway: verbose_json returns segment timestamps
+        // by default and we only ever read "segments", never "words".
+        var handler = new RecordingHandler(
+            new HttpResponseMessage(HttpStatusCode.BadRequest)
+            {
+                Content = new StringContent("""{"error":"srt is not supported"}""")
+            },
+            new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    """{"segments":[{"start":0.0,"end":1.0,"text":"hola"}]}""")
+            });
+        using var client = new HttpClient(handler);
+        var provider = new RemoteWhisperProvider(
+            NullLogger<RemoteWhisperProvider>.Instance,
+            "https://worker.example",
+            "openai/whisper-large-v3",
+            httpClient: client);
+
+        var wav = CreateOneSecondWav();
+        try
+        {
+            await provider.TranscribeAsync(wav, "auto", CancellationToken.None);
+        }
+        finally
+        {
+            File.Delete(wav);
+        }
+
+        // Both the initial srt attempt and the negotiated verbose_json retry must be free of it.
+        Assert.NotEmpty(handler.Requests);
+        Assert.All(handler.Requests, r =>
+            Assert.DoesNotContain("timestamp_granularities[]", r.Fields.Keys));
+        Assert.Contains("verbose_json", handler.Requests.Select(r => r.Fields["response_format"]));
     }
 }

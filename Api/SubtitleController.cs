@@ -509,7 +509,9 @@ namespace WhisperSubs.Api
                 content.Add(new System.Net.Http.StringContent(responseFormat), "response_format");
                 if (string.Equals(responseFormat, "verbose_json", StringComparison.Ordinal))
                 {
-                    content.Add(new System.Net.Http.StringContent("segment"), "timestamp_granularities[]");
+                    // Omitted on purpose — see RemoteWhisperProvider: redundant (segment is the default)
+                    // and rejected with 400 by some OpenRouter-routed providers. The probe must send the
+                    // same shape as a real job, or it would go green against an endpoint that rejects jobs.
                 }
 
                 using var probe = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Post, url)

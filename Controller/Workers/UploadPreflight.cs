@@ -18,7 +18,8 @@ namespace WhisperSubs.Controller.Workers
         /// A cap of 0 (the default) means "unlimited" and ALWAYS allows the upload — this is what keeps the
         /// change byte-identical for every existing install, including self-hosted workers that have no
         /// limit at all. There is deliberately no non-zero default: real caps span 440x (Groq free 25 MB,
-        /// Groq dev 100 MB, this project's own worker 8 GiB), so any guess would block working setups.
+        /// Groq 25 MB on both tiers for direct upload, this project's own worker 8 GiB), so any guess would
+        /// block working setups.
         /// </para>
         /// </summary>
         public static bool IsAllowed(long uploadBytes, long maxUploadBytes)

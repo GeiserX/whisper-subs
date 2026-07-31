@@ -388,7 +388,7 @@ WhisperSubs extracts 16 kHz mono PCM WAV, which is **1.92 MB per minute** of aud
 
 So a 25 MB cap (OpenAI, and Groq's free tier) accepts only about **13 minutes** of the default WAV upload, and rejects anything longer with `HTTP 413`. Two per-worker settings fix that:
 
-- **Max upload size (MB)** -- what this endpoint accepts. `0` (default) means unlimited, which is right for every self-hosted worker. Set it (25 for OpenAI/Groq free, 100 for Groq dev tier) and an oversized title fails immediately with a message telling you the size, the cap and roughly how many minutes fit -- instead of uploading the whole file to earn a bare 413.
+- **Max upload size (MB)** -- what this endpoint accepts. `0` (default) means unlimited, which is right for every self-hosted worker. Set it (25 for OpenAI and for Groq on **both** tiers -- Groq's 100 MB figure applies only to their `url` parameter, which WhisperSubs does not use) and an oversized title fails immediately with a message telling you the size, the cap and roughly how many minutes fit -- instead of uploading the whole file to earn a bare 413.
 - **Upload format** -- `WAV` (default), `FLAC` (lossless, about half) or `Opus 24k` (about a tenth; a 2-hour film lands near 20 MB). **Keep WAV for self-hosted workers**: whisper.cpp's `whisper-server` decodes WAV only, and the [`worker/`](worker/README.md) image ships without ffmpeg. Only choose a compressed format on a hosted endpoint documented to accept it (Groq accepts FLAC and OGG and explicitly recommends FLAC for size reduction; OpenAI's documented list is mp3/mp4/mpeg/mpga/m4a/wav/webm).
 
 **Base URL form** -- enter only the base; WhisperSubs appends `/v1/audio/transcriptions` itself, so the URL must **not** already end in `/v1`:
