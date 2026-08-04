@@ -12,6 +12,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The admin UI ships as an embedded resource, so nothing in the .NET build ever parses it. One stray
+  # character makes the browser skip the WHOLE inline <script> — every panel stays on its static markup
+  # and every button loses its listener, with nothing logged server-side (issue #149, shipped 4.5.0.2).
+  web-js:
+    name: Browser JS parses
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Parse-check shipped browser JavaScript
+        run: node scripts/check-web-js.mjs
+
   build:
     runs-on: ubuntu-latest
     steps:
