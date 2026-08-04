@@ -322,20 +322,50 @@ namespace WhisperSubs
             if (!writable)
             {
                 var target = string.IsNullOrEmpty(indexHtmlPath) ? "your index.html" : indexHtmlPath;
+
+                // The remediation has to match the admin's actual OS. A Windows admin handed
+                // "sudo chown root:jellyfin" has nothing to run (issue #149): on a bare-metal Windows
+                // install the web root normally sits under C:\Program Files, which the Jellyfin service
+                // account cannot write — so this branch is the COMMON case there, not an edge case.
+                var permissionFix = IsWindowsStylePath(indexHtmlPath)
+                    ? "Alternatively, grant the Jellyfin service account write access to that file and click " +
+                      "Re-inject (or restart Jellyfin). On Windows the web root usually lives under " +
+                      "C:\\Program Files, which the service account cannot write by default. From an ELEVATED " +
+                      "PowerShell: icacls \"" + target + "\" /grant \"NETWORK SERVICE:(M)\" — substitute the " +
+                      "account the service actually runs as (Services → Jellyfin Server → Properties → Log On)."
+                    : "Alternatively, make it writable by the Jellyfin service user, then click " +
+                      "Re-inject (or restart Jellyfin). On a Linux package install: sudo chown root:jellyfin \"" + target +
+                      "\" && sudo chmod 664 \"" + target + "\". On Docker the user/group differs (e.g. linuxserver.io " +
+                      "uses your PUID/PGID) and a read-only web mount must be made writable in your compose file.";
+
                 return ("error",
                     "index.html is present but NOT writable, so the client script can't be injected directly (common with " +
-                    "read-only web roots in Docker). Recommended fix: install the File Transformation plugin " +
+                    "read-only web roots in Docker, and with Windows installs under C:\\Program Files). Recommended fix: " +
+                    "install the File Transformation plugin " +
                     "(Dashboard → Plugins → Repositories → add https://www.iamparadox.dev/jellyfin/plugins/manifest.json, " +
                     "install \"File Transformation\", restart Jellyfin) — WhisperSubs then injects at serve time with no " +
-                    "permission changes. Alternatively, make it writable by the Jellyfin service user, then click " +
-                    "Re-inject (or restart Jellyfin). On a Linux package install: sudo chown root:jellyfin \"" + target +
-                    "\" && sudo chmod 664 \"" + target + "\". On Docker the user/group differs (e.g. linuxserver.io " +
-                    "uses your PUID/PGID) and a read-only web mount must be made writable in your compose file.");
+                    "permission changes. " + permissionFix);
             }
 
             return ("warning",
                 "The client script is not currently injected — a Jellyfin update may have replaced index.html. " +
                 "Click Re-inject below, then hard-refresh your browser.");
+        }
+
+        /// <summary>
+        /// Pure: is this path Windows-shaped — a drive-letter root ("C:\...") or a UNC share ("\\host\share")?
+        /// Decided from the STRING, not the running OS, so <see cref="DescribeInjection"/> stays pure and the
+        /// guidance is right even for a path that came from somewhere else. A POSIX path never matches:
+        /// a drive letter needs exactly one letter before the colon, and "/" is not a separator here.
+        /// </summary>
+        internal static bool IsWindowsStylePath(string? path)
+        {
+            if (string.IsNullOrEmpty(path)) return false;
+            if (path.StartsWith("\\\\", StringComparison.Ordinal)) return true;   // UNC: \\server\share
+            return path.Length >= 3
+                   && char.IsLetter(path[0])
+                   && path[1] == ':'
+                   && (path[2] == '\\' || path[2] == '/');                        // C:\... or C:/...
         }
 
         /// <summary>Best-effort writability probe: open the file for write without modifying it.</summary>
