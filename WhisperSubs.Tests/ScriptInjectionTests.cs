@@ -145,4 +145,60 @@ public class ScriptInjectionTests
         Assert.Equal("warning", level);
         Assert.Contains("Re-inject", message);
     }
+
+    // ── Windows remediation (issue #149) ──────────────────────────────────────
+    // On a bare-metal Windows install the web root normally sits under C:\Program Files, which the
+    // Jellyfin service account cannot write — so "not writable" is the COMMON case there. Handing that
+    // admin a `sudo chown root:jellyfin` line gives them nothing to run.
+
+    [Theory]
+    [InlineData(@"C:\Program Files\Jellyfin\Server\jellyfin-web\index.html")]
+    [InlineData(@"D:\Jellyfin\jellyfin-web\index.html")]
+    [InlineData(@"\\nas\jellyfin\web\index.html")]
+    public void DescribeInjection_NotWritable_WindowsPath_GivesWindowsRemediation(string path)
+    {
+        var (level, message) = Plugin.DescribeInjection(
+            indexExists: true, scriptTagPresent: false, writable: false, indexHtmlPath: path);
+
+        Assert.Equal("error", level);
+        // Actionable on Windows: the real tool, the real path (quoted — these paths contain spaces).
+        Assert.Contains("icacls", message);
+        Assert.Contains("\"" + path + "\"", message);
+        // And NOT the POSIX advice, which is the whole defect being fixed.
+        Assert.DoesNotContain("sudo", message);
+        Assert.DoesNotContain("chown", message);
+        Assert.DoesNotContain("chmod", message);
+        // The File Transformation route is OS-independent and must survive on both branches.
+        Assert.Contains("File Transformation", message);
+    }
+
+    [Fact]
+    public void DescribeInjection_NotWritable_PosixPath_KeepsPosixRemediation()
+    {
+        // Guard the other side of the branch: adding Windows guidance must not weaken the Linux path.
+        var (level, message) = Plugin.DescribeInjection(
+            indexExists: true, scriptTagPresent: false, writable: false,
+            indexHtmlPath: "/usr/share/jellyfin/web/index.html");
+
+        Assert.Equal("error", level);
+        Assert.Contains("chown", message);
+        Assert.Contains("664", message);
+        Assert.DoesNotContain("icacls", message);
+    }
+
+    [Theory]
+    [InlineData(@"C:\web\index.html", true)]
+    [InlineData(@"c:/web/index.html", true)]
+    [InlineData(@"\\host\share\index.html", true)]
+    [InlineData("/usr/share/jellyfin/web/index.html", false)]
+    [InlineData("/srv/My Media/index.html", false)]
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    [InlineData("C:", false)]           // too short to be a rooted path
+    [InlineData("relative/index.html", false)]
+    [InlineData("http://host/index.html", false)]  // a scheme is not a drive letter
+    public void IsWindowsStylePath_ClassifiesFromTheStringAlone(string? path, bool expected)
+    {
+        Assert.Equal(expected, Plugin.IsWindowsStylePath(path));
+    }
 }

@@ -817,6 +817,15 @@
                         })
                         .catch(function (err) {
                             console.error('WhisperSubs: engine status check failed', err);
+                            var text = document.querySelector('#engineBinaryText');
+                            var hint = document.querySelector('#engineGpuHint');
+                            if (text) { text.textContent = 'Status unavailable'; }
+                            if (hint) {
+                                hint.textContent = 'Could not read the engine status from the server (' +
+                                    WhisperSubsConfig.describeLoadError(err) + '). The panels below stay blank ' +
+                                    'until this succeeds — check the browser console and reload.';
+                                hint.style.color = '#CC3333';
+                            }
                         });
                 },
 
@@ -826,7 +835,9 @@
                     if (status.BinaryFound && !status.BinaryFoundInPath) {
                         icon.innerHTML = '&#9745;';
                         icon.style.color = '#52B54B';
-                        text.textContent = status.BinaryPath ? status.BinaryPath.split('/').pop() : 'Installed';
+                        // Split on BOTH separators — a Windows path (D:\Whisper\whisper-cli.exe) has no
+                        // '/' at all, so splitting on '/' alone rendered the entire path here. (Issue #149.)
+                        text.textContent = status.BinaryPath ? status.BinaryPath.split(/[\\/]/).pop() : 'Installed';
                     } else if (status.BinaryFoundInPath) {
                         icon.innerHTML = '&#9745;';
                         icon.style.color = '#CC7B19';
@@ -842,7 +853,16 @@
                 loadInjectionStatus: function () {
                     WhisperSubsConfig.ajaxGet(ApiClient.getUrl('Plugins/WhisperSubs/Setup/InjectionStatus'))
                         .then(function (s) { WhisperSubsConfig.renderInjectionStatus(s); })
-                        .catch(function (err) { console.error('WhisperSubs: injection status check failed', err); });
+                        .catch(function (err) {
+                            console.error('WhisperSubs: injection status check failed', err);
+                            var icon = document.querySelector('#injectionStatusIcon');
+                            var text = document.querySelector('#injectionStatusText');
+                            if (icon) { icon.innerHTML = '&#10007;'; icon.style.color = '#CC3333'; }
+                            if (text) {
+                                text.textContent = 'Could not read the injection status from the server (' +
+                                    WhisperSubsConfig.describeLoadError(err) + ').';
+                            }
+                        });
                 },
 
                 renderInjectionStatus: function (s) {
@@ -929,8 +949,19 @@
                                 btn.disabled = true;
                                 btn.title = 'Prebuilt binaries are only available for Linux. Install whisper-cli manually.';
                                 var hint = document.querySelector('#engineGpuHint');
-                                hint.textContent = 'Auto-download is only available for Linux. Install whisper-cli manually and set the path in Advanced settings.';
-                                hint.style.color = '#CC7B19';
+                                // A manually-installed binary is a fully supported setup. Saying only
+                                // "no prebuilt binaries" made a WORKING Windows install look broken —
+                                // the reporter on issue #149 read the disabled control as the bug.
+                                var st = WhisperSubsConfig._engineStatus;
+                                if (st && (st.BinaryFound || st.BinaryFoundInPath)) {
+                                    hint.textContent = 'whisper-cli is installed and will be used. Auto-download is ' +
+                                        'only offered on Linux, so these controls stay disabled on ' +
+                                        (st.Platform || 'this platform') + ' — that is expected, not an error.';
+                                    hint.style.color = '';
+                                } else {
+                                    hint.textContent = 'Auto-download is only available for Linux. Install whisper-cli manually and set the path in Advanced settings.';
+                                    hint.style.color = '#CC7B19';
+                                }
                                 return;
                             }
                             select.disabled = false;
@@ -1125,6 +1156,13 @@
                         })
                         .catch(function (err) {
                             console.error('WhisperSubs: error loading downloaded models', err);
+                            var hint = document.querySelector('#engineModelHint');
+                            if (hint) {
+                                hint.textContent = 'Could not list installed models (' +
+                                    WhisperSubsConfig.describeLoadError(err) + '). If a model is set in ' +
+                                    'Advanced settings it is still used for transcription — only this list failed to load.';
+                                hint.style.color = '#CC3333';
+                            }
                         });
                 },
 
@@ -1396,6 +1434,15 @@
                             if (!resp.ok) throw new Error('HTTP ' + resp.status);
                             return resp.json();
                         });
+                },
+
+                // A failed panel load must SAY so in the page. Leaving the panel on its static markup
+                // (an empty model list, the placeholder "CPU Only" option) reads as "the plugin is
+                // broken" and gives the admin nothing to report. (Issue #149.)
+                describeLoadError: function (err) {
+                    var msg = (err && (err.message || err.statusText)) || '';
+                    if (!msg && err && err.status) { msg = 'HTTP ' + err.status; }
+                    return msg || 'request failed';
                 },
 
                 // ── Library selector for auto-generation scope ───────────
@@ -1808,7 +1855,7 @@
                     row.appendChild(WhisperSubsConfig._workerField(
                         'Max upload size (MB)', 'number', 'wkMaxUpload', { min: '0', step: '1', placeholder: '0 = unlimited' },
                         (w.MaxUploadBytes != null && w.MaxUploadBytes > 0) ? Math.round(w.MaxUploadBytes / 1000000) : '',
-                        'Largest file this endpoint accepts. 0 (default) = unlimited. OpenAI and Groq are 25 on both tiers (Groq's 100 applies only to URL-fetched audio, which is not used here). Oversized titles then fail fast with a clear message instead of a bare HTTP 413.'));
+                        'Largest file this endpoint accepts. 0 (default) = unlimited. OpenAI and Groq are 25 on both tiers (the 100 MB Groq limit applies only to URL-fetched audio, which is not used here). Oversized titles then fail fast with a clear message instead of a bare HTTP 413.'));
                     row.appendChild(WhisperSubsConfig._workerSelect(
                         'Upload format', 'wkUploadCodec',
                         [['wav', 'WAV (default, uncompressed)'], ['flac', 'FLAC (lossless, ~half)'], ['opus', 'Opus 24k (~a tenth)']],
