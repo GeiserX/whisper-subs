@@ -104,5 +104,55 @@ class InflightSerializationTests(unittest.TestCase):
         m._release_inflight_slot()  # no-op, must not raise
 
 
+class MaxLenFlagTests(unittest.TestCase):
+    """WHISPER_MAX_LEN / WHISPER_SPLIT_ON_WORD -> whisper-server's -ml / -sow (issue #151).
+
+    whisper-server applies NO cue-length cap of its own (-ml defaults to 0 = unlimited), so a stretch
+    the model fails to punctuate arrives as one enormous run-on cue. The plugin's own
+    SubtitleMaxLineLength setting only reaches the LOCAL whisper-cli, so a remote worker needs its own
+    knob. Opt-in: the load-bearing case is that an unset value changes nothing.
+    """
+
+    def test_unset_emits_nothing(self):
+        # Back-compat guarantee: existing workers must keep their exact argv after an image bump.
+        cmd = _load_adapter().build_backend_cmd()
+        self.assertNotIn("-ml", cmd)
+        self.assertNotIn("-sow", cmd)
+
+    def test_positive_emits_ml_with_value(self):
+        cmd = _load_adapter({"WHISPER_MAX_LEN": "47"}).build_backend_cmd()
+        self.assertIn("-ml", cmd)
+        self.assertEqual("47", cmd[cmd.index("-ml") + 1])
+
+    def test_positive_also_emits_split_on_word(self):
+        # Never a bare -ml: whisper.cpp splits on TOKEN boundaries by default, so an uncapped
+        # word can be cut in half mid-word.
+        self.assertIn("-sow", _load_adapter({"WHISPER_MAX_LEN": "47"}).build_backend_cmd())
+
+    def test_split_on_word_can_be_disabled_without_losing_the_cap(self):
+        cmd = _load_adapter({"WHISPER_MAX_LEN": "47", "WHISPER_SPLIT_ON_WORD": "false"}).build_backend_cmd()
+        self.assertIn("-ml", cmd)
+        self.assertNotIn("-sow", cmd)
+
+    def test_split_on_word_is_never_emitted_alone(self):
+        # -sow is inert without -ml, so emitting it alone would be dead noise on the argv.
+        cmd = _load_adapter({"WHISPER_SPLIT_ON_WORD": "true"}).build_backend_cmd()
+        self.assertNotIn("-sow", cmd)
+
+    def test_explicit_zero_means_unlimited(self):
+        # 0 is whisper-server's own default and a legitimate "no cap" value, NOT a bad input --
+        # it must emit nothing rather than warn.
+        cmd = _load_adapter({"WHISPER_MAX_LEN": "0"}).build_backend_cmd()
+        self.assertNotIn("-ml", cmd)
+        self.assertNotIn("-sow", cmd)
+
+    def test_garbage_is_ignored_not_fatal(self):
+        # A typo must degrade to whisper-server's default, never crash-loop the container.
+        for bad in ("abc", "-5", "47.5", " "):
+            cmd = _load_adapter({"WHISPER_MAX_LEN": bad}).build_backend_cmd()
+            self.assertNotIn("-ml", cmd, "WHISPER_MAX_LEN=%r should be ignored" % bad)
+            self.assertNotIn("-sow", cmd, "WHISPER_MAX_LEN=%r should be ignored" % bad)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

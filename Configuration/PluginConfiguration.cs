@@ -100,6 +100,22 @@ namespace WhisperSubs.Configuration
         public string CustomWhisperArgs { get; set; } = "";
 
         /// <summary>
+        /// Maximum characters per subtitle cue, emitted as whisper-cli's <c>--max-len</c> (paired with
+        /// <c>--split-on-word</c> so a cap never breaks mid-word). 0 (the default) leaves whisper.cpp's
+        /// own default of 0 = unlimited, so existing installs are byte-identical.
+        /// <para>
+        /// Why this exists: whisper.cpp applies NO character cap of its own, so when the model fails to
+        /// punctuate (the documented "no-punctuation mode"), a whole utterance lands in one enormous
+        /// cue — the run-on wall of text reported in issue #151. Broadcast subtitling caps a line near
+        /// 42 characters; 47 is whisper.cpp's own documented example.
+        /// </para>
+        /// A <c>--max-len</c> in <see cref="CustomWhisperArgs"/> supersedes this (custom args are
+        /// appended last and whisper-cli takes the last value), matching the VAD-tuning precedent.
+        /// Local whisper-cli only — a remote/worker endpoint owns its own segmentation.
+        /// </summary>
+        public int SubtitleMaxLineLength { get; set; } = 0;
+
+        /// <summary>
         /// When enabled, subtitle start times are snapped forward to detected speech onsets
         /// so a subtitle no longer appears during the silence before its line is spoken.
         /// whisper.cpp emits gapless segments (next.start == prev.end); this re-introduces

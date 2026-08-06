@@ -21,6 +21,7 @@ namespace WhisperSubs.Providers
         private readonly string _customArgs;
         private readonly string _vadModelPath;
         private readonly VadTuning _vadTuning;
+        private readonly int _maxLineLength;
         private readonly string _detectionModelPath;
         private string? _resolvedExecutable;
 
@@ -57,7 +58,7 @@ namespace WhisperSubs.Providers
 
         public bool RequiresSpeechAlignmentOptIn => UsesVad;
 
-        public WhisperProvider(ILogger<WhisperProvider> logger, string modelPath, string binaryPath = "", int threadCount = 0, string customArgs = "", string vadModelPath = "", string detectionModelPath = "", VadTuning? vadTuning = null)
+        public WhisperProvider(ILogger<WhisperProvider> logger, string modelPath, string binaryPath = "", int threadCount = 0, string customArgs = "", string vadModelPath = "", string detectionModelPath = "", VadTuning? vadTuning = null, int maxLineLength = 0)
         {
             _logger = logger;
             _modelPath = modelPath;
@@ -66,6 +67,7 @@ namespace WhisperSubs.Providers
             _customArgs = customArgs ?? "";
             _vadModelPath = vadModelPath ?? "";
             _vadTuning = vadTuning ?? VadTuning.Unset;
+            _maxLineLength = maxLineLength;
             _detectionModelPath = detectionModelPath ?? "";
         }
 
@@ -165,7 +167,7 @@ namespace WhisperSubs.Providers
                 var useVad = ShouldUseVad(applyVad, _vadModelPath, vadModelExists);
                 foreach (var arg in BuildTranscribeArguments(
                     _modelPath, audioPath, language, _threadCount, translate,
-                    useVad ? _vadModelPath : null, tempOutputPrefix, langPrompt, _vadTuning))
+                    useVad ? _vadModelPath : null, tempOutputPrefix, langPrompt, _vadTuning, _maxLineLength))
                 {
                     startInfo.ArgumentList.Add(arg);
                 }
@@ -769,7 +771,8 @@ namespace WhisperSubs.Providers
         /// <param name="langPrompt">Resolved initial prompt, or null/empty to omit it.</param>
         internal static IReadOnlyList<string> BuildTranscribeArguments(
             string modelPath, string audioPath, string language, int threadCount, bool translate,
-            string? vadModelPath, string outputPrefix, string? langPrompt, VadTuning? tuning = null)
+            string? vadModelPath, string outputPrefix, string? langPrompt, VadTuning? tuning = null,
+            int maxLineLength = 0)
         {
             var args = new List<string>
             {
@@ -803,6 +806,16 @@ namespace WhisperSubs.Providers
                 args.Add("--vad-model");
                 args.Add(vadModelPath);
                 AppendVadTuning(args, tuning ?? VadTuning.Unset);
+            }
+            // Cap cue length so a failure to punctuate can't produce one enormous run-on cue (#151).
+            // Always paired with --split-on-word: whisper.cpp splits on TOKEN boundaries by default, so
+            // a bare --max-len can cut mid-word. Non-positive means "unset — leave whisper's own
+            // default of 0 (unlimited)", mirroring the VadTuning sentinel convention.
+            if (maxLineLength > 0)
+            {
+                args.Add("--max-len");
+                args.Add(maxLineLength.ToString(CultureInfo.InvariantCulture));
+                args.Add("--split-on-word");
             }
             args.Add("-osrt");
             args.Add("-of");
