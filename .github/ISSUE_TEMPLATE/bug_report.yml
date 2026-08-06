@@ -74,22 +74,41 @@ body:
     attributes:
       label: Setup status endpoint
       description: |
-        Go to your Jellyfin URL and open:
-        `{your-jellyfin-url}/Plugins/WhisperSubs/Setup/Status`
+        These endpoints are admin-only, so opening them straight in a browser returns
+        **401 Unauthorized with an empty page** — that is expected, not a bug.
 
-        Paste the full JSON response below.
+        To read one, create an API key in **Dashboard → API Keys**, then (use `curl.exe`
+        on Windows PowerShell, where `curl` is an alias for something else):
+
+        ```
+        curl -H "Authorization: MediaBrowser Token=$JF_KEY" "http://your-jellyfin:8096/Plugins/WhisperSubs/Setup/Status"
+        ```
+
+        ⚠️ **Never paste your API key into this issue** — it grants full admin access.
+        Put it in an environment variable as above rather than typing it inline, and
+        redact any file paths you would rather not make public before pasting the JSON.
+
+        Skip this if you can't get it — the logs below matter far more.
       render: json
     validations:
-      required: true
+      required: false
 
   - type: textarea
     id: queue-status
     attributes:
       label: Queue status
       description: |
-        Open: `{your-jellyfin-url}/Plugins/WhisperSubs/Queue`
+        Same admin-only rule as above — use the API key:
 
-        Paste the response here. This shows if transcription is running, stuck, or erroring.
+        ```
+        curl -H "Authorization: MediaBrowser Token=$JF_KEY" "http://your-jellyfin:8096/Plugins/WhisperSubs/Queue"
+        ```
+
+        This shows if transcription is running, stuck, or erroring. Optional.
+
+        ⚠️ This response names the media it is working on (`currentItem`, `library`) and
+        may include paths in `lastError`. Redact anything private — and never your API
+        key — before pasting.
       render: json
 
   - type: textarea
