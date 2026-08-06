@@ -780,10 +780,13 @@ namespace WhisperSubs.Providers
             if (unknown.Success)
             {
                 return $"whisper-cli rejected the argument '{unknown.Groups[1].Value}' and exited without " +
-                       "transcribing anything. whisper.cpp does not accept it — flags from the Python " +
-                       "'openai-whisper' / 'faster-whisper' projects (for example --word_timestamps) either " +
-                       "do not exist here or are spelled differently. Remove it from Custom Whisper Arguments " +
-                       "in the plugin settings; run 'whisper-cli --help' to see the flags this build accepts.";
+                       "transcribing anything. Two things can cause this. Most often the flag came from " +
+                       "Custom Whisper Arguments and whisper.cpp simply has no such option — flags from the " +
+                       "Python 'openai-whisper' / 'faster-whisper' projects (for example --word_timestamps) " +
+                       "either do not exist here or are spelled differently, so remove it from that setting. " +
+                       "Otherwise the flag is one the plugin sends itself (such as --vad or --print-progress) " +
+                       "and this whisper-cli build is too old to know it, in which case update the binary. " +
+                       "Run 'whisper-cli --help' to see exactly which flags your build accepts.";
             }
 
             // Any other pre-flight complaint whisper-cli reports before doing work. Surface its own
