@@ -10,7 +10,7 @@
 
 services:
   whisper-subs-worker:
-    image: drumsergio/whisper-subs-worker:0.1.0
+    image: drumsergio/whisper-subs-worker:0.1.4
     # To build locally instead of pulling, comment out `image:` above and uncomment:
     # build:
     #   context: .
@@ -33,6 +33,12 @@ services:
       # CONVERT: "false"
       # WHISPER_THREADS: "4"           # CPU threads for whisper.cpp. Set to your CPU
       #                                # core count on CPU-only workers for best speed.
+      # WHISPER_MAX_LEN: "47"          # Max characters per subtitle cue (-ml), paired with
+      #   -sow so a cap never breaks mid-word. Whisper caps nothing by default, so a stretch it
+      #   fails to punctuate arrives as one enormous run-on cue. Empty/0 = unlimited (default).
+      #   This is the worker-side twin of the plugin's "Maximum subtitle line length" setting,
+      #   which only applies to the Jellyfin host's own whisper-cli.
+      # WHISPER_SPLIT_ON_WORD: "true"  # Pair -sow with WHISPER_MAX_LEN (default true).
       # WHISPER_EXTRA_ARGS: "--no-flash-attn"   # extra whisper-server flags. Flash
       #   attention is already ON by default in whisper.cpp v1.8.4, so passing
       #   --flash-attn is a no-op; use --no-flash-attn only if a buggy Vulkan driver

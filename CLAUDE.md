@@ -199,6 +199,12 @@ The GPU wrapper script (`whisper-cli-gpu`) is self-healing: checks for Vulkan IC
 
 `WhisperThreadCount` controls `-t N` flag. Default `0` = whisper's internal default (4 threads). Set to CPU core count for faster transcription.
 
+### Configuration — Subtitle Line Length (issue #151)
+
+`SubtitleMaxLineLength` emits `--max-len N --split-on-word` from `BuildTranscribeArguments`. Default `0` = **unset**, leaving whisper.cpp's own default of 0 (unlimited) — so the emitted command line for an existing install is byte-identical. Non-positive is treated as unset, mirroring the `VadTuning` sentinel convention; the two flags are always emitted together (a bare `--max-len` splits on TOKEN boundaries and can cut mid-word, a bare `--split-on-word` is inert). `--max-len` is deliberately NOT in `DeniedArgs`, so a value in Custom Whisper Arguments still supersedes the setting (custom args are appended last; whisper-cli takes the last value) — same contract as the VAD tuning flags.
+
+Why it exists: whisper applies no character cap of its own, so when the model drops into its documented "no-punctuation mode" an entire utterance lands in one enormous run-on cue. **Local `whisper-cli` only** — a remote/worker endpoint owns its own segmentation, so the worker image carries the twin knobs `WHISPER_MAX_LEN` / `WHISPER_SPLIT_ON_WORD` (worker ≥ 0.1.4, same opt-in default). Note this is a guard for the pathological case, not a fix for missing punctuation itself — the usual root causes there are a small model or a wrong language guess. Speaker diarization ("multi narrator", issue #151's original ask) is explicitly **out of scope**: Whisper computes no speaker information, whisper.cpp's `-di` is a stereo left/right energy comparison (useless on centre-mixed film dialogue) and `-tdrz` requires an English-only `small.en-tdrz` model that emits only an anonymous `[SPEAKER_TURN]` marker.
+
 ## Performance Benchmarks
 
 Tested with 2h15m film (8107s audio), large-v3 model, 5-beam search on i5-14500:
