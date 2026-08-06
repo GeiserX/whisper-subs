@@ -536,6 +536,12 @@
                         </div>
 
                         <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfocused" for="txtSubtitleMaxLineLength">Maximum subtitle line length</label>
+                            <input type="number" id="txtSubtitleMaxLineLength" name="SubtitleMaxLineLength" class="emby-input" min="0" max="500" step="1" />
+                            <div class="fieldDescription">Maximum characters per subtitle cue, passed to whisper-cli as <code>--max-len</code> together with <code>--split-on-word</code> so a cap never breaks mid-word. <strong>0 (default) = unlimited</strong>, which is whisper.cpp's own default. Raise this if subtitles arrive as one long run-on line: broadcast subtitling caps a line near 42 characters, and <code>47</code> is a good starting point. Local whisper-cli only — a remote worker controls its own segmentation (set <code>WHISPER_MAX_LEN</code> on the worker instead).</div>
+                        </div>
+
+                        <div class="inputContainer">
                             <label class="inputLabel inputLabelUnfocused" for="txtCustomWhisperArgs">Custom Whisper Arguments</label>
                             <input type="text" id="txtCustomWhisperArgs" name="CustomWhisperArgs" class="emby-input" placeholder="e.g., --max-len 47 --split-on-word" />
                             <div class="fieldDescription">Extra arguments appended to whisper-cli (space-separated). Only applies to local whisper-cli, not the remote API. Useful for timing improvements (e.g., <code>--max-len 47 --split-on-word</code>) or tuning (<code>--beam-size 8</code>). Flags managed by the plugin (model, language, output format) are automatically blocked.</div>
@@ -1487,6 +1493,7 @@
                             page.querySelector('#txtWhisperBinaryPath').value = config.WhisperBinaryPath || '';
                             page.querySelector('#txtWhisperModelPath').value = config.WhisperModelPath || '';
                             page.querySelector('#txtWhisperThreadCount').value = (config.WhisperThreadCount || 0).toString();
+                            page.querySelector('#txtSubtitleMaxLineLength').value = (config.SubtitleMaxLineLength || 0).toString();
                             page.querySelector('#txtCustomWhisperArgs').value = config.CustomWhisperArgs || '';
                             page.querySelector('#txtRemoteWhisperApiUrl').value = config.RemoteWhisperApiUrl || '';
                             page.querySelector('#txtRemoteWhisperModel').value = config.RemoteWhisperModel || 'Systran/faster-whisper-large-v3';
@@ -1545,6 +1552,7 @@
                         config.WhisperBinaryPath = page.querySelector('#txtWhisperBinaryPath').value;
                         config.WhisperModelPath = page.querySelector('#txtWhisperModelPath').value;
                         config.WhisperThreadCount = parseInt(page.querySelector('#txtWhisperThreadCount').value, 10) || 0;
+                        config.SubtitleMaxLineLength = Math.max(0, parseInt(page.querySelector('#txtSubtitleMaxLineLength').value, 10) || 0);
                         config.CustomWhisperArgs = (page.querySelector('#txtCustomWhisperArgs').value || '').trim();
                         config.RemoteWhisperApiUrl = (page.querySelector('#txtRemoteWhisperApiUrl').value || '').trim();
                         config.RemoteWhisperModel = (page.querySelector('#txtRemoteWhisperModel').value || '').trim() || 'Systran/faster-whisper-large-v3';

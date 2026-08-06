@@ -158,6 +158,18 @@ WHISPER_MAX_CONTEXT = _env("WHISPER_MAX_CONTEXT", "0")
 #   default (greedy, -bs -1), matching the plugin; set a positive int (e.g. 5) to trade
 #   speed for a bit more accuracy.
 WHISPER_BEAM_SIZE = _env("WHISPER_BEAM_SIZE", "")
+# -ml / --max-len       : maximum characters per subtitle cue. EMPTY/0 (default) leaves
+#   whisper-server's own default of 0 = UNLIMITED, matching the plugin's default so existing
+#   workers are unchanged. Whisper applies no cap of its own, so when the model drops into its
+#   documented "no-punctuation mode" a whole utterance lands in one enormous run-on cue
+#   (issue #151). Set e.g. 47 to cap it. Mirrors the plugin's SubtitleMaxLineLength setting,
+#   which only reaches the LOCAL whisper-cli — a remote worker owns its own segmentation, so
+#   the same cap has to be set here.
+WHISPER_MAX_LEN = _env("WHISPER_MAX_LEN", "")
+# -sow / --split-on-word: split on word rather than token boundaries, so a --max-len cap never
+#   cuts mid-word. Only meaningful alongside -ml, so it is emitted only when one is set.
+#   Defaults ON to match the plugin, which always pairs the two.
+WHISPER_SPLIT_ON_WORD = _env_bool("WHISPER_SPLIT_ON_WORD", "true")
 # --vad / --vad-model   : native Silero VAD. Snaps cue starts to real speech onset and
 #   avoids decoding long silences (another hallucination source). Plugin default ON. Added
 #   ONLY when the model file exists; if enabled but missing we log a warning and skip it
@@ -257,6 +269,19 @@ def build_backend_cmd():
         else:
             log("WARNING: WHISPER_BEAM_SIZE=%r is not a positive integer; ignoring it "
                 "(leaving whisper-server's default = greedy)." % WHISPER_BEAM_SIZE)
+    if WHISPER_MAX_LEN != "":
+        ml = _parse_int(WHISPER_MAX_LEN)
+        if ml is not None and ml > 0:
+            cmd += ["-ml", str(ml)]
+            # Only ever alongside -ml: a bare -sow is inert, since it just changes WHERE a
+            # --max-len cap cuts. Same pairing the plugin enforces.
+            if WHISPER_SPLIT_ON_WORD:
+                cmd += ["-sow"]
+        elif ml == 0:
+            pass  # explicit 0 = "unlimited", whisper-server's own default; emit nothing
+        else:
+            log("WARNING: WHISPER_MAX_LEN=%r is not a non-negative integer; ignoring it "
+                "(leaving whisper-server's default = 0 / unlimited)." % WHISPER_MAX_LEN)
     if WHISPER_VAD:
         if os.path.isfile(WHISPER_VAD_MODEL):
             cmd += ["--vad", "--vad-model", WHISPER_VAD_MODEL]
