@@ -130,7 +130,7 @@ another host) and add each to the pool.
 | `WHISPER_SUPPRESS_NON_SPEECH` | `true` | Adds `-sns` (suppress non-speech tokens) — cuts music/credits hallucination. `false` disables |
 | `WHISPER_MAX_CONTEXT` | `0` | Adds `-mc <N>` (max prior-text-context tokens). `0` (default) curbs runaway hallucination; set `-1` to restore whisper-server's own default |
 | `WHISPER_BEAM_SIZE` | *(empty → greedy)* | When a **positive int**, adds `-bs <N>` (beam search). `5` trades speed for a bit more accuracy; empty leaves whisper-server's default (greedy) |
-| `WHISPER_MAX_LEN` | *(empty → unlimited)* | When a **positive int**, adds `-ml <N>` (max characters per subtitle cue) plus `-sow`. Whisper applies no cap of its own, so a stretch it fails to punctuate arrives as one enormous run-on cue; `47` is a good starting point (broadcast subtitling caps a line near 42). Empty or `0` leaves whisper-server's default (`0` = unlimited) |
+| `WHISPER_MAX_LEN` | *(empty → unlimited)* | When a **positive int**, adds `-ml <N>` (max characters per subtitle cue), plus `-sow` unless `WHISPER_SPLIT_ON_WORD=false`. Whisper applies no cap of its own, so a stretch it fails to punctuate arrives as one enormous run-on cue; `47` is a good starting point (broadcast subtitling caps a line near 42). Empty or `0` leaves whisper-server's default (`0` = unlimited) |
 | `WHISPER_SPLIT_ON_WORD` | `true` | Adds `-sow` alongside `-ml` so a `WHISPER_MAX_LEN` cap breaks on a word boundary instead of mid-word. Ignored unless `WHISPER_MAX_LEN` is set (a bare `-sow` is inert) |
 | `WHISPER_VAD` | `true` | Adds `--vad --vad-model <path>` (native Silero VAD) so cue starts snap to real speech onset and long silences aren't decoded. Skipped (with a warning) if the model file is absent; `false` disables |
 | `WHISPER_VAD_MODEL` | `/opt/whisper-vad/ggml-silero-v5.1.2.bin` | Path to the Silero VAD model. **Baked into the image here — deliberately not under `/models`**, which a mounted model volume would shadow |
@@ -153,7 +153,8 @@ another host) and add each to the pool.
 > **Run-on cues (as of 0.1.4).** Whisper caps cue length at nothing by default, so when the model
 > drops into its "no-punctuation mode" a whole utterance can land in a single enormous subtitle.
 > Set **`WHISPER_MAX_LEN=47`** to cap it (paired automatically with `-sow` so the break lands on a
-> word). This is the worker-side twin of the plugin's **Maximum subtitle line length** setting,
+> word — set `WHISPER_SPLIT_ON_WORD=false` to cap on token boundaries instead). This is the
+> worker-side twin of the plugin's **Maximum subtitle line length** setting,
 > which only reaches the Jellyfin host's own `whisper-cli` — a remote worker segments its own
 > output, so set it in both places if you use both. Default stays unlimited, so existing workers
 > are unchanged by this bump.

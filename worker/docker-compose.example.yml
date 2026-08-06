@@ -10,7 +10,7 @@
 
 services:
   whisper-subs-worker:
-    image: drumsergio/whisper-subs-worker:0.1.0
+    image: drumsergio/whisper-subs-worker:0.1.4
     # To build locally instead of pulling, comment out `image:` above and uncomment:
     # build:
     #   context: .
