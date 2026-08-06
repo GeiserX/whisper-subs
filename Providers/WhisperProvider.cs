@@ -271,6 +271,13 @@ namespace WhisperSubs.Providers
                     return srtContent;
                 }
 
+                // whisper-cli can exit 0 having done nothing (its argument parser prints the error and
+                // exit(0)s), so reaching here with no output usually means it complained on stderr and
+                // that complaint is the only real diagnosis available. Prefer it over the path-not-found
+                // message, which describes the symptom rather than the cause. (Issue #153.)
+                var missingOutput = DescribeMissingOutputFailure(errorBuilder.ToString());
+                if (missingOutput != null) throw new InvalidOperationException(missingOutput);
+
                 throw new FileNotFoundException($"Subtitle file not found at expected location: {tempSrtPath}");
             }
             finally
@@ -749,6 +756,48 @@ namespace WhisperSubs.Providers
                        "\"CPU (Compatibility)\" / noavx variant on the plugin setup page, which is built " +
                        $"for CPUs without AVX2. Raw error: {(stderr ?? string.Empty).Trim()}";
             }
+            return null;
+        }
+
+        /// <summary>
+        /// Maps whisper-cli's stderr to an actionable message for the case where it exited
+        /// <b>successfully</b> but produced no subtitle file, or null when stderr says nothing useful.
+        /// <para>
+        /// This exists because whisper.cpp's argument parser prints <c>error: unknown argument: X</c>
+        /// followed by the usage text and then calls <c>exit(0)</c> — a SUCCESS code. The non-zero-exit
+        /// branch therefore never fires, the captured stderr was discarded, and the run surfaced as a
+        /// bare "Subtitle file not found at expected location", which says nothing about the real cause
+        /// and looks transient enough to burn all the retries. Verified against whisper-cli v1.8.4:
+        /// both an unknown flag and a malformed one exit 0. (Issue #153.)
+        /// </para>
+        /// Pure so the mapping is unit-testable.
+        /// </summary>
+        internal static string? DescribeMissingOutputFailure(string? stderr)
+        {
+            var text = stderr ?? string.Empty;
+
+            var unknown = Regex.Match(text, @"error:\s*unknown argument:\s*(\S+)");
+            if (unknown.Success)
+            {
+                return $"whisper-cli rejected the argument '{unknown.Groups[1].Value}' and exited without " +
+                       "transcribing anything. Two things can cause this. Most often the flag came from " +
+                       "Custom Whisper Arguments and whisper.cpp simply has no such option — flags from the " +
+                       "Python 'openai-whisper' / 'faster-whisper' projects (for example --word_timestamps) " +
+                       "either do not exist here or are spelled differently, so remove it from that setting. " +
+                       "Otherwise the flag is one the plugin sends itself (such as --vad or --print-progress) " +
+                       "and this whisper-cli build is too old to know it, in which case update the binary. " +
+                       "Run 'whisper-cli --help' to see exactly which flags your build accepts.";
+            }
+
+            // Any other pre-flight complaint whisper-cli reports before doing work. Surface its own
+            // words rather than inventing a diagnosis for an error we have not seen before.
+            var reported = Regex.Match(text, @"^\s*error:.*$", RegexOptions.Multiline);
+            if (reported.Success)
+            {
+                return "whisper-cli exited without producing a subtitle file. It reported: " +
+                       reported.Value.Trim();
+            }
+
             return null;
         }
 
