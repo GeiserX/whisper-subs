@@ -53,7 +53,13 @@ Plugin.cs                          Entry point, IHasWebPages (embeds config UI)
 │   ├── ISubtitleProvider.cs       Provider interface (TranscribeAsync, DetectLanguageAsync, RequiresSpeechAlignmentOptIn)
 │   ├── WhisperProvider.cs         Local whisper.cpp integration (finds binary, runs process, reads SRT output)
 │   ├── RemoteWhisperProvider.cs   OpenAI-compatible HTTP worker (POSTs audio to /v1/audio/{transcriptions,translations})
+│   ├── VocalSeparationProvider.cs Runs bs_roformer-cli (BSRoformer.cpp) to isolate vocals before VAD/transcription; fail-soft
 │   └── SubtitleProviderFactory.cs Builds the local (or legacy single-remote) provider from config
+├── Setup/
+│   ├── WhisperSetupService.cs     Downloads/validates whisper-cli + models (this project's own CI-built release)
+│   ├── RoformerCatalog.cs         BSRoformer.cpp binary variant/asset-name catalog (upstream 3rd-party release, pinned version)
+│   ├── RoformerModelCatalog.cs    BSRoformer.cpp GGUF model (anvuew/BS-RoFormer) quantization catalog
+│   └── VocalSeparationSetupService.cs  Downloads/extracts/validates bs_roformer-cli + GGUF model (own progress/lock state)
 ├── ScheduledTasks/
 │   └── SubtitleGenerationTask.cs  Jellyfin scheduled task for auto-generation (drains priority lanes, then sweeps)
 ├── Web/
@@ -66,7 +72,7 @@ Plugin.cs                          Entry point, IHasWebPages (embeds config UI)
 ### Full Subtitles
 
 1. **Language detection** — `SubtitleManager.DetectAudioLanguagesAsync` calls FFprobe to read audio stream language tags. ISO 639-2/B codes are normalized to 639-1 (e.g., `spa` -> `es`).
-2. **Audio extraction** — FFmpeg extracts 16kHz mono PCM WAV from the media file to a temp path.
+2. **Audio extraction** — FFmpeg extracts 16kHz mono PCM WAV from the media file to a temp path. When `EnableVocalSeparation` is on, `SubtitleManager.ExtractAudioForTranscriptionAsync` instead extracts at 44.1kHz (BSRoformer.cpp's required input rate), runs `VocalSeparationProvider.SeparateAsync` (bs_roformer-cli) to isolate vocals from music/background noise, then downsamples the result back to 16kHz mono for whisper. Off by default; a missing/unconfigured binary or model, or any separation failure, falls back to the original unseparated audio instead of failing the job — this is a best-effort quality enhancement, not a hard dependency. Applies to full subtitles, translation and lyrics generation; not to the shorter forced-subtitle/language-detection probes.
 3. **Transcription** — `WhisperProvider.TranscribeAsync` invokes `whisper-cli` as a child process with the model and audio file. Output is an SRT file. When `EnableVad` is on (default), it also passes `--vad --vad-model <path>` and the `--vad-*` tuning flags (via `AppendVadTuning`) so whisper.cpp's native Silero VAD snaps cue starts to real speech onset at transcription time (the primary fix for gapless segments / issue #78). The VAD model is selectable (`VadModelVersion`: v5.1.2 default / v6.2.0 opt-in; issue #105) and lives in `whisper/vad/` (~885 KB); `WhisperSetupService.ResolveVadModelPath` resolves the version-aware path, and the flag is only added when the file exists.
 4. **Timing corrections** — Before saving, `SubtitleManager.ApplyTimingCorrectionsAsync` first runs `WhisperProvider.AlignSrtToSpeech` against FFmpeg `silencedetect` segments while both are in the extracted WAV's zero-based timebase, then `CompensateAudioOffset` shifts the result by the selected audio stream's effective `start_time`. The speech pass is the **fallback** for gapless segments — used when local native VAD (`EnableVad`) is off, or when `AlignSubtitlesToSpeechWithVad` explicitly layers it onto VAD/provider-owned timestamps. Every path explicitly maps the requested/default-or-first audio stream so extraction and offset probing agree. Resume probes container `format.start_time` and computes input `-ss = playback resume - effective compensation + stream start - format start`, then re-anchors the fresh tail once. Supports local and timestamped remote/worker output (full + translated), not forced.
 5. **Save** — The SRT content is written alongside the media as `<filename>.<lang>.generated.srt`.

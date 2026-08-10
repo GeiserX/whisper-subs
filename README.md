@@ -23,6 +23,7 @@
 - **Automatic Language Detection** -- Reads audio stream metadata to detect the spoken language and generate matching subtitles. Falls back to whisper's built-in language detection when tags are absent.
 - **Forced Subtitles** -- Detect and transcribe only foreign-language dialogue (e.g., French lines in an English movie) via VAD-based speech segmentation and per-chunk language detection.
 - **Lyrics Generation (Experimental)** -- Generate `.lrc` lyrics files for music libraries via whisper transcription. Jellyfin picks up `.lrc` files automatically.
+- **Vocal Separation (Optional)** -- Isolate vocals from background noise and music using [BSRoformer.cpp](https://github.com/chenmozhijin/BSRoformer.cpp) before transcription for improved accuracy on noisy content. Fails gracefully and falls back to original audio if unavailable.
 - **GPU Acceleration** -- Supports CUDA (NVIDIA), Vulkan (Intel / AMD / NVIDIA), and ROCm (AMD) for significantly faster transcription.
 - **Distributed Transcription (Worker Pool)** -- Optionally pool several machines, GPUs, a NAS, or a cloud endpoint and transcribe your backlog in parallel across all of them. Additive and off by default: with no workers configured, everything runs on this server exactly as before, and the plugin always prefers your free local workers before bursting to a paid one. See [`worker/`](worker/README.md) for a ready-to-run worker image.
 - **Priority Queue** -- Manual requests are queued with priority and processed before scheduled items. Queue persists across restarts.
@@ -41,8 +42,9 @@
 | **FFmpeg** | Bundled with Jellyfin (`/usr/lib/jellyfin-ffmpeg/ffmpeg`) or available in `PATH`. Used to extract audio from media files. |
 | **whisper.cpp** | The `whisper-cli` binary. **On Linux, the plugin can download this automatically** from the settings page. Otherwise, install manually -- see [Installing whisper.cpp](#installing-whispercpp). |
 | **Whisper Model** | A GGML model file. **The plugin can download models automatically** from the settings page, or download manually from [Hugging Face](https://huggingface.co/ggerganov/whisper.cpp). |
+| **BSRoformer.cpp** (Optional) | The `bs_roformer-cli` binary for vocal separation. The plugin can download a pinned build automatically on supported Linux, macOS, and Windows systems. Optional — vocal separation improves transcription on noisy audio but is not required. |
 
-> **Quick start (Linux):** After installing the plugin, go to **Dashboard** > **Plugins** > **WhisperSubs**. The **Whisper Engine** section lets you download both the binary and a model with one click each. The manual steps below are only needed for non-Linux platforms or custom setups.
+> **Quick start:** After installing the plugin, go to **Dashboard** > **Plugins** > **WhisperSubs**. On Linux, the **Whisper Engine** section lets you download the whisper-cli binary and model with one click each. On supported Linux, macOS, and Windows systems, the optional **Vocal Separation** section can download the bs_roformer-cli binary and model for improved transcription on noisy content. The manual steps below are only needed on unsupported platforms or for custom installations.
 
 ## Installation
 
@@ -476,6 +478,98 @@ whisper.cpp emits subtitle segments back-to-back with no gaps, so the next line 
 > These corrections run against the audio extracted on the Jellyfin server, so they apply to both local whisper-cli output and timestamped remote/worker output for full and translated subtitles. Remote/provider-owned timing requires the explicit **Also align VAD / worker timestamps to speech** opt-in. Forced subtitles are unaffected.
 >
 > With native VAD enabled (the default), the FFmpeg silence-detection pass is skipped -- unless **Also align VAD / worker timestamps to speech** is enabled, which layers it on top for content where lines still appear early.
+
+## Vocal Separation (Optional)
+
+[BSRoformer.cpp](https://github.com/chenmozhijin/BSRoformer.cpp) is an optional enhancement that isolates vocals from background music and noise **before** transcription. This improves accuracy when content has heavy background noise or music.
+
+**Vocal separation is fully optional and fail-soft:** if the binary or model is missing or encounters an error, the plugin falls back to transcribing the original unseparated audio. A failed or hung custom separator can add processing time before its timeout, but it does not prevent transcription.
+
+### Setup
+
+On supported platforms (Linux x64/arm64, macOS x64/Apple Silicon, and Windows x64), the plugin can download `bs_roformer-cli` automatically from the settings page:
+
+1. Go to **Dashboard** > **Plugins** > **WhisperSubs**.
+2. Scroll to the **Vocal Separation** section.
+3. In the binary panel, choose a variant and click **Download**.
+4. In the model panel, choose a quantization and click **Download**.
+5. Turn on **Separate vocals from background noise/music before transcription**.
+
+Linux/macOS archive extraction requires `tar` with xz support. Linux builds also require `libgomp1`; the Vulkan build additionally requires `libvulkan1` and a compatible Vulkan driver. Windows requires the Microsoft Visual C++ 2015–2022 Redistributable. GPU variants are experimental: setup verifies that the CLI launches, but cannot prove real GPU inference compatibility. A setup-time validation failure falls back to CPU; an inference-time failure safely falls back to the original audio for that transcription.
+
+For a custom build or path, use the advanced fields described below.
+
+### Configuration
+
+| Setting | Description |
+|---|---|
+| **Separate vocals from background noise/music before transcription** | Master switch. Gracefully falls back to the original audio if separation is unavailable or fails. |
+| **BSRoformer binary path** | *(Advanced)* Absolute path to a custom `bs_roformer-cli`. The downloader fills this automatically. |
+| **BSRoformer model path** | *(Advanced)* Absolute path to a compatible GGUF model. The downloader fills this automatically. |
+| **Chunk overlap** | How many times each chunk is blended with its neighbours. Leave empty (or use `0`) for the selected model's own default. |
+| **Chunk size** | Audio window in samples at 44.1 kHz. Leave empty for the selected model's own default. Larger values require more memory. |
+
+### Installing BSRoformer.cpp
+
+The plugin requires the `bs_roformer-cli` binary and a GGUF model for vocal separation.
+
+#### Pre-built Binary (Recommended)
+
+The settings-page downloader is preferred because it verifies the pinned archive and model hashes, repairs the upstream archive's native-library aliases, validates the CLI, and replaces an existing installation transactionally.
+
+For a custom pre-built installation:
+
+1. Download the pinned release for your platform from [BSRoformer.cpp releases](https://github.com/chenmozhijin/BSRoformer.cpp/releases/tag/v0.1.0).
+2. Extract the **whole archive** to a persistent directory; keep `bs_roformer-cli` beside all bundled GGML libraries. Create the missing major-version aliases expected by the native loader (for example, `libggml-base.so.0` pointing to `libggml-base.so.0.15.1` on Linux).
+3. Download a GGUF model:
+   ```bash
+   mkdir -p /opt/roformer/models
+   # Q8_0 (recommended) ~56 MB, high quality
+   wget -O /opt/roformer/models/BSRoformer-anvuew-Q8_0.gguf \
+     https://huggingface.co/chenmozhijin/BSRoformer-GGUF/resolve/df802a6773d25ba6ef785ff619daa3e510503168/anvuew/BS-RoFormer/BSRoformer-anvuew-Q8_0.gguf
+   echo 'f0b0093b29ec92aaf6a866973996953a6687df02e0cad68a3833672060c177af  /opt/roformer/models/BSRoformer-anvuew-Q8_0.gguf' | sha256sum -c -
+   ```
+4. Expand **Separation tuning (advanced)** and set **BSRoformer binary path** and **BSRoformer model path** to the container-visible files, then save.
+
+> **Unraid:** keep custom assets under a persistent host path such as `/mnt/user/appdata/roformer` and bind-mount it into the container. Do not rely on the host root filesystem or a container-only `/opt` directory; those can be lost on host reboot or container recreation/update.
+
+#### Build from Source (CPU only)
+
+```bash
+git clone --branch v0.1.0 https://github.com/chenmozhijin/BSRoformer.cpp.git
+git clone https://github.com/ggerganov/ggml.git
+cmake -S BSRoformer.cpp -B BSRoformer.cpp/build \
+  -DGGML_DIR="$PWD/ggml" -DGGML_CUDA=OFF -DBUILD_SHARED_LIBS=OFF
+cmake --build BSRoformer.cpp/build --config Release -j$(nproc)
+# Binary: BSRoformer.cpp/build/bs_roformer-cli
+```
+
+#### Build with GPU Acceleration
+
+See [BSRoformer.cpp documentation](https://github.com/chenmozhijin/BSRoformer.cpp) for CUDA, ROCm, and Vulkan builds.
+
+### Container Setup
+
+If Jellyfin runs in Docker, install the runtime/extraction dependencies before using the automatic downloader:
+
+```yaml
+# docker-compose.yml
+services:
+  jellyfin:
+    image: jellyfin/jellyfin
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        dpkg -s libgomp1 xz-utils >/dev/null 2>&1 || \
+          (apt-get update -qq && apt-get install -y -qq --no-install-recommends libgomp1 xz-utils && \
+           rm -rf /var/lib/apt/lists/*)
+        exec /jellyfin/jellyfin
+```
+
+For a custom installation, also bind-mount its directory and use the container-internal paths in the advanced fields. Add `libvulkan1` and your GPU device/driver configuration when selecting Vulkan.
+
+The BSRoformer.cpp code is MIT-licensed. The selected anvuew BS-RoFormer model is distributed under GPL-3.0; the plugin downloads it from the upstream GGUF repository and does not bundle it.
 
 ## Usage
 

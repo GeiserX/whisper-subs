@@ -122,10 +122,57 @@ public class ConfigurationTests
         Assert.NotNull(config.EnabledLibraries);
         Assert.Empty(config.EnabledLibraries);
 
+        Assert.False(config.EnableVocalSeparation);
+        Assert.Equal("", config.VocalSeparationBinaryPath);
+        Assert.Equal("", config.VocalSeparationModelPath);
+        Assert.Equal("", config.VocalSeparationBinaryVariant);
+        Assert.Equal("", config.VocalSeparationModelQuant);
+        Assert.Equal(0, config.VocalSeparationOverlap);
+        Assert.Equal(-1, config.VocalSeparationChunkSize);
+
         // Issue #83: "generate original-language subtitles" defaults ON so behavior is unchanged
         // for existing users; image subs do NOT count as present by default (still generate text).
         Assert.True(config.GenerateOriginalLanguageSubtitles);
         Assert.False(config.CountImageSubtitlesAsPresent);
+    }
+
+    [Fact]
+    public void VocalSeparation_AbsentFromJson_RemainsDisabledWithSentinels()
+    {
+        var config = JsonSerializer.Deserialize<PluginConfiguration>("{}");
+
+        Assert.NotNull(config);
+        Assert.False(config!.EnableVocalSeparation);
+        Assert.Equal("", config.VocalSeparationBinaryPath);
+        Assert.Equal("", config.VocalSeparationModelPath);
+        Assert.Equal(0, config.VocalSeparationOverlap);
+        Assert.Equal(-1, config.VocalSeparationChunkSize);
+    }
+
+    [Fact]
+    public void VocalSeparation_RoundTripsThroughJson()
+    {
+        var original = new PluginConfiguration
+        {
+            EnableVocalSeparation = true,
+            VocalSeparationBinaryPath = "/custom/bs_roformer-cli",
+            VocalSeparationModelPath = "/custom/model.gguf",
+            VocalSeparationBinaryVariant = "vulkan",
+            VocalSeparationModelQuant = "q8_0",
+            VocalSeparationOverlap = 3,
+            VocalSeparationChunkSize = 960000
+        };
+
+        var restored = JsonSerializer.Deserialize<PluginConfiguration>(JsonSerializer.Serialize(original));
+
+        Assert.NotNull(restored);
+        Assert.True(restored!.EnableVocalSeparation);
+        Assert.Equal(original.VocalSeparationBinaryPath, restored.VocalSeparationBinaryPath);
+        Assert.Equal(original.VocalSeparationModelPath, restored.VocalSeparationModelPath);
+        Assert.Equal("vulkan", restored.VocalSeparationBinaryVariant);
+        Assert.Equal("q8_0", restored.VocalSeparationModelQuant);
+        Assert.Equal(3, restored.VocalSeparationOverlap);
+        Assert.Equal(960000, restored.VocalSeparationChunkSize);
     }
 
     [Fact]

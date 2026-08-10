@@ -28,6 +28,16 @@ public class TranscriptionTimeoutTests
     }
 
     [Fact]
+    public void Compute_CustomBytesPerSecond_ScalesWithDifferentFormat()
+    {
+        // Vocal-separation input is 44.1 kHz mono s16le = 88200 bytes/audio-second, not the plugin's
+        // usual 16 kHz (32000). 600s of audio at that rate × factor 6 = 3600s, same as the 16 kHz case
+        // computed from the equivalent duration — proving the custom rate is honored, not the default.
+        var bytesAt44100 = (long)(600 * 88200.0);
+        Assert.Equal(3600, TranscriptionTimeout.Compute(bytesAt44100, 6.0, 60, 12, 88200.0).TotalSeconds, 0);
+    }
+
+    [Fact]
     public void Compute_ClampsToCap_ForVeryLongAudio()
     {
         // A 2h15m film × 6 = 48600s → capped at 12h = 43200s (bounded, but never guillotines a real run).
