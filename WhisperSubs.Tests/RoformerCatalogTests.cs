@@ -1,6 +1,10 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
+using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.Extensions.Logging.Abstractions;
 using WhisperSubs.Providers;
 using WhisperSubs.Setup;
@@ -51,6 +55,8 @@ public class RoformerCatalogTests
     public void GetAssetName_UnsupportedCombination_Throws()
     {
         Assert.Throws<NotSupportedException>(() => RoformerCatalog.GetAssetName("linux-arm64", "cuda12"));
+        Assert.Throws<NotSupportedException>(() => RoformerCatalog.GetAssetSha256("linux-arm64", "cuda12"));
+        Assert.Throws<NotSupportedException>(() => RoformerCatalog.GetAssetSizeBytes("linux-arm64", "cuda12"));
     }
 
     [Theory]
@@ -174,8 +180,14 @@ public class RoformerModelCatalogTests
         Assert.Matches("^[0-9a-f]{40}$", RoformerModelCatalog.HuggingFaceRevision);
         Assert.All(RoformerModelCatalog.Models, model =>
         {
+            Assert.False(string.IsNullOrWhiteSpace(model.Key));
+            Assert.False(string.IsNullOrWhiteSpace(model.FileName));
+            Assert.False(string.IsNullOrWhiteSpace(model.DisplayName));
+            Assert.True(model.SizeMB > 0);
             Assert.True(model.SizeBytes > 0);
             Assert.Matches("^[0-9a-f]{64}$", model.Sha256);
+            Assert.False(string.IsNullOrWhiteSpace(model.Description));
+            _ = model.IsRecommended;
         });
     }
 }
@@ -184,6 +196,34 @@ public class RoformerSetupSafetyTests
 {
     private static VocalSeparationSetupService CreateService(string dataPath)
         => new(new NullLogger<VocalSeparationSetupService>(), dataPath);
+
+    [Fact]
+    public void SetupStatus_StoresEveryReportedValue()
+    {
+        var gpu = new GpuInfo { HasNvidia = true };
+        var status = new RoformerSetupStatus
+        {
+            BinaryFound = true,
+            BinaryPath = "/bin/roformer",
+            ModelFound = true,
+            ModelPath = "/models/model.gguf",
+            Platform = "linux-x64",
+            SetupComplete = true,
+            InstalledVariant = "cuda12",
+            InstalledModelQuant = "q8_0",
+            Gpu = gpu
+        };
+
+        Assert.True(status.BinaryFound);
+        Assert.Equal("/bin/roformer", status.BinaryPath);
+        Assert.True(status.ModelFound);
+        Assert.Equal("/models/model.gguf", status.ModelPath);
+        Assert.Equal("linux-x64", status.Platform);
+        Assert.True(status.SetupComplete);
+        Assert.Equal("cuda12", status.InstalledVariant);
+        Assert.Equal("q8_0", status.InstalledModelQuant);
+        Assert.Same(gpu, status.Gpu);
+    }
 
     [Theory]
     [InlineData(-1, 0)]
@@ -224,6 +264,259 @@ public class RoformerSetupSafetyTests
     public void GetLibraryPathVariable_IsPlatformSpecific(string platform, string? expected)
     {
         Assert.Equal(expected, RoformerRuntime.GetLibraryPathVariable(platform));
+    }
+
+    [Fact]
+    public void ConfigureLibraryPath_AddsTheBinaryDirectoryAndPreservesExistingEntries()
+    {
+        var startInfo = new ProcessStartInfo();
+        var platform = RuntimeInformation.IsOSPlatform(OSPlatform.Linux)
+            ? "linux-current"
+            : RuntimeInformation.IsOSPlatform(OSPlatform.OSX)
+                ? "osx-current"
+                : "other";
+        var variable = RoformerRuntime.GetLibraryPathVariable(platform);
+        var binaryPath = Path.Combine(Path.GetTempPath(), "roformer-runtime", "bs_roformer-cli");
+
+        RoformerRuntime.ConfigureLibraryPath(startInfo, binaryPath);
+
+        if (variable == null)
+        {
+            Assert.DoesNotContain("LD_LIBRARY_PATH", startInfo.Environment.Keys);
+            Assert.DoesNotContain("DYLD_LIBRARY_PATH", startInfo.Environment.Keys);
+            return;
+        }
+
+        var configured = startInfo.Environment[variable];
+        Assert.NotNull(configured);
+        Assert.StartsWith(Path.GetDirectoryName(binaryPath)!, configured, StringComparison.Ordinal);
+        var inherited = Environment.GetEnvironmentVariable(variable);
+        if (!string.IsNullOrEmpty(inherited))
+        {
+            Assert.EndsWith(Path.PathSeparator + inherited, configured, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void ProviderConfiguration_RequiresExistingBinaryAndModel()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "roformer-provider-config-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var binary = Path.Combine(root, "bs_roformer-cli");
+        var model = Path.Combine(root, "model.gguf");
+        try
+        {
+            var provider = new VocalSeparationProvider(
+                NullLogger<VocalSeparationProvider>.Instance,
+                binary,
+                model,
+                overlap: 80,
+                chunkSize: -1);
+            Assert.False(provider.IsConfigured);
+
+            File.WriteAllText(binary, "binary");
+            File.WriteAllText(model, "model");
+            Assert.True(provider.IsConfigured);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task SeparateAsync_FakeCliProducesOutputAndReceivesTuningArguments()
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) return;
+
+        var root = Path.Combine(Path.GetTempPath(), "roformer-provider-run-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var binary = CreateShellScript(root,
+            "printf '%s\\n' \"$@\" > \"${3}.args\"\nprintf output > \"$3\"\n");
+        var model = Path.Combine(root, "model.gguf");
+        var input = Path.Combine(root, "input.wav");
+        var output = Path.Combine(root, "output.wav");
+        File.WriteAllText(model, "model");
+        File.WriteAllText(input, "input");
+        try
+        {
+            var provider = new VocalSeparationProvider(
+                NullLogger<VocalSeparationProvider>.Instance,
+                binary,
+                model,
+                overlap: 8,
+                chunkSize: 123,
+                minTimeoutSeconds: 1);
+
+            Assert.True(await provider.SeparateAsync(input, output, CancellationToken.None));
+            Assert.Equal("output", File.ReadAllText(output));
+            var arguments = File.ReadAllLines(output + ".args");
+            Assert.Equal(new[] { model, input, output, "--overlap", "8", "--chunk-size", "123" }, arguments);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task SeparateAsync_CancellationTerminatesTheFakeCli()
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) return;
+
+        var root = Path.Combine(Path.GetTempPath(), "roformer-provider-cancel-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var binary = CreateShellScript(root, "sleep 30\n");
+        var model = Path.Combine(root, "model.gguf");
+        var input = Path.Combine(root, "input.wav");
+        var output = Path.Combine(root, "output.wav");
+        File.WriteAllText(model, "model");
+        File.WriteAllText(input, "input");
+        try
+        {
+            var provider = new VocalSeparationProvider(
+                NullLogger<VocalSeparationProvider>.Instance,
+                binary,
+                model,
+                overlap: 0,
+                chunkSize: -1);
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                provider.SeparateAsync(input, output, cancellation.Token));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static string CreateShellScript(string directory, string body)
+    {
+        var path = Path.Combine(directory, "fake-roformer.sh");
+        File.WriteAllText(path, "#!/bin/sh\n" + body);
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(path,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+                UnixFileMode.GroupRead | UnixFileMode.GroupExecute |
+                UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+        }
+        return path;
+    }
+
+    [Fact]
+    public async Task DownloadProgressLock_ReleasesAfterCatalogFailure()
+    {
+        var dataPath = Path.Combine(Path.GetTempPath(), "roformer-progress-" + Guid.NewGuid().ToString("N"));
+        var service = CreateService(dataPath);
+        Assert.True(VocalSeparationSetupService.TryAcquire("test-operation", "Starting"));
+        Assert.False(VocalSeparationSetupService.TryAcquire("second", "Busy"));
+        var running = VocalSeparationSetupService.CurrentProgress;
+        Assert.True(running.IsRunning);
+        Assert.Equal("test-operation", running.Operation);
+        Assert.Equal("Starting", running.Message);
+        Assert.Equal(0, running.Percent);
+        Assert.Null(running.Error);
+
+        await Assert.ThrowsAsync<NotSupportedException>(() =>
+            service.DownloadBinaryAsync("unsupported", CancellationToken.None));
+
+        var finished = VocalSeparationSetupService.CurrentProgress;
+        Assert.False(finished.IsRunning);
+        Assert.Contains("No BSRoformer.cpp release asset", finished.Error);
+        Assert.Contains("Error downloading bs_roformer-cli", finished.Message);
+    }
+
+    [Fact]
+    public void FindInstalledBinary_RecursesWithinManagedBinDirectory()
+    {
+        var dataPath = Path.Combine(Path.GetTempPath(), "roformer-find-" + Guid.NewGuid().ToString("N"));
+        var service = CreateService(dataPath);
+        try
+        {
+            Assert.Null(service.FindInstalledBinary());
+            var nested = Path.Combine(service.BinDirectory, "archive", "bin");
+            Directory.CreateDirectory(nested);
+            var executable = Path.Combine(nested,
+                RoformerCatalog.ExecutableFileName(VocalSeparationSetupService.GetPlatformIdentifier()));
+            File.WriteAllText(executable, "binary");
+
+            Assert.Equal(executable, service.FindInstalledBinary());
+            Assert.Equal(Path.Combine(dataPath, "vocal-separation", "models"), service.ModelsDirectory);
+        }
+        finally
+        {
+            if (Directory.Exists(dataPath)) Directory.Delete(dataPath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ValidateBinary_ReportsSuccessLibraryCrashGenericAndStartFailures()
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) return;
+
+        var root = Path.Combine(Path.GetTempPath(), "roformer-validate-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var service = CreateService(root);
+        try
+        {
+            var success = CreateShellScript(root, "exit 0\n");
+            Assert.Null(service.ValidateBinary(success, "cpu"));
+
+            var missingLibrary = CreateShellScript(root,
+                "printf 'error while loading shared libraries: libmissing.so.1: not found\\n' >&2\nexit 127\n");
+            var missingError = service.ValidateBinary(missingLibrary, "cpu");
+            Assert.Contains("Missing libmissing.so.1", missingError);
+            Assert.Contains("Install it", missingError);
+
+            var crash = CreateShellScript(root, "exit 134\n");
+            Assert.Contains("crashed on launch (exit 134)", service.ValidateBinary(crash, "vulkan"));
+
+            var generic = CreateShellScript(root, "printf 'bad option' >&2\nexit 9\n");
+            Assert.Contains("exited with code 9: bad option", service.ValidateBinary(generic, "cpu"));
+
+            var startFailure = service.ValidateBinary(Path.Combine(root, "missing-cli"), "cpu");
+            Assert.Contains("Could not launch bs_roformer-cli", startFailure);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void CompletePromotions_RemovePreviousBackupsAfterCommit()
+    {
+        var dataPath = Path.Combine(Path.GetTempPath(), "roformer-complete-" + Guid.NewGuid().ToString("N"));
+        var service = CreateService(dataPath);
+        var staging = Path.Combine(service.RootDirectory, "bin.staging-test");
+        Directory.CreateDirectory(service.BinDirectory);
+        Directory.CreateDirectory(staging);
+        File.WriteAllText(Path.Combine(service.BinDirectory, "old"), "old");
+        File.WriteAllText(Path.Combine(staging, "new"), "new");
+        var model = Path.Combine(dataPath, "model.gguf");
+        var incomingModel = Path.Combine(dataPath, "model.downloading");
+        File.WriteAllText(model, "old-model");
+        File.WriteAllText(incomingModel, "new-model");
+        try
+        {
+            var binaryBackup = service.PromoteStagedDirectory(staging);
+            var modelBackup = VocalSeparationSetupService.PromoteDownloadedFile(incomingModel, model);
+            Assert.True(Directory.Exists(binaryBackup));
+            Assert.True(File.Exists(modelBackup));
+
+            service.CompleteDirectoryPromotion(binaryBackup);
+            VocalSeparationSetupService.CompleteDownloadedFilePromotion(modelBackup);
+
+            Assert.False(Directory.Exists(binaryBackup));
+            Assert.False(File.Exists(modelBackup));
+            Assert.Equal("new-model", File.ReadAllText(model));
+        }
+        finally
+        {
+            if (Directory.Exists(dataPath)) Directory.Delete(dataPath, recursive: true);
+        }
     }
 
     [Fact]

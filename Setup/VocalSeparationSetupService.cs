@@ -577,7 +577,7 @@ namespace WhisperSubs.Setup
         /// user-friendly error message on failure (e.g. missing shared libraries).
         /// </summary>
         [ExcludeFromCodeCoverage(Justification = "Spawns binary process for validation")]
-        private string? ValidateBinary(string binaryPath, string variant)
+        internal string? ValidateBinary(string binaryPath, string variant)
         {
             try
             {
@@ -731,7 +731,7 @@ namespace WhisperSubs.Setup
             return hadPreviousInstall ? backupDirectory : null;
         }
 
-        private void CompleteDirectoryPromotion(string? backupDirectory)
+        internal void CompleteDirectoryPromotion(string? backupDirectory)
         {
             if (backupDirectory != null && Directory.Exists(backupDirectory))
             {
