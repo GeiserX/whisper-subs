@@ -44,7 +44,7 @@
 | **Whisper Model** | A GGML model file. **The plugin can download models automatically** from the settings page, or download manually from [Hugging Face](https://huggingface.co/ggerganov/whisper.cpp). |
 | **BSRoformer.cpp** (Optional) | The `bs_roformer-cli` binary for vocal separation. The plugin can download a pinned build automatically on supported Linux, macOS, and Windows systems. Optional — vocal separation improves transcription on noisy audio but is not required. |
 
-> **Quick start (Linux):** After installing the plugin, go to **Dashboard** > **Plugins** > **WhisperSubs**. The **Whisper Engine** section lets you download the whisper-cli binary and model with one click each. The **Vocal Separation** section (optional) lets you download the bs_roformer-cli binary and model for improved transcription on noisy content. The manual steps below are only needed for non-Linux platforms or custom setups.
+> **Quick start:** After installing the plugin, go to **Dashboard** > **Plugins** > **WhisperSubs**. On Linux, the **Whisper Engine** section lets you download the whisper-cli binary and model with one click each. On supported Linux, macOS, and Windows systems, the optional **Vocal Separation** section can download the bs_roformer-cli binary and model for improved transcription on noisy content. The manual steps below are only needed on unsupported platforms or for custom installations.
 
 ## Installation
 

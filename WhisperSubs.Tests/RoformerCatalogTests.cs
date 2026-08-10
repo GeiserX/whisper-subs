@@ -60,19 +60,23 @@ public class RoformerCatalogTests
     }
 
     [Theory]
-    [InlineData("linux-x64", "cpu")]
-    [InlineData("linux-x64", "vulkan")]
-    [InlineData("linux-x64", "cuda12")]
-    [InlineData("linux-arm64", "cpu")]
-    [InlineData("osx-arm64", "cpu")]
-    [InlineData("osx-x64", "cpu")]
-    [InlineData("win-x64", "cpu")]
-    [InlineData("win-x64", "vulkan")]
-    [InlineData("win-x64", "cuda12")]
-    public void GetAssetSha256_ReturnsPinnedDigest(string platform, string variant)
+    [InlineData("linux-x64", "cpu", "bc0f20237b9ed263582ebd0844dfc7dbb61309a67c31f4a8d7ba156e21292c77", 640204)]
+    [InlineData("linux-x64", "vulkan", "bee2e9b5dd322b8d4fe1081583ce41709c2c1341550bbb557073c1216fef3e85", 5900692)]
+    [InlineData("linux-x64", "cuda12", "448289d5162062ebd2fb7af3c1a1d88297438aef15b0e8369f6b101e82b4983c", 237738556)]
+    [InlineData("linux-arm64", "cpu", "f77537a1b990d1d48036bc2c8ce8c354530ba2476903ec6177ed0d1fd60079ea", 583476)]
+    [InlineData("osx-arm64", "cpu", "d0fc45181d31dcceea99c3828378f4a7376e52e7fdbc43e29a07e806785b4c9a", 636996)]
+    [InlineData("osx-x64", "cpu", "9672c9c10128df822395fb7ef2a1a52f5ed7becbae2af349351a38a1af333379", 780976)]
+    [InlineData("win-x64", "cpu", "e002811d56605bce6a51c275cf8f9ba447a3707771289ea6fbcca7f4d3e9ba1f", 671031)]
+    [InlineData("win-x64", "vulkan", "a47653911eb17f68e65bce15aed6c4f1bd277a5fbd48293c4e54f0b005b869a7", 22779026)]
+    [InlineData("win-x64", "cuda12", "7b8b93bc180e16f15124e4b739b0a9e9d038669e21fdf975f63823c02127bd70", 140056366)]
+    public void GetAssetSha256_ReturnsPinnedDigest(
+        string platform,
+        string variant,
+        string expectedSha256,
+        long expectedSizeBytes)
     {
-        Assert.Matches("^[0-9a-f]{64}$", RoformerCatalog.GetAssetSha256(platform, variant));
-        Assert.True(RoformerCatalog.GetAssetSizeBytes(platform, variant) > 0);
+        Assert.Equal(expectedSha256, RoformerCatalog.GetAssetSha256(platform, variant));
+        Assert.Equal(expectedSizeBytes, RoformerCatalog.GetAssetSizeBytes(platform, variant));
     }
 
     [Fact]
@@ -177,7 +181,29 @@ public class RoformerModelCatalogTests
     [Fact]
     public void Models_HavePinnedRevisionSizeAndSha256()
     {
-        Assert.Matches("^[0-9a-f]{40}$", RoformerModelCatalog.HuggingFaceRevision);
+        Assert.Equal("df802a6773d25ba6ef785ff619daa3e510503168", RoformerModelCatalog.HuggingFaceRevision);
+        Assert.Collection(
+            RoformerModelCatalog.Models,
+            model => AssertModelMetadata(
+                model,
+                "BSRoformer-anvuew-Q4_0.gguf",
+                30370912,
+                "7b7a7e62ea021170621fe7373fc8f0086ce8b33681c115b1e93f905b4a15eac9"),
+            model => AssertModelMetadata(
+                model,
+                "BSRoformer-anvuew-Q5_1.gguf",
+                39855712,
+                "6fd0b2a9fc881649a67983f8dc0764f218ec3f8db1a1db2a034da25de764f5c2"),
+            model => AssertModelMetadata(
+                model,
+                "BSRoformer-anvuew-Q8_0.gguf",
+                55663712,
+                "f0b0093b29ec92aaf6a866973996953a6687df02e0cad68a3833672060c177af"),
+            model => AssertModelMetadata(
+                model,
+                "BSRoformer-anvuew-FP16.gguf",
+                102430304,
+                "bb25b9fded9780ca19bbc86db17669fb975b142b5e280d850806959130bcd19f"));
         Assert.All(RoformerModelCatalog.Models, model =>
         {
             Assert.False(string.IsNullOrWhiteSpace(model.Key));
@@ -189,6 +215,17 @@ public class RoformerModelCatalogTests
             Assert.False(string.IsNullOrWhiteSpace(model.Description));
             _ = model.IsRecommended;
         });
+    }
+
+    private static void AssertModelMetadata(
+        RoformerModelOption model,
+        string expectedFileName,
+        long expectedSizeBytes,
+        string expectedSha256)
+    {
+        Assert.Equal(expectedFileName, model.FileName);
+        Assert.Equal(expectedSizeBytes, model.SizeBytes);
+        Assert.Equal(expectedSha256, model.Sha256);
     }
 }
 
