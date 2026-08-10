@@ -1391,7 +1391,8 @@ namespace WhisperSubs.Api
         }
 
         private BaseItemKind[] GetBaseItemKinds(string input)
-        {            if (string.IsNullOrWhiteSpace(input))
+        {
+            if (string.IsNullOrWhiteSpace(input))
             {
                 return Array.Empty<BaseItemKind>();
             }
@@ -1476,4 +1477,3 @@ namespace WhisperSubs.Api
         public string? Model { get; set; }
     }
 }
-

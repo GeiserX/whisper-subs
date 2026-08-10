@@ -95,10 +95,10 @@
                         <span id="roformerBinaryText" style="opacity:0.8; margin-left:0.3em; font-size:0.9em;"></span>
                     </div>
                     <div style="display:flex; gap:0.5em; align-items:flex-end; flex-wrap:wrap;">
-                        <select is="emby-select" id="roformerBinaryVariant" style="flex:1; min-width:220px; margin:0;">
+                        <select is="emby-select" id="roformerBinaryVariant" aria-label="BSRoformer binary variant" style="flex:1; min-width:220px; margin:0;">
                             <option value="cpu">CPU Only</option>
                         </select>
-                        <button is="emby-button" id="btnRoformerDownloadBinary" class="raised">
+                        <button is="emby-button" id="btnRoformerDownloadBinary" class="raised" aria-label="Download BSRoformer binary">
                             <span>Download</span>
                         </button>
                     </div>
@@ -112,9 +112,9 @@
                         <span id="roformerModelText" style="opacity:0.8; margin-left:0.3em; font-size:0.9em;"></span>
                     </div>
                     <div style="display:flex; gap:0.5em; align-items:flex-end; flex-wrap:wrap;">
-                        <select is="emby-select" id="roformerModelSelect" style="flex:1; min-width:250px; margin:0;">
+                        <select is="emby-select" id="roformerModelSelect" aria-label="Vocal separation model" style="flex:1; min-width:250px; margin:0;">
                         </select>
-                        <button is="emby-button" id="btnRoformerDownloadModel" class="raised">
+                        <button is="emby-button" id="btnRoformerDownloadModel" class="raised" aria-label="Download vocal separation model">
                             <span>Download</span>
                         </button>
                     </div>
@@ -124,7 +124,7 @@
 
                 <div id="roformerProgressContainer" style="display:none; margin-bottom:1.5em;">
                     <div style="background:rgba(0,0,0,0.3); border-radius:4px; overflow:hidden; height:24px;">
-                        <div id="roformerProgressBar" style="background:#52B54B; height:100%; width:0%; transition:width 0.3s ease;"></div>
+                        <div id="roformerProgressBar" role="progressbar" aria-label="Vocal separation download progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" style="background:#52B54B; height:100%; width:0%; transition:width 0.3s ease;"></div>
                     </div>
                     <div id="roformerProgressText" class="fieldDescription" style="margin-top:0.5em;"></div>
                 </div>
@@ -133,11 +133,21 @@
                     <summary style="cursor:pointer; font-weight:600; padding:0.4em 0;">Separation tuning (advanced)</summary>
                     <div style="margin-top:0.75em;">
                         <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfocused" for="txtVocalSeparationBinaryPath">BSRoformer binary path</label>
+                            <input type="text" id="txtVocalSeparationBinaryPath" name="VocalSeparationBinaryPath" class="emby-input" />
+                            <div class="fieldDescription">Absolute path visible to Jellyfin. The Download button fills this automatically; set it only for a custom installation.</div>
+                        </div>
+                        <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfocused" for="txtVocalSeparationModelPath">BSRoformer model path</label>
+                            <input type="text" id="txtVocalSeparationModelPath" name="VocalSeparationModelPath" class="emby-input" />
+                            <div class="fieldDescription">Absolute path to a compatible GGUF model. The Download button fills this automatically.</div>
+                        </div>
+                        <div class="inputContainer">
                             <label class="inputLabel inputLabelUnfocused" for="numVocalSeparationOverlap">Chunk overlap</label>
                             <input type="number" id="numVocalSeparationOverlap" name="VocalSeparationOverlap" class="emby-input" min="1" max="8" step="1" placeholder="model default" />
                             <div class="fieldDescription">
                                 BSRoformer.cpp <code>--overlap</code>: how many times each chunk is re-processed and blended with its neighbours to smooth boundaries.
-                                <strong>Empty/0 = model default (typically 2).</strong>
+                                <strong>Empty/0 = model default.</strong>
                                 <strong>1 = minimum overlap</strong> — faster than the default, minimal quality loss for dialogue.
                                 Higher values (2–4) reduce audible seams in music but multiply processing time proportionally.
                             </div>
@@ -147,7 +157,7 @@
                             <input type="number" id="numVocalSeparationChunkSize" name="VocalSeparationChunkSize" class="emby-input" min="0" step="1" placeholder="model default" />
                             <div class="fieldDescription">
                                 BSRoformer.cpp <code>--chunk-size</code>: audio window fed to the model in one pass, in samples at 44.1 kHz.
-                                <strong>Empty = model default (typically 352800 ≈ 8 s).</strong>
+                                <strong>Empty = model default.</strong>
                                 E.g. 2822400 (≈ 64 s) works well on 8 GB VRAM with Q8_0 model; 176400 (4 s) reduces VRAM but increases passes.
                                 Larger values reduce pass count but require proportionally more VRAM.
                             </div>
@@ -1391,6 +1401,8 @@
                     WhisperSubsConfig.ajaxGet(ApiClient.getUrl('Plugins/WhisperSubs/Setup/VocalSeparation/Status'))
                         .then(function (s) {
                             WhisperSubsConfig._roformerStatus = s;
+                            if (s.BinaryPath) document.querySelector('#txtVocalSeparationBinaryPath').value = s.BinaryPath;
+                            if (s.ModelPath) document.querySelector('#txtVocalSeparationModelPath').value = s.ModelPath;
                             WhisperSubsConfig.renderRoformerBinaryStatus(s);
                             WhisperSubsConfig.loadRoformerVariants(s.Gpu, s.InstalledVariant);
                             WhisperSubsConfig.ajaxGet(ApiClient.getUrl('Plugins/WhisperSubs/Setup/VocalSeparation/AvailableModels'))
@@ -1399,6 +1411,7 @@
                                     WhisperSubsConfig.renderRoformerModelStatus(s);
                                 })
                                 .catch(function () { WhisperSubsConfig._roformerCatalogModels = []; });
+                            WhisperSubsConfig.resumeRoformerProgressPolling();
                         })
                         .catch(function (err) {
                             console.error('WhisperSubs: vocal-separation status check failed', err);
@@ -1438,7 +1451,7 @@
                                 return;
                             }
                             select.disabled = false;
-                            btn.disabled = false;
+                            btn.disabled = WhisperSubsConfig._roformerDownloadRunning === true;
                             variants.forEach(function (v) {
                                 var opt = document.createElement('option');
                                 opt.value = v.Id;
@@ -1546,7 +1559,11 @@
                     var btn = document.querySelector('#btnRoformerDownloadModel');
                     var hint = document.querySelector('#roformerModelHint');
                     var status = WhisperSubsConfig._roformerStatus;
-                    if (!status || !status.BinaryFound) {
+                    if (WhisperSubsConfig._roformerDownloadRunning === true) {
+                        btn.disabled = true;
+                        hint.textContent = 'A vocal-separation download is in progress.';
+                        hint.style.color = '';
+                    } else if (!status || !status.BinaryFound) {
                         btn.disabled = true;
                         hint.textContent = 'Download the bs_roformer-cli binary first.';
                         hint.style.color = '#CC7B19';
@@ -1560,6 +1577,7 @@
                 startRoformerDownload: function (type) {
                     var binBtn = document.querySelector('#btnRoformerDownloadBinary');
                     var modBtn = document.querySelector('#btnRoformerDownloadModel');
+                    WhisperSubsConfig._roformerDownloadRunning = true;
                     binBtn.disabled = true;
                     modBtn.disabled = true;
 
@@ -1600,6 +1618,9 @@
                     var text = document.querySelector('#roformerProgressText');
                     var container = document.querySelector('#roformerProgressContainer');
                     container.style.display = '';
+                    WhisperSubsConfig._roformerDownloadRunning = true;
+                    document.querySelector('#btnRoformerDownloadBinary').disabled = true;
+                    document.querySelector('#btnRoformerDownloadModel').disabled = true;
 
                     if (WhisperSubsConfig._roformerProgressPollTimer) {
                         clearInterval(WhisperSubsConfig._roformerProgressPollTimer);
@@ -1609,6 +1630,7 @@
                         WhisperSubsConfig.ajaxGet(ApiClient.getUrl('Plugins/WhisperSubs/Setup/VocalSeparation/Progress'))
                             .then(function (p) {
                                 bar.style.width = Math.min(p.Percent, 100) + '%';
+                                bar.setAttribute('aria-valuenow', Math.min(p.Percent, 100));
                                 text.textContent = p.Message || '';
 
                                 if (p.Error) {
@@ -1636,9 +1658,31 @@
                     }
                 },
 
+                resumeRoformerProgressPolling: function () {
+                    WhisperSubsConfig.ajaxGet(ApiClient.getUrl('Plugins/WhisperSubs/Setup/VocalSeparation/Progress'))
+                        .then(function (p) {
+                            if (!p || !p.IsRunning) {
+                                if (WhisperSubsConfig._roformerDownloadRunning === true) {
+                                    WhisperSubsConfig.resetRoformerButtons();
+                                }
+                                return;
+                            }
+                            var bar = document.querySelector('#roformerProgressBar');
+                            var text = document.querySelector('#roformerProgressText');
+                            document.querySelector('#roformerProgressContainer').style.display = '';
+                            bar.style.width = Math.min(p.Percent, 100) + '%';
+                            bar.setAttribute('aria-valuenow', Math.min(p.Percent, 100));
+                            text.textContent = p.Message || '';
+                            text.style.color = '';
+                            WhisperSubsConfig.startRoformerProgressPolling();
+                        })
+                        .catch(function () { /* status panel remains usable if progress is unavailable */ });
+                },
+
                 resetRoformerButtons: function () {
                     var binBtn = document.querySelector('#btnRoformerDownloadBinary');
                     var modBtn = document.querySelector('#btnRoformerDownloadModel');
+                    WhisperSubsConfig._roformerDownloadRunning = false;
                     if (binBtn) { binBtn.disabled = false; binBtn.innerHTML = '<span>Download</span>'; }
                     if (modBtn) { modBtn.disabled = false; modBtn.innerHTML = '<span>Download</span>'; }
                     WhisperSubsConfig.updateRoformerModelDownloadState();
@@ -1873,6 +1917,8 @@
                             page.querySelector('#numVadSamplesOverlap').value = (config.VadSamplesOverlap >= 0) ? config.VadSamplesOverlap : '';
                             page.querySelector('#chkCompensateAudioOffset').checked = config.CompensateAudioOffset !== false;
                             page.querySelector('#chkEnableVocalSeparation').checked = config.EnableVocalSeparation === true;
+                            page.querySelector('#txtVocalSeparationBinaryPath').value = config.VocalSeparationBinaryPath || '';
+                            page.querySelector('#txtVocalSeparationModelPath').value = config.VocalSeparationModelPath || '';
                             page.querySelector('#numVocalSeparationOverlap').value = (config.VocalSeparationOverlap > 0) ? config.VocalSeparationOverlap : '';
                             page.querySelector('#numVocalSeparationChunkSize').value = (config.VocalSeparationChunkSize > 0) ? config.VocalSeparationChunkSize : '';
                             // ── Requests & priority (#112) ──
@@ -1943,6 +1989,8 @@
                         config.VadSamplesOverlap = vadNumField('#numVadSamplesOverlap', false);
                         config.CompensateAudioOffset = page.querySelector('#chkCompensateAudioOffset').checked;
                         config.EnableVocalSeparation = page.querySelector('#chkEnableVocalSeparation').checked;
+                        config.VocalSeparationBinaryPath = (page.querySelector('#txtVocalSeparationBinaryPath').value || '').trim();
+                        config.VocalSeparationModelPath = (page.querySelector('#txtVocalSeparationModelPath').value || '').trim();
                         var roformerOverlapRaw = (page.querySelector('#numVocalSeparationOverlap').value || '').trim();
                         var roformerOverlap = parseInt(roformerOverlapRaw, 10);
                         config.VocalSeparationOverlap = (roformerOverlapRaw === '' || isNaN(roformerOverlap) || roformerOverlap <= 0) ? 0 : roformerOverlap;
@@ -2880,6 +2928,10 @@
                         }
                     })
                     .catch(function () {});
+            });
+
+            document.querySelector('[data-role="page"]').addEventListener('pagehide', function () {
+                WhisperSubsConfig.stopRoformerProgressPolling();
             });
 
             document.querySelector('#btnEngineDownloadBinary').addEventListener('click', function () {

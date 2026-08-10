@@ -3,7 +3,6 @@ using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.IO;
-using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using WhisperSubs.Controller;
@@ -90,19 +89,8 @@ namespace WhisperSubs.Providers
                 UseShellExecute = false,
                 CreateNoWindow = true
             };
-            
-            // On Linux, set LD_LIBRARY_PATH to the binary's directory so it can find shipped
-            // shared libraries (e.g. libggml.so.0 or libggml.so.0.15.1).
-            if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-            {
-                var binDir = Path.GetDirectoryName(_binaryPath);
-                if (!string.IsNullOrEmpty(binDir))
-                {
-                    var currentLdPath = Environment.GetEnvironmentVariable("LD_LIBRARY_PATH") ?? "";
-                    startInfo.Environment["LD_LIBRARY_PATH"] = binDir + (string.IsNullOrEmpty(currentLdPath) ? "" : ":" + currentLdPath);
-                }
-            }
-            
+            RoformerRuntime.ConfigureLibraryPath(startInfo, _binaryPath);
+
             startInfo.ArgumentList.Add(_modelPath);
             startInfo.ArgumentList.Add(inputWavPath);
             startInfo.ArgumentList.Add(outputWavPath);
@@ -117,15 +105,15 @@ namespace WhisperSubs.Providers
                 startInfo.ArgumentList.Add(_chunkSize.ToString(CultureInfo.InvariantCulture));
             }
 
-            var audioBytes = new FileInfo(inputWavPath).Length;
-            var deadline = TranscriptionTimeout.Compute(
-                audioBytes, _realtimeFactor, _minTimeoutSeconds, _maxTimeoutHours, BytesPerSecondMono16Bit);
-
-            _logger.LogInformation("Running vocal separation: {Path} {Arguments}", _binaryPath,
-                string.Join(" ", startInfo.ArgumentList));
-
             try
             {
+                var audioBytes = new FileInfo(inputWavPath).Length;
+                var deadline = TranscriptionTimeout.Compute(
+                    audioBytes, _realtimeFactor, _minTimeoutSeconds, _maxTimeoutHours, BytesPerSecondMono16Bit);
+
+                _logger.LogInformation("Running vocal separation: {Path} {Arguments}", _binaryPath,
+                    string.Join(" ", startInfo.ArgumentList));
+
                 using var process = new Process { StartInfo = startInfo };
                 using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 timeoutCts.CancelAfter(deadline);

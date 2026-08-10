@@ -22,6 +22,7 @@ namespace WhisperSubs.Controller
     {
         private readonly ILibraryManager _libraryManager;
         private readonly ILogger<SubtitleManager> _logger;
+        private static readonly SemaphoreSlim VocalSeparationGate = new(1, 1);
 
         public SubtitleManager(ILibraryManager libraryManager, ILogger<SubtitleManager> logger)
         {
@@ -1874,37 +1875,56 @@ namespace WhisperSubs.Controller
                 return;
             }
 
-            var rawPath = outputAudioPath + ".raw.wav";
-            var vocalsPath = outputAudioPath + ".vocals.wav";
+            var separationProvider = new VocalSeparationProvider(
+                _logger, config.VocalSeparationBinaryPath, config.VocalSeparationModelPath,
+                config.VocalSeparationOverlap, config.VocalSeparationChunkSize,
+                config.JobTimeoutRealtimeFactor, config.JobMinTimeoutSeconds, config.JobMaxTimeoutHours);
+            if (!separationProvider.IsConfigured)
+            {
+                _logger.LogDebug("Vocal separation enabled but binary/model not configured; using original audio.");
+                await ExtractAudioAsync(videoPath, outputAudioPath, targetLanguage, cancellationToken, startOffsetSeconds, audioStreamIndex);
+                return;
+            }
+
+            await VocalSeparationGate.WaitAsync(cancellationToken);
             try
             {
-                await ExtractAudioAsync(
-                    videoPath, rawPath, targetLanguage, cancellationToken, startOffsetSeconds, audioStreamIndex,
-                    sampleRate: VocalSeparationProvider.RequiredSampleRate);
-
-                var separationProvider = new VocalSeparationProvider(
-                    _logger, config.VocalSeparationBinaryPath, config.VocalSeparationModelPath,
-                    config.VocalSeparationOverlap, config.VocalSeparationChunkSize,
-                    config.JobTimeoutRealtimeFactor, config.JobMinTimeoutSeconds, config.JobMaxTimeoutHours);
-
-                var separated = false;
-                if (separationProvider.IsConfigured)
+                var rawPath = outputAudioPath + ".raw.wav";
+                var vocalsPath = outputAudioPath + ".vocals.wav";
+                try
                 {
+                    await ExtractAudioAsync(
+                        videoPath, rawPath, targetLanguage, cancellationToken, startOffsetSeconds, audioStreamIndex,
+                        sampleRate: VocalSeparationProvider.RequiredSampleRate);
+
                     SubtitleQueueService.Instance.ReportPhase("Separating vocals");
-                    separated = await separationProvider.SeparateAsync(rawPath, vocalsPath, cancellationToken);
-                }
-                else
-                {
-                    _logger.LogDebug("Vocal separation enabled but binary/model not configured; using original audio.");
-                }
+                    var separated = await separationProvider.SeparateAsync(rawPath, vocalsPath, cancellationToken);
 
-                var sourceForResample = separated ? vocalsPath : rawPath;
-                await ExtractAudioAsync(sourceForResample, outputAudioPath, null, cancellationToken, sampleRate: 16000);
+                    var sourceForResample = separated ? vocalsPath : rawPath;
+                    try
+                    {
+                        await ExtractAudioAsync(sourceForResample, outputAudioPath, null, cancellationToken, sampleRate: 16000);
+                    }
+                    catch (Exception ex) when (separated && ex is not OperationCanceledException)
+                    {
+                        _logger.LogWarning(ex,
+                            "Separated audio could not be converted for transcription; retrying with the original audio.");
+                        if (File.Exists(outputAudioPath))
+                        {
+                            try { File.Delete(outputAudioPath); } catch { /* FFmpeg will overwrite best-effort */ }
+                        }
+                        await ExtractAudioAsync(rawPath, outputAudioPath, null, cancellationToken, sampleRate: 16000);
+                    }
+                }
+                finally
+                {
+                    if (File.Exists(rawPath)) { try { File.Delete(rawPath); } catch (Exception ex) { _logger.LogWarning(ex, "Failed to delete temp audio: {Path}", rawPath); } }
+                    if (File.Exists(vocalsPath)) { try { File.Delete(vocalsPath); } catch (Exception ex) { _logger.LogWarning(ex, "Failed to delete temp audio: {Path}", vocalsPath); } }
+                }
             }
             finally
             {
-                if (File.Exists(rawPath)) { try { File.Delete(rawPath); } catch (Exception ex) { _logger.LogWarning(ex, "Failed to delete temp audio: {Path}", rawPath); } }
-                if (File.Exists(vocalsPath)) { try { File.Delete(vocalsPath); } catch (Exception ex) { _logger.LogWarning(ex, "Failed to delete temp audio: {Path}", vocalsPath); } }
+                VocalSeparationGate.Release();
             }
         }
 

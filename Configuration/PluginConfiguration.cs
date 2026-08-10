@@ -409,12 +409,12 @@ namespace WhisperSubs.Configuration
         public string VocalSeparationModelQuant { get; set; } = "";
 
         /// <summary>
-        /// BSRoformer.cpp <c>--overlap</c>. 0 = model default (typically 2). Values ≥ 1 are passed through.
+        /// BSRoformer.cpp <c>--overlap</c>. 0 = model default. Values ≥ 1 are passed through.
         /// </summary>
         public int VocalSeparationOverlap { get; set; } = 0;
 
         /// <summary>
-        /// BSRoformer.cpp <c>--chunk-size</c> in samples at 44.1 kHz. -1 = model default (typically 352800 = ~8 s).
+        /// BSRoformer.cpp <c>--chunk-size</c> in samples at 44.1 kHz. -1 = model default.
         /// </summary>
         public int VocalSeparationChunkSize { get; set; } = -1;
 

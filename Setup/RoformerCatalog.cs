@@ -22,9 +22,15 @@ namespace WhisperSubs.Setup
             new BinaryVariant("cpu", "CPU Only",
                 "Works on any system. No GPU required.", true),
             new BinaryVariant("vulkan", "Vulkan (Intel / AMD / NVIDIA)",
-                "Cross-vendor GPU acceleration via Vulkan. Works with Intel iGPU, AMD, and NVIDIA.", false),
+                "Experimental cross-vendor GPU acceleration. Requires a compatible Vulkan runtime and driver.", false),
             new BinaryVariant("cuda12", "NVIDIA CUDA 12",
-                "Hardware-accelerated via NVIDIA GPU (CUDA 12.9). Requires NVIDIA drivers.", false),
+                "Experimental NVIDIA acceleration (CUDA 12.9). Requires a compatible NVIDIA driver and GPU.", false),
+        };
+
+        private static readonly BinaryVariant[] MacVariants = new[]
+        {
+            new BinaryVariant("cpu", "Apple Metal / CPU",
+                "Uses Apple Metal when available, with CPU fallback.", true),
         };
 
         /// <summary>
@@ -36,7 +42,8 @@ namespace WhisperSubs.Setup
         {
             "linux-x64" => Variants,
             "win-x64" => Variants,
-            "linux-arm64" or "osx-arm64" or "osx-x64" => Variants.Where(v => v.Id == "cpu").ToArray(),
+            "linux-arm64" => Variants.Where(v => v.Id == "cpu").ToArray(),
+            "osx-arm64" or "osx-x64" => MacVariants,
             _ => Array.Empty<BinaryVariant>()
         };
 
@@ -57,6 +64,24 @@ namespace WhisperSubs.Setup
             ("win-x64", "vulkan") => "BSRoformer-windows-vulkan.zip",
             ("win-x64", "cuda12") => "BSRoformer-windows-cuda-12.9.1.zip",
             _ => throw new NotSupportedException($"No BSRoformer.cpp release asset for platform '{platform}' variant '{variant}'.")
+        };
+
+        /// <summary>
+        /// SHA-256 published by GitHub for each pinned v0.1.0 release asset. Keeping the digest next
+        /// to the asset mapping prevents a mutable release download from being executed unchecked.
+        /// </summary>
+        public static string GetAssetSha256(string platform, string variant) => (platform, variant) switch
+        {
+            ("linux-x64", "cpu") => "bc0f20237b9ed263582ebd0844dfc7dbb61309a67c31f4a8d7ba156e21292c77",
+            ("linux-x64", "vulkan") => "bee2e9b5dd322b8d4fe1081583ce41709c2c1341550bbb557073c1216fef3e85",
+            ("linux-x64", "cuda12") => "448289d5162062ebd2fb7af3c1a1d88297438aef15b0e8369f6b101e82b4983c",
+            ("linux-arm64", "cpu") => "f77537a1b990d1d48036bc2c8ce8c354530ba2476903ec6177ed0d1fd60079ea",
+            ("osx-arm64", "cpu") => "d0fc45181d31dcceea99c3828378f4a7376e52e7fdbc43e29a07e806785b4c9a",
+            ("osx-x64", "cpu") => "9672c9c10128df822395fb7ef2a1a52f5ed7becbae2af349351a38a1af333379",
+            ("win-x64", "cpu") => "e002811d56605bce6a51c275cf8f9ba447a3707771289ea6fbcca7f4d3e9ba1f",
+            ("win-x64", "vulkan") => "a47653911eb17f68e65bce15aed6c4f1bd277a5fbd48293c4e54f0b005b869a7",
+            ("win-x64", "cuda12") => "7b8b93bc180e16f15124e4b739b0a9e9d038669e21fdf975f63823c02127bd70",
+            _ => throw new NotSupportedException($"No BSRoformer.cpp release digest for platform '{platform}' variant '{variant}'.")
         };
 
         /// <summary>The bs_roformer-cli executable name inside the extracted archive, per platform.</summary>

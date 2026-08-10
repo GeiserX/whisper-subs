@@ -115,7 +115,7 @@ apt-get install -y -qq --no-install-recommends \
 rm -rf /var/lib/apt/lists/*</code></pre>
 
         <h3>Persistent Install via Entrypoint</h3>
-        <p>Libraries installed with <code>apt</code> inside a running container are lost on restart. To make them persistent, override the entrypoint:</p>
+        <p>Libraries installed interactively inside a running container are lost when the container is recreated or updated. To reinstall them automatically, override the entrypoint:</p>
         <pre><code># docker-compose.yml
 services:
   jellyfin:
@@ -124,10 +124,10 @@ services:
       - /bin/bash
       - -c
       - |
-        dpkg -s libgomp1 > /dev/null 2>&1 || \
+        dpkg -s libgomp1 &gt; /dev/null 2&gt;&amp;1 || \
           (apt-get update -qq && \
            apt-get install -y -qq --no-install-recommends \
-             libgomp1 > /dev/null 2>&1 && \
+             libgomp1 &gt; /dev/null 2&gt;&amp;1 && \
            rm -rf /var/lib/apt/lists/*)
         exec /jellyfin/jellyfin
     devices:
@@ -139,10 +139,10 @@ services:
 
         <h2 id="vocal-separation">Vocal Separation (Optional)</h2>
         <p><strong>Vocal separation is optional</strong> and enhances transcription accuracy on noisy content. If not configured, the plugin transcribes the original unseparated audio — there is no penalty.</p>
-        <p><a href="https://github.com/chenmozhijin/BSRoformer.cpp">BSRoformer.cpp</a> provides <code>bs_roformer-cli</code>, which isolates vocals from background music and noise before transcription. Like whisper-cli, the plugin can download the binary and model automatically on Linux.</p>
+        <p><a href="https://github.com/chenmozhijin/BSRoformer.cpp">BSRoformer.cpp</a> provides <code>bs_roformer-cli</code>, which isolates vocals from background music and noise before transcription. The plugin can download its pinned binary and model automatically on Linux, macOS, and Windows.</p>
 
         <h3>Variant Requirements</h3>
-        <p>Every bs_roformer-cli variant also requires <code>libgomp1</code> and the same GPU dependencies as whisper-cli.</p>
+        <p>Linux archive extraction requires <code>tar</code> and <code>xz-utils</code>. Every Linux bs_roformer-cli variant also requires <code>libgomp1</code> and the same GPU dependencies as whisper-cli. Windows needs the Microsoft Visual C++ 2015–2022 Redistributable.</p>
 
         <table>
             <thead>
@@ -155,17 +155,17 @@ services:
             <tbody>
                 <tr>
                     <td><span class="badge badge-green">CPU</span></td>
-                    <td><code>libgomp1</code></td>
-                    <td><code>apt install libgomp1</code></td>
+                    <td><code>libgomp1</code> <code>xz-utils</code></td>
+                    <td><code>apt install libgomp1 xz-utils</code></td>
                 </tr>
                 <tr>
                     <td><span class="badge badge-purple">Vulkan</span></td>
-                    <td><code>libgomp1</code> <code>libvulkan1</code> <code>mesa-vulkan-drivers</code></td>
-                    <td><code>apt install libgomp1 libvulkan1 mesa-vulkan-drivers</code></td>
+                    <td><code>libgomp1</code> <code>xz-utils</code> <code>libvulkan1</code> <code>mesa-vulkan-drivers</code></td>
+                    <td><code>apt install libgomp1 xz-utils libvulkan1 mesa-vulkan-drivers</code></td>
                 </tr>
                 <tr>
                     <td><span class="badge badge-purple">CUDA 12</span></td>
-                    <td><code>libgomp1</code> + NVIDIA Container Toolkit on host</td>
+                    <td><code>libgomp1</code> <code>xz-utils</code> + NVIDIA Container Toolkit on host</td>
                     <td><a href="https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html">NVIDIA docs</a></td>
                 </tr>
             </tbody>
@@ -181,14 +181,14 @@ services:
       - /bin/bash
       - -c
       - |
-        dpkg -s libgomp1 > /dev/null 2>&1 || \
+        dpkg -s libgomp1 xz-utils &gt; /dev/null 2&gt;&amp;1 || \
           (apt-get update -qq && \
            apt-get install -y -qq --no-install-recommends \
-             libgomp1 > /dev/null 2>&1 && \
+             libgomp1 xz-utils &gt; /dev/null 2&gt;&amp;1 && \
            rm -rf /var/lib/apt/lists/*)
         exec /jellyfin/jellyfin
     volumes:
-      - /opt/roformer:/opt/roformer:ro   # optional: mount custom binary/models</code></pre>
+      - /mnt/user/appdata/roformer:/opt/roformer:ro   # optional custom assets on Unraid</code></pre>
 
         <h2 id="troubleshooting">Troubleshooting</h2>
 

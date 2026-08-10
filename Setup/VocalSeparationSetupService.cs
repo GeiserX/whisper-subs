@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.IO.Compression;
@@ -8,6 +9,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
+using WhisperSubs.Providers;
 
 namespace WhisperSubs.Setup
 {
@@ -99,9 +101,7 @@ namespace WhisperSubs.Setup
         public string? FindInstalledBinary()
         {
             var platform = GetPlatformIdentifier();
-            var exeName = RoformerCatalog.ExecutableFileName(platform);
-            if (!Directory.Exists(BinDirectory)) return null;
-            return Directory.GetFiles(BinDirectory, exeName, SearchOption.AllDirectories).FirstOrDefault();
+            return FindInstalledBinary(BinDirectory, platform);
         }
 
         /// <summary>Checks whether the auto-downloaded binary and model exist, or config already points at valid files.</summary>
@@ -109,29 +109,23 @@ namespace WhisperSubs.Setup
         public RoformerSetupStatus GetStatus()
         {
             var config = Plugin.Instance.Configuration;
-            var autoBinaryPath = FindInstalledBinary();
             var configBinaryValid = !string.IsNullOrEmpty(config.VocalSeparationBinaryPath)
                                     && File.Exists(config.VocalSeparationBinaryPath);
 
             var configModelValid = !string.IsNullOrEmpty(config.VocalSeparationModelPath)
                                    && File.Exists(config.VocalSeparationModelPath);
-            string? autoModelPath = null;
-            if (!configModelValid && Directory.Exists(ModelsDirectory))
-            {
-                autoModelPath = Directory.GetFiles(ModelsDirectory, "*.gguf")
-                    .OrderByDescending(f => new FileInfo(f).Length)
-                    .FirstOrDefault();
-            }
 
-            var binaryOk = autoBinaryPath != null || configBinaryValid;
-            var modelOk = autoModelPath != null || configModelValid;
+            // Runtime inference consumes the configured paths, not whichever file happens to be
+            // discoverable in the managed directories. Report readiness using that same invariant.
+            var binaryOk = configBinaryValid;
+            var modelOk = configModelValid;
 
             return new RoformerSetupStatus
             {
                 BinaryFound = binaryOk,
-                BinaryPath = configBinaryValid ? config.VocalSeparationBinaryPath : autoBinaryPath,
+                BinaryPath = configBinaryValid ? config.VocalSeparationBinaryPath : null,
                 ModelFound = modelOk,
-                ModelPath = configModelValid ? config.VocalSeparationModelPath : autoModelPath,
+                ModelPath = configModelValid ? config.VocalSeparationModelPath : null,
                 Platform = GetPlatformIdentifier(),
                 SetupComplete = binaryOk && modelOk,
                 InstalledVariant = config.VocalSeparationBinaryVariant,
@@ -147,30 +141,34 @@ namespace WhisperSubs.Setup
         public async Task DownloadModelAsync(string? quantKey, CancellationToken cancellationToken)
         {
             var option = RoformerModelCatalog.Resolve(quantKey);
+            var destPath = Path.Combine(ModelsDirectory, option.FileName);
+            var tempPath = destPath + ".downloading";
             try
             {
                 Directory.CreateDirectory(ModelsDirectory);
 
                 var url = $"{RoformerModelCatalog.HuggingFaceBaseUrl}/{option.FileName}";
-                var destPath = Path.Combine(ModelsDirectory, option.FileName);
-                var tempPath = destPath + ".downloading";
 
                 _logger.LogInformation("Downloading vocal-separation model {Model} from {Url}", option.FileName, url);
 
-                using var response = await SharedHttpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                using var downloadCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                downloadCts.CancelAfter(TimeSpan.FromHours(2));
+                var downloadToken = downloadCts.Token;
+
+                using var response = await SharedHttpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, downloadToken);
                 response.EnsureSuccessStatusCode();
 
                 var totalBytes = response.Content.Headers.ContentLength ?? -1;
 
-                await using (var stream = await response.Content.ReadAsStreamAsync(cancellationToken))
+                await using (var stream = await response.Content.ReadAsStreamAsync(downloadToken))
                 await using (var fileStream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None, 81920))
                 {
                     var buffer = new byte[81920];
                     long downloaded = 0;
                     int bytesRead;
-                    while ((bytesRead = await stream.ReadAsync(buffer, cancellationToken)) > 0)
+                    while ((bytesRead = await stream.ReadAsync(buffer, downloadToken)) > 0)
                     {
-                        await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken);
+                        await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead), downloadToken);
                         downloaded += bytesRead;
                         if (totalBytes > 0)
                         {
@@ -184,7 +182,13 @@ namespace WhisperSubs.Setup
                             }
                         }
                     }
-                    await fileStream.FlushAsync(cancellationToken);
+                    await fileStream.FlushAsync(downloadToken);
+
+                    if (totalBytes > 0 && downloaded != totalBytes)
+                    {
+                        throw new InvalidOperationException(
+                            $"Download incomplete: received {downloaded} of {totalBytes} bytes.");
+                    }
                 }
 
                 var actualBytes = new FileInfo(tempPath).Length;
@@ -198,8 +202,10 @@ namespace WhisperSubs.Setup
                         $"Downloaded model is {actualBytes / (1024.0 * 1024.0):F0} MB but expected ~{option.SizeMB} MB. The file may be corrupted or truncated.");
                 }
 
-                if (File.Exists(destPath)) File.Delete(destPath);
-                File.Move(tempPath, destPath);
+                VerifySha256(tempPath, option.Sha256, option.FileName);
+                VerifyGgufMagic(tempPath, option.FileName);
+
+                PromoteDownloadedFile(tempPath, destPath);
 
                 var sha256 = WhisperSetupService.ComputeSha256(destPath);
                 _logger.LogInformation("Vocal-separation model {Model} SHA256: {Hash}", option.FileName, sha256);
@@ -216,6 +222,17 @@ namespace WhisperSubs.Setup
                 }
                 _logger.LogInformation("Vocal-separation model downloaded to {Path} and config updated", destPath);
             }
+            catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+            {
+                var timeout = new TimeoutException("The vocal-separation model download did not finish within 2 hours.", ex);
+                lock (_lock)
+                {
+                    _error = timeout.Message;
+                    _progressMessage = $"Error downloading model: {timeout.Message}";
+                }
+                _logger.LogError(timeout, "Timed out downloading vocal-separation model {Model}", option.FileName);
+                throw timeout;
+            }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 lock (_lock)
@@ -228,6 +245,7 @@ namespace WhisperSubs.Setup
             }
             finally
             {
+                try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { /* best-effort cleanup */ }
                 lock (_lock) { _isRunning = false; }
             }
         }
@@ -260,7 +278,7 @@ namespace WhisperSubs.Setup
                         {
                             _progress = 100;
                             _error = originalError;
-                            _progressMessage = $"bs_roformer-cli downloaded but may not work: {originalError} " +
+                            _progressMessage = $"bs_roformer-cli could not be validated; the previous installation was preserved: {originalError} " +
                                 $"(fallback '{currentVariant}' also failed: {ex.Message})";
                         }
                         return;
@@ -291,10 +309,10 @@ namespace WhisperSubs.Setup
                         lock (_lock)
                         {
                             _progress = 100;
-                            _progressMessage = $"bs_roformer-cli downloaded but may not work: {validationError}";
+                            _progressMessage = $"bs_roformer-cli could not be validated; the previous installation was preserved: {validationError}";
                             _error = validationError;
                         }
-                        _logger.LogWarning("bs_roformer-cli downloaded but NOT applied to config: {Error}", validationError);
+                        _logger.LogWarning("bs_roformer-cli failed validation and was not installed: {Error}", validationError);
                         return;
                     }
 
@@ -329,89 +347,98 @@ namespace WhisperSubs.Setup
             var platform = GetPlatformIdentifier();
             var assetName = RoformerCatalog.GetAssetName(platform, variant);
             var url = $"{RoformerCatalog.ReleaseBaseUrl}/{assetName}";
-
             _logger.LogInformation("Downloading bs_roformer-cli from {Url} for platform {Platform}", url, platform);
 
             Directory.CreateDirectory(RootDirectory);
-            var archivePath = Path.Combine(RootDirectory, assetName);
-
-            using (var response = await SharedHttpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken))
-            {
-                response.EnsureSuccessStatusCode();
-                var totalBytes = response.Content.Headers.ContentLength ?? -1;
-
-                await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-                await using var fileStream = new FileStream(archivePath, FileMode.Create, FileAccess.Write, FileShare.None, 81920);
-
-                var buffer = new byte[81920];
-                long downloaded = 0;
-                int bytesRead;
-                while ((bytesRead = await stream.ReadAsync(buffer, cancellationToken)) > 0)
-                {
-                    await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken);
-                    downloaded += bytesRead;
-                    if (totalBytes > 0)
-                    {
-                        var pct = (double)downloaded / totalBytes * 100;
-                        var dlMB = downloaded / (1024.0 * 1024.0);
-                        var totMB = totalBytes / (1024.0 * 1024.0);
-                        lock (_lock)
-                        {
-                            _progress = pct;
-                            _progressMessage = $"Downloading bs_roformer-cli ({variant}): {dlMB:F1} / {totMB:F1} MB ({pct:F1}%)";
-                        }
-                    }
-                }
-                await fileStream.FlushAsync(cancellationToken);
-
-                if (totalBytes > 0 && downloaded != totalBytes)
-                {
-                    throw new InvalidOperationException($"Download incomplete: received {downloaded} of {totalBytes} bytes.");
-                }
-            }
-
+            var archivePath = Path.Combine(RootDirectory, assetName + ".downloading");
+            var stagingDirectory = Path.Combine(RootDirectory, "bin.staging-" + Guid.NewGuid().ToString("N"));
             try
             {
-                // Wipe any previous extraction so a variant switch never leaves a stale sibling
-                // library next to the freshly extracted binary.
-                if (Directory.Exists(BinDirectory)) Directory.Delete(BinDirectory, recursive: true);
-                Directory.CreateDirectory(BinDirectory);
+                using var downloadCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                downloadCts.CancelAfter(TimeSpan.FromHours(2));
+                var downloadToken = downloadCts.Token;
 
-                await ExtractArchiveAsync(archivePath, BinDirectory, cancellationToken);
-                
-                // Fix missing libggml.so.0 symlinks on Linux (upstream may ship libggml.so or
-                // libggml.so.0.15.1 but not the versioned libggml.so.0 that the binary expects).
+                try
+                {
+                    using var response = await SharedHttpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, downloadToken);
+                    response.EnsureSuccessStatusCode();
+                    var totalBytes = response.Content.Headers.ContentLength ?? -1;
+
+                    await using var stream = await response.Content.ReadAsStreamAsync(downloadToken);
+                    await using var fileStream = new FileStream(archivePath, FileMode.Create, FileAccess.Write, FileShare.None, 81920);
+
+                    var buffer = new byte[81920];
+                    long downloaded = 0;
+                    int bytesRead;
+                    while ((bytesRead = await stream.ReadAsync(buffer, downloadToken)) > 0)
+                    {
+                        await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead), downloadToken);
+                        downloaded += bytesRead;
+                        if (totalBytes > 0)
+                        {
+                            var pct = (double)downloaded / totalBytes * 100;
+                            var dlMB = downloaded / (1024.0 * 1024.0);
+                            var totMB = totalBytes / (1024.0 * 1024.0);
+                            lock (_lock)
+                            {
+                                _progress = pct;
+                                _progressMessage = $"Downloading bs_roformer-cli ({variant}): {dlMB:F1} / {totMB:F1} MB ({pct:F1}%)";
+                            }
+                        }
+                    }
+                    await fileStream.FlushAsync(downloadToken);
+
+                    if (totalBytes > 0 && downloaded != totalBytes)
+                    {
+                        throw new InvalidOperationException($"Download incomplete: received {downloaded} of {totalBytes} bytes.");
+                    }
+                }
+                catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+                {
+                    throw new TimeoutException("The bs_roformer-cli download did not finish within 2 hours.", ex);
+                }
+
+                VerifySha256(archivePath, RoformerCatalog.GetAssetSha256(platform, variant), assetName);
+
+                Directory.CreateDirectory(stagingDirectory);
+                await ExtractArchiveAsync(archivePath, stagingDirectory, cancellationToken);
+
                 if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
                 {
-                    FixGgmlSymlinks(BinDirectory);
+                    RepairGgmlLibraryLinks(stagingDirectory, platform);
                 }
+
+                var stagedExePath = FindInstalledBinary(stagingDirectory, platform);
+                if (stagedExePath == null)
+                {
+                    var exeName = RoformerCatalog.ExecutableFileName(platform);
+                    return $"Extracted archive but could not find {exeName} inside it.";
+                }
+
+                if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                {
+                    using var chmod = Process.Start("chmod", new[] { "+x", stagedExePath });
+                    if (chmod == null || !chmod.WaitForExit(5000) || chmod.ExitCode != 0)
+                    {
+                        try { chmod?.Kill(entireProcessTree: true); } catch { }
+                        return "Could not mark bs_roformer-cli as executable.";
+                    }
+                }
+
+                var binarySha256 = WhisperSetupService.ComputeSha256(stagedExePath);
+                _logger.LogInformation("bs_roformer-cli ({Variant}) SHA256: {Hash}", variant, binarySha256);
+
+                var validationError = ValidateBinary(stagedExePath, variant);
+                if (validationError != null) return validationError;
+
+                PromoteStagedDirectory(stagingDirectory);
+                return null;
             }
             finally
             {
                 try { if (File.Exists(archivePath)) File.Delete(archivePath); } catch { /* best-effort cleanup */ }
+                try { if (Directory.Exists(stagingDirectory)) Directory.Delete(stagingDirectory, recursive: true); } catch { /* best-effort cleanup */ }
             }
-
-            var exePath = FindInstalledBinary();
-            if (exePath == null)
-            {
-                var exeName = RoformerCatalog.ExecutableFileName(platform);
-                return $"Extracted archive but could not find {exeName} inside it.";
-            }
-
-            if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-            {
-                using var chmod = System.Diagnostics.Process.Start("chmod", new[] { "+x", exePath });
-                chmod?.WaitForExit(5000);
-                
-                // Create a wrapper script so the binary can find libraries in its own directory
-                // without requiring manual LD_LIBRARY_PATH export by the user
-                CreateLibraryPathWrapper(exePath);
-            }
-
-            var sha256 = WhisperSetupService.ComputeSha256(exePath);
-            _logger.LogInformation("bs_roformer-cli ({Variant}) SHA256: {Hash}", variant, sha256);
-
-            return ValidateBinary(exePath, variant);
         }
 
         /// <summary>
@@ -456,12 +483,33 @@ namespace WhisperSubs.Setup
             }
 
             var stderrTask = process.StandardError.ReadToEndAsync();
-            _ = process.StandardOutput.ReadToEndAsync();
-            await process.WaitForExitAsync(cancellationToken);
+            var stdoutTask = process.StandardOutput.ReadToEndAsync();
+            using (var extractCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+            {
+                extractCts.CancelAfter(TimeSpan.FromMinutes(10));
+                try
+                {
+                    await process.WaitForExitAsync(extractCts.Token);
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    try { process.Kill(entireProcessTree: true); } catch { }
+                    process.WaitForExit(5000);
+                    throw new InvalidOperationException(
+                        "'tar' did not finish extracting the bs_roformer-cli archive within 10 minutes and was stopped.");
+                }
+                catch (OperationCanceledException)
+                {
+                    try { process.Kill(entireProcessTree: true); } catch { }
+                    process.WaitForExit(5000);
+                    throw;
+                }
+            }
 
+            _ = await stdoutTask;
+            var stderr = await stderrTask;
             if (process.ExitCode != 0)
             {
-                var stderr = await stderrTask;
                 throw new InvalidOperationException(
                     $"'tar' failed extracting the bs_roformer-cli archive (exit {process.ExitCode}): {stderr}. " +
                     "Ensure 'xz-utils' is installed in your container (e.g. 'apt-get install -y xz-utils').");
@@ -477,29 +525,18 @@ namespace WhisperSubs.Setup
         {
             try
             {
-                var startInfo = new System.Diagnostics.ProcessStartInfo
+                var startInfo = new ProcessStartInfo
                 {
                     FileName = binaryPath,
-                    Arguments = "--help",
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
                     UseShellExecute = false,
                     CreateNoWindow = true
                 };
-                
-                // On Linux, set LD_LIBRARY_PATH to the binary's directory so it can find shipped
-                // shared libraries (e.g. libggml.so.0 or libggml.so.0.15.1).
-                if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-                {
-                    var binDir = Path.GetDirectoryName(binaryPath);
-                    if (!string.IsNullOrEmpty(binDir))
-                    {
-                        var currentLdPath = Environment.GetEnvironmentVariable("LD_LIBRARY_PATH") ?? "";
-                        startInfo.Environment["LD_LIBRARY_PATH"] = binDir + (string.IsNullOrEmpty(currentLdPath) ? "" : ":" + currentLdPath);
-                    }
-                }
-                
-                using var process = new System.Diagnostics.Process { StartInfo = startInfo };
+                startInfo.ArgumentList.Add("--help");
+                RoformerRuntime.ConfigureLibraryPath(startInfo, binaryPath);
+
+                using var process = new Process { StartInfo = startInfo };
 
                 process.Start();
                 var stdoutTask = process.StandardOutput.ReadToEndAsync();
@@ -508,16 +545,20 @@ namespace WhisperSubs.Setup
                 if (!process.WaitForExit(10000))
                 {
                     try { process.Kill(entireProcessTree: true); } catch { }
-                    return null; // Timeout is OK — GPU init can be slow, binary exists and launched
+                    process.WaitForExit(5000);
+                    return "bs_roformer-cli did not respond to --help within 10 seconds.";
                 }
 
                 var stderr = stderrTask.GetAwaiter().GetResult();
                 _ = stdoutTask.GetAwaiter().GetResult();
 
-                if (process.ExitCode == 127)
+                if (process.ExitCode == 0) return null;
+
+                if (process.ExitCode == 127 || stderr.Contains("Library not loaded", StringComparison.OrdinalIgnoreCase))
                 {
                     var match = System.Text.RegularExpressions.Regex.Match(
-                        stderr, @"error while loading shared libraries:\s*(\S+?):");
+                        stderr, @"(?:error while loading shared libraries:\s*|Library not loaded:\s*)(\S+?)(?::|\r?$)",
+                        System.Text.RegularExpressions.RegexOptions.Multiline);
                     var lib = match.Success ? match.Groups[1].Value : "a shared library";
                     var installHint = WhisperSetupService.GetInstallHint(lib);
                     var isCpu = string.Equals(variant, "cpu", StringComparison.OrdinalIgnoreCase);
@@ -529,125 +570,174 @@ namespace WhisperSubs.Setup
 
                 if (process.ExitCode == 132 || process.ExitCode == 134 || process.ExitCode == 135)
                 {
-                    return "The binary crashed on launch (illegal instruction) — this CPU or GPU driver "
-                         + "likely doesn't support what this build requires. Falling back to a more compatible build.";
+                    return $"The binary crashed on launch (exit {process.ExitCode}). This CPU, GPU driver, or native library "
+                         + "likely doesn't support the selected build. Falling back to a more compatible build.";
                 }
 
-                return null;
+                var detail = stderr.Trim();
+                if (detail.Length > 500) detail = detail[..500] + "…";
+                return $"bs_roformer-cli --help exited with code {process.ExitCode}"
+                     + (string.IsNullOrEmpty(detail) ? "." : $": {detail}");
             }
             catch (Exception ex)
             {
-                _logger.LogDebug("bs_roformer-cli validation probe failed: {Error}", ex.Message);
-                return null; // Can't probe — don't block the download
+                _logger.LogWarning(ex, "bs_roformer-cli validation probe failed");
+                return $"Could not launch bs_roformer-cli for validation: {ex.Message}";
             }
         }
 
         /// <summary>
-        /// Fixes missing libggml.so.0 symlinks by creating links to available compatible versions.
-        /// On Linux, upstream archives often ship libggml.so or libggml.so.0.15.1 but the binary looks
-        /// for libggml.so.0. This method recursively searches the binary directory for any available
-        /// libggml variant and creates a symlink libggml.so.0 if it doesn't exist.
+        /// Creates the SONAME aliases omitted from upstream v0.1.0 archives for every packaged GGML
+        /// component (base, CPU, Vulkan, and so on), on Linux and macOS.
         /// </summary>
-        private static void FixGgmlSymlinks(string binDirectory)
+        internal void RepairGgmlLibraryLinks(string binDirectory, string platform)
         {
             if (!Directory.Exists(binDirectory)) return;
-            
-            // Recursively search for any libggml variant
-            var allFiles = Directory.GetFiles(binDirectory, "libggml*", SearchOption.AllDirectories);
-            var libggmlFiles = new System.Collections.Generic.List<string>();
-            
-            foreach (var file in allFiles)
+
+            foreach (var targetFile in Directory.GetFiles(binDirectory, "libggml*", SearchOption.AllDirectories))
             {
-                var fileName = Path.GetFileName(file);
-                // Match libggml.so, libggml.so.X, libggml.so.X.Y.Z, etc.
-                if (fileName.StartsWith("libggml.so", StringComparison.OrdinalIgnoreCase))
+                var linkName = GetGgmlSonameLinkName(Path.GetFileName(targetFile), platform);
+                if (linkName == null) continue;
+
+                var linkPath = Path.Combine(Path.GetDirectoryName(targetFile) ?? binDirectory, linkName);
+                try
                 {
-                    libggmlFiles.Add(file);
+                    if (!File.Exists(linkPath))
+                    {
+                        File.CreateSymbolicLink(linkPath, Path.GetFileName(targetFile));
+                    }
                 }
-            }
-            
-            if (libggmlFiles.Count == 0) return;
-            
-            // Check if libggml.so.0 already exists (in any subdirectory)
-            foreach (var file in libggmlFiles)
-            {
-                var fileName = Path.GetFileName(file);
-                if (string.Equals(fileName, "libggml.so.0", StringComparison.OrdinalIgnoreCase))
-                    return; // Already present
-            }
-            
-            // Find a suitable target: prefer libggml.so.X.Y.Z versioned file, then libggml.so
-            string? targetFile = null;
-            var versionedFile = libggmlFiles.Find(f => System.Text.RegularExpressions.Regex.IsMatch(
-                Path.GetFileName(f), @"^libggml\.so\.\d"));
-            targetFile = versionedFile ?? libggmlFiles.Find(f => Path.GetFileName(f) == "libggml.so");
-            
-            if (targetFile == null) return; // No suitable source
-            
-            // Create symlink in the same directory as the target
-            var targetDir = Path.GetDirectoryName(targetFile) ?? binDirectory;
-            var symlinkPath = Path.Combine(targetDir, "libggml.so.0");
-            
-            try
-            {
-                if (!File.Exists(symlinkPath))
+                catch (Exception ex)
                 {
-                    File.CreateSymbolicLink(symlinkPath, Path.GetFileName(targetFile));
+                    try
+                    {
+                        File.Copy(targetFile, linkPath, overwrite: false);
+                        _logger.LogWarning(ex,
+                            "Could not create GGML library link {Link}; copied {Target} instead", linkPath, targetFile);
+                    }
+                    catch (Exception copyError)
+                    {
+                        _logger.LogWarning(copyError,
+                            "Could not create or copy GGML library alias {Link} for {Target}", linkPath, targetFile);
+                    }
                 }
-            }
-            catch (Exception ex)
-            {
-                // Log but don't fail — ValidateBinary will catch any actual library issues
-                System.Diagnostics.Debug.WriteLine($"Warning: could not create libggml.so.0 symlink: {ex.Message}");
             }
         }
 
-        /// <summary>
-        /// Creates a wrapper shell script that automatically sets LD_LIBRARY_PATH so the binary can find
-        /// shared libraries in its own directory without manual user intervention. On Linux/macOS, renames
-        /// the original binary to `.real` and creates a wrapper shell script with the original name that:
-        /// 1. Sets LD_LIBRARY_PATH to include the binary's directory
-        /// 2. Execs the real binary with all arguments passed through
-        /// This allows users to run the binary directly from the terminal without needing to manually
-        /// export LD_LIBRARY_PATH beforehand.
-        /// </summary>
-        private static void CreateLibraryPathWrapper(string binaryPath)
+        internal static string? GetGgmlSonameLinkName(string fileName, string platform)
         {
+            var pattern = platform.StartsWith("osx-", StringComparison.OrdinalIgnoreCase)
+                ? @"^(?<stem>libggml(?:-[A-Za-z0-9_-]+)?)\.(?<major>\d+)\.\d+(?:\.\d+)*\.dylib$"
+                : platform.StartsWith("linux-", StringComparison.OrdinalIgnoreCase)
+                    ? @"^(?<stem>libggml(?:-[A-Za-z0-9_-]+)?)\.so\.(?<major>\d+)\.\d+(?:\.\d+)*$"
+                    : "a^";
+            var match = System.Text.RegularExpressions.Regex.Match(fileName, pattern);
+            if (!match.Success) return null;
+
+            return platform.StartsWith("osx-", StringComparison.OrdinalIgnoreCase)
+                ? $"{match.Groups["stem"].Value}.{match.Groups["major"].Value}.dylib"
+                : $"{match.Groups["stem"].Value}.so.{match.Groups["major"].Value}";
+        }
+
+        private static string? FindInstalledBinary(string directory, string platform)
+        {
+            var exeName = RoformerCatalog.ExecutableFileName(platform);
+            if (!Directory.Exists(directory)) return null;
+            return Directory.GetFiles(directory, exeName, SearchOption.AllDirectories).FirstOrDefault();
+        }
+
+        internal void PromoteStagedDirectory(string stagingDirectory)
+        {
+            var backupDirectory = BinDirectory + ".backup-" + Guid.NewGuid().ToString("N");
+            var hadPreviousInstall = Directory.Exists(BinDirectory);
+            if (hadPreviousInstall) Directory.Move(BinDirectory, backupDirectory);
+
             try
             {
-                var binDir = Path.GetDirectoryName(binaryPath);
-                if (string.IsNullOrEmpty(binDir)) return;
-                
-                var binaryName = Path.GetFileName(binaryPath);
-                var realBinaryPath = Path.Combine(binDir, binaryName + ".real");
-                
-                // Only create wrapper if we haven't already (check if .real exists)
-                if (File.Exists(realBinaryPath)) return;
-                
-                // Rename original binary to .real
-                if (File.Exists(binaryPath))
-                {
-                    File.Move(binaryPath, realBinaryPath, overwrite: true);
-                }
-                
-                // Create shell script wrapper
-                var wrapperScript = $@"#!/bin/bash
-# Auto-generated wrapper for {binaryName}
-# Sets LD_LIBRARY_PATH to this directory so the binary can find its shared libraries
-export LD_LIBRARY_PATH=""{binDir}:$LD_LIBRARY_PATH""
-exec ""{realBinaryPath}"" ""$@""
-";
-                
-                File.WriteAllText(binaryPath, wrapperScript);
-                
-                // Make wrapper executable
-                using var chmod = System.Diagnostics.Process.Start("chmod", new[] { "+x", binaryPath });
-                chmod?.WaitForExit(5000);
+                Directory.Move(stagingDirectory, BinDirectory);
             }
-            catch (Exception ex)
+            catch (Exception promotionError)
             {
-                // Log but don't fail — the binary can still be run via the plugin
-                System.Diagnostics.Debug.WriteLine($"Warning: could not create LD_LIBRARY_PATH wrapper: {ex.Message}");
+                if (hadPreviousInstall && Directory.Exists(backupDirectory) && !Directory.Exists(BinDirectory))
+                {
+                    try
+                    {
+                        Directory.Move(backupDirectory, BinDirectory);
+                    }
+                    catch (Exception restoreError)
+                    {
+                        throw new AggregateException("Failed to install bs_roformer-cli and restore the previous installation.", promotionError, restoreError);
+                    }
+                }
+                throw;
+            }
+
+            if (hadPreviousInstall && Directory.Exists(backupDirectory))
+            {
+                try
+                {
+                    Directory.Delete(backupDirectory, recursive: true);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Could not remove previous bs_roformer-cli backup at {Path}", backupDirectory);
+                }
+            }
+        }
+
+        internal static void VerifySha256(string filePath, string expectedSha256, string assetName)
+        {
+            var actualSha256 = WhisperSetupService.ComputeSha256(filePath);
+            if (!string.Equals(actualSha256, expectedSha256, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidDataException(
+                    $"SHA-256 verification failed for {assetName}: expected {expectedSha256}, received {actualSha256}.");
+            }
+        }
+
+        internal static void VerifyGgufMagic(string filePath, string assetName)
+        {
+            Span<byte> magic = stackalloc byte[4];
+            using var stream = File.OpenRead(filePath);
+            if (stream.Read(magic) != magic.Length
+                || magic[0] != (byte)'G'
+                || magic[1] != (byte)'G'
+                || magic[2] != (byte)'U'
+                || magic[3] != (byte)'F')
+            {
+                throw new InvalidDataException($"Downloaded model {assetName} is not a GGUF file.");
+            }
+        }
+
+        internal static void PromoteDownloadedFile(string tempPath, string destPath)
+        {
+            var backupPath = destPath + ".backup-" + Guid.NewGuid().ToString("N");
+            var hadPreviousFile = File.Exists(destPath);
+            if (hadPreviousFile) File.Move(destPath, backupPath);
+
+            try
+            {
+                File.Move(tempPath, destPath);
+            }
+            catch (Exception promotionError)
+            {
+                if (hadPreviousFile && File.Exists(backupPath) && !File.Exists(destPath))
+                {
+                    try
+                    {
+                        File.Move(backupPath, destPath);
+                    }
+                    catch (Exception restoreError)
+                    {
+                        throw new AggregateException("Failed to install the model and restore the previous file.", promotionError, restoreError);
+                    }
+                }
+                throw;
+            }
+
+            if (hadPreviousFile && File.Exists(backupPath))
+            {
+                try { File.Delete(backupPath); } catch { /* the new verified model is already active */ }
             }
         }
     }
