@@ -23,6 +23,7 @@
 - **Automatic Language Detection** -- Reads audio stream metadata to detect the spoken language and generate matching subtitles. Falls back to whisper's built-in language detection when tags are absent.
 - **Forced Subtitles** -- Detect and transcribe only foreign-language dialogue (e.g., French lines in an English movie) via VAD-based speech segmentation and per-chunk language detection.
 - **Lyrics Generation (Experimental)** -- Generate `.lrc` lyrics files for music libraries via whisper transcription. Jellyfin picks up `.lrc` files automatically.
+- **Vocal Separation (Optional)** -- Isolate vocals from background noise and music using [BSRoformer.cpp](https://github.com/chenmozhijin/BSRoformer.cpp) before transcription for improved accuracy on noisy content. Fails gracefully and falls back to original audio if unavailable.
 - **GPU Acceleration** -- Supports CUDA (NVIDIA), Vulkan (Intel / AMD / NVIDIA), and ROCm (AMD) for significantly faster transcription.
 - **Distributed Transcription (Worker Pool)** -- Optionally pool several machines, GPUs, a NAS, or a cloud endpoint and transcribe your backlog in parallel across all of them. Additive and off by default: with no workers configured, everything runs on this server exactly as before, and the plugin always prefers your free local workers before bursting to a paid one. See [`worker/`](worker/README.md) for a ready-to-run worker image.
 - **Priority Queue** -- Manual requests are queued with priority and processed before scheduled items. Queue persists across restarts.
@@ -41,8 +42,9 @@
 | **FFmpeg** | Bundled with Jellyfin (`/usr/lib/jellyfin-ffmpeg/ffmpeg`) or available in `PATH`. Used to extract audio from media files. |
 | **whisper.cpp** | The `whisper-cli` binary. **On Linux, the plugin can download this automatically** from the settings page. Otherwise, install manually -- see [Installing whisper.cpp](#installing-whispercpp). |
 | **Whisper Model** | A GGML model file. **The plugin can download models automatically** from the settings page, or download manually from [Hugging Face](https://huggingface.co/ggerganov/whisper.cpp). |
+| **BSRoformer.cpp** (Optional) | The `bs_roformer-cli` binary for vocal separation. **On Linux, the plugin can download this automatically** from the settings page. Optional — vocal separation improves transcription on noisy audio but is not required. |
 
-> **Quick start (Linux):** After installing the plugin, go to **Dashboard** > **Plugins** > **WhisperSubs**. The **Whisper Engine** section lets you download both the binary and a model with one click each. The manual steps below are only needed for non-Linux platforms or custom setups.
+> **Quick start (Linux):** After installing the plugin, go to **Dashboard** > **Plugins** > **WhisperSubs**. The **Whisper Engine** section lets you download the whisper-cli binary and model with one click each. The **Vocal Separation** section (optional) lets you download the bs_roformer-cli binary and model for improved transcription on noisy content. The manual steps below are only needed for non-Linux platforms or custom setups.
 
 ## Installation
 
@@ -476,6 +478,81 @@ whisper.cpp emits subtitle segments back-to-back with no gaps, so the next line 
 > These corrections run against the audio extracted on the Jellyfin server, so they apply to both local whisper-cli output and timestamped remote/worker output for full and translated subtitles. Remote/provider-owned timing requires the explicit **Also align VAD / worker timestamps to speech** opt-in. Forced subtitles are unaffected.
 >
 > With native VAD enabled (the default), the FFmpeg silence-detection pass is skipped -- unless **Also align VAD / worker timestamps to speech** is enabled, which layers it on top for content where lines still appear early.
+
+## Vocal Separation (Optional)
+
+[BSRoformer.cpp](https://github.com/chenmozhijin/BSRoformer.cpp) is an optional enhancement that isolates vocals from background music and noise **before** transcription. This improves accuracy when content has heavy background noise or music.
+
+**Vocal separation is fully optional and fail-soft:** if the binary or model is missing or encounters an error, the plugin falls back to transcribing the original unseparated audio — there is no penalty for misconfiguration beyond missing this quality enhancement.
+
+### Setup
+
+On **Linux, the plugin can download bs_roformer-cli automatically** from the settings page:
+
+1. Go to **Dashboard** > **Plugins** > **WhisperSubs**.
+2. Scroll to the **Vocal Separation** section.
+3. Choose a variant (CPU, Vulkan, or CUDA 12) and click **Download binary**.
+4. Choose a quantization and click **Download model**.
+5. Enable **Enable Vocal Separation** to activate it.
+
+**On other platforms or for custom setups**, follow the manual steps in [Installing BSRoformer.cpp](#installing-bsroformercpp) below.
+
+### Configuration
+
+| Setting | Description |
+|---|---|
+| **Enable Vocal Separation** | Master switch. When enabled, extracted audio is passed through BSRoformer.cpp to isolate vocals before transcription. Gracefully falls back to the original audio if the binary or model is not configured. |
+| **BSRoformer Binary Path** | *(Advanced)* Absolute path to the `bs_roformer-cli` binary. Leave empty to use the auto-downloaded binary. |
+| **BSRoformer Model Path** | *(Advanced)* Absolute path to the BS-RoFormer GGUF model file. Leave empty to use the auto-downloaded model. |
+| **Chunk overlap** | How many times each audio chunk is re-processed and blended with its neighbours to smooth boundaries. Default: model default (~2). Set `0` to accept the model default. |
+| **Chunk size** | Audio window (in samples at 44.1 kHz) fed to the model in one pass. Default: model default (~8 seconds). Set `-1` to accept the model default. Larger chunks are slower but may improve quality on long continuous speech. |
+
+### Installing BSRoformer.cpp
+
+The plugin requires the `bs_roformer-cli` binary and a GGUF model for vocal separation.
+
+#### Pre-built Binary (Recommended)
+
+1. Download the latest release for your platform from [BSRoformer.cpp releases](https://github.com/chenmozhijin/BSRoformer.cpp/releases).
+2. Extract and place the `bs_roformer-cli` binary somewhere persistent (e.g., `/opt/roformer/`).
+3. Download a GGUF model:
+   ```bash
+   mkdir -p /opt/roformer/models
+   # Q8_0 (recommended) ~56 MB, high quality
+   wget -O /opt/roformer/models/BSRoformer-anvuew-Q8_0.gguf \
+     https://huggingface.co/chenmozhijin/BSRoformer-GGUF/resolve/main/anvuew/BS-RoFormer/BSRoformer-anvuew-Q8_0.gguf
+   ```
+4. In the plugin settings, set **BSRoformer Binary Path** to `/opt/roformer/bs_roformer-cli` and **BSRoformer Model Path** to the model file.
+
+#### Build from Source (CPU only)
+
+```bash
+git clone https://github.com/chenmozhijin/BSRoformer.cpp.git
+cd BSRoformer.cpp
+cmake -B build -DBUILD_SHARED_LIBS=OFF
+cmake --build build --config Release -j$(nproc)
+# Binary will be at build/bin/bs_roformer-cli
+```
+
+#### Build with GPU Acceleration
+
+See [BSRoformer.cpp documentation](https://github.com/chenmozhijin/BSRoformer.cpp) for CUDA, ROCm, and Vulkan builds.
+
+### Container Setup
+
+If Jellyfin runs in Docker, bs_roformer-cli must be accessible inside the container:
+
+```yaml
+# docker-compose.yml
+services:
+  jellyfin:
+    image: jellyfin/jellyfin
+    volumes:
+      - /opt/roformer:/opt/roformer:ro   # bs_roformer-cli binary + models
+      # ... your other volumes
+```
+
+Then configure the plugin with the container-internal paths.
 
 ## Usage
 

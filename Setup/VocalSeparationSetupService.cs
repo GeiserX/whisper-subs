@@ -378,6 +378,13 @@ namespace WhisperSubs.Setup
                 Directory.CreateDirectory(BinDirectory);
 
                 await ExtractArchiveAsync(archivePath, BinDirectory, cancellationToken);
+                
+                // Fix missing libggml.so.0 symlinks on Linux (upstream may ship libggml.so or
+                // libggml.so.0.15.1 but not the versioned libggml.so.0 that the binary expects).
+                if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                {
+                    FixGgmlSymlinks(BinDirectory);
+                }
             }
             finally
             {
@@ -395,6 +402,10 @@ namespace WhisperSubs.Setup
             {
                 using var chmod = System.Diagnostics.Process.Start("chmod", new[] { "+x", exePath });
                 chmod?.WaitForExit(5000);
+                
+                // Create a wrapper script so the binary can find libraries in its own directory
+                // without requiring manual LD_LIBRARY_PATH export by the user
+                CreateLibraryPathWrapper(exePath);
             }
 
             var sha256 = WhisperSetupService.ComputeSha256(exePath);
@@ -466,18 +477,29 @@ namespace WhisperSubs.Setup
         {
             try
             {
-                using var process = new System.Diagnostics.Process
+                var startInfo = new System.Diagnostics.ProcessStartInfo
                 {
-                    StartInfo = new System.Diagnostics.ProcessStartInfo
-                    {
-                        FileName = binaryPath,
-                        Arguments = "--help",
-                        RedirectStandardOutput = true,
-                        RedirectStandardError = true,
-                        UseShellExecute = false,
-                        CreateNoWindow = true
-                    }
+                    FileName = binaryPath,
+                    Arguments = "--help",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
                 };
+                
+                // On Linux, set LD_LIBRARY_PATH to the binary's directory so it can find shipped
+                // shared libraries (e.g. libggml.so.0 or libggml.so.0.15.1).
+                if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                {
+                    var binDir = Path.GetDirectoryName(binaryPath);
+                    if (!string.IsNullOrEmpty(binDir))
+                    {
+                        var currentLdPath = Environment.GetEnvironmentVariable("LD_LIBRARY_PATH") ?? "";
+                        startInfo.Environment["LD_LIBRARY_PATH"] = binDir + (string.IsNullOrEmpty(currentLdPath) ? "" : ":" + currentLdPath);
+                    }
+                }
+                
+                using var process = new System.Diagnostics.Process { StartInfo = startInfo };
 
                 process.Start();
                 var stdoutTask = process.StandardOutput.ReadToEndAsync();
@@ -517,6 +539,115 @@ namespace WhisperSubs.Setup
             {
                 _logger.LogDebug("bs_roformer-cli validation probe failed: {Error}", ex.Message);
                 return null; // Can't probe — don't block the download
+            }
+        }
+
+        /// <summary>
+        /// Fixes missing libggml.so.0 symlinks by creating links to available compatible versions.
+        /// On Linux, upstream archives often ship libggml.so or libggml.so.0.15.1 but the binary looks
+        /// for libggml.so.0. This method recursively searches the binary directory for any available
+        /// libggml variant and creates a symlink libggml.so.0 if it doesn't exist.
+        /// </summary>
+        private static void FixGgmlSymlinks(string binDirectory)
+        {
+            if (!Directory.Exists(binDirectory)) return;
+            
+            // Recursively search for any libggml variant
+            var allFiles = Directory.GetFiles(binDirectory, "libggml*", SearchOption.AllDirectories);
+            var libggmlFiles = new System.Collections.Generic.List<string>();
+            
+            foreach (var file in allFiles)
+            {
+                var fileName = Path.GetFileName(file);
+                // Match libggml.so, libggml.so.X, libggml.so.X.Y.Z, etc.
+                if (fileName.StartsWith("libggml.so", StringComparison.OrdinalIgnoreCase))
+                {
+                    libggmlFiles.Add(file);
+                }
+            }
+            
+            if (libggmlFiles.Count == 0) return;
+            
+            // Check if libggml.so.0 already exists (in any subdirectory)
+            foreach (var file in libggmlFiles)
+            {
+                var fileName = Path.GetFileName(file);
+                if (string.Equals(fileName, "libggml.so.0", StringComparison.OrdinalIgnoreCase))
+                    return; // Already present
+            }
+            
+            // Find a suitable target: prefer libggml.so.X.Y.Z versioned file, then libggml.so
+            string? targetFile = null;
+            var versionedFile = libggmlFiles.Find(f => System.Text.RegularExpressions.Regex.IsMatch(
+                Path.GetFileName(f), @"^libggml\.so\.\d"));
+            targetFile = versionedFile ?? libggmlFiles.Find(f => Path.GetFileName(f) == "libggml.so");
+            
+            if (targetFile == null) return; // No suitable source
+            
+            // Create symlink in the same directory as the target
+            var targetDir = Path.GetDirectoryName(targetFile) ?? binDirectory;
+            var symlinkPath = Path.Combine(targetDir, "libggml.so.0");
+            
+            try
+            {
+                if (!File.Exists(symlinkPath))
+                {
+                    File.CreateSymbolicLink(symlinkPath, Path.GetFileName(targetFile));
+                }
+            }
+            catch (Exception ex)
+            {
+                // Log but don't fail — ValidateBinary will catch any actual library issues
+                System.Diagnostics.Debug.WriteLine($"Warning: could not create libggml.so.0 symlink: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Creates a wrapper shell script that automatically sets LD_LIBRARY_PATH so the binary can find
+        /// shared libraries in its own directory without manual user intervention. On Linux/macOS, renames
+        /// the original binary to `.real` and creates a wrapper shell script with the original name that:
+        /// 1. Sets LD_LIBRARY_PATH to include the binary's directory
+        /// 2. Execs the real binary with all arguments passed through
+        /// This allows users to run the binary directly from the terminal without needing to manually
+        /// export LD_LIBRARY_PATH beforehand.
+        /// </summary>
+        private static void CreateLibraryPathWrapper(string binaryPath)
+        {
+            try
+            {
+                var binDir = Path.GetDirectoryName(binaryPath);
+                if (string.IsNullOrEmpty(binDir)) return;
+                
+                var binaryName = Path.GetFileName(binaryPath);
+                var realBinaryPath = Path.Combine(binDir, binaryName + ".real");
+                
+                // Only create wrapper if we haven't already (check if .real exists)
+                if (File.Exists(realBinaryPath)) return;
+                
+                // Rename original binary to .real
+                if (File.Exists(binaryPath))
+                {
+                    File.Move(binaryPath, realBinaryPath, overwrite: true);
+                }
+                
+                // Create shell script wrapper
+                var wrapperScript = $@"#!/bin/bash
+# Auto-generated wrapper for {binaryName}
+# Sets LD_LIBRARY_PATH to this directory so the binary can find its shared libraries
+export LD_LIBRARY_PATH=""{binDir}:$LD_LIBRARY_PATH""
+exec ""{realBinaryPath}"" ""$@""
+";
+                
+                File.WriteAllText(binaryPath, wrapperScript);
+                
+                // Make wrapper executable
+                using var chmod = System.Diagnostics.Process.Start("chmod", new[] { "+x", binaryPath });
+                chmod?.WaitForExit(5000);
+            }
+            catch (Exception ex)
+            {
+                // Log but don't fail — the binary can still be run via the plugin
+                System.Diagnostics.Debug.WriteLine($"Warning: could not create LD_LIBRARY_PATH wrapper: {ex.Message}");
             }
         }
     }
