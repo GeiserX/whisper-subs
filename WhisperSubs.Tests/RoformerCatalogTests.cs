@@ -66,6 +66,7 @@ public class RoformerCatalogTests
     public void GetAssetSha256_ReturnsPinnedDigest(string platform, string variant)
     {
         Assert.Matches("^[0-9a-f]{64}$", RoformerCatalog.GetAssetSha256(platform, variant));
+        Assert.True(RoformerCatalog.GetAssetSizeBytes(platform, variant) > 0);
     }
 
     [Fact]
@@ -185,6 +186,18 @@ public class RoformerSetupSafetyTests
         => new(new NullLogger<VocalSeparationSetupService>(), dataPath);
 
     [Theory]
+    [InlineData(-1, 0)]
+    [InlineData(0, 0)]
+    [InlineData(1, 1)]
+    [InlineData(8, 8)]
+    [InlineData(9, 0)]
+    [InlineData(80, 0)]
+    public void NormalizeOverlap_EnforcesSupportedRange(int input, int expected)
+    {
+        Assert.Equal(expected, VocalSeparationProvider.NormalizeOverlap(input));
+    }
+
+    [Theory]
     [InlineData("libggml.so.0.15.1", "linux-x64", "libggml.so.0")]
     [InlineData("libggml-base.so.0.15.1", "linux-x64", "libggml-base.so.0")]
     [InlineData("libggml-cpu.so.0.15.1", "linux-arm64", "libggml-cpu.so.0")]
@@ -233,6 +246,28 @@ public class RoformerSetupSafetyTests
         }
     }
 
+    [Theory]
+    [InlineData("BSRoformer-windows-x64-msvc.zip", true)]
+    [InlineData("BSRoformer-windows-x64-msvc.zip.downloading", false)]
+    [InlineData("BSRoformer-linux-x64-cpu.tar.xz", false)]
+    public void IsZipArchiveName_UsesOriginalAssetName(string assetName, bool expected)
+    {
+        Assert.Equal(expected, VocalSeparationSetupService.IsZipArchiveName(assetName));
+    }
+
+    [Fact]
+    public void DownloadSizeGuards_RejectUnexpectedHeadersAndStreamingOverflow()
+    {
+        VocalSeparationSetupService.ValidateContentLength(-1, 100, "asset");
+        VocalSeparationSetupService.ValidateContentLength(100, 100, "asset");
+        VocalSeparationSetupService.EnsureDownloadSize(100, 100, "asset");
+
+        Assert.Throws<InvalidDataException>(() =>
+            VocalSeparationSetupService.ValidateContentLength(101, 100, "asset"));
+        Assert.Throws<InvalidDataException>(() =>
+            VocalSeparationSetupService.EnsureDownloadSize(101, 100, "asset"));
+    }
+
     [Fact]
     public void VerifyGgufMagic_RejectsNonGgufContent()
     {
@@ -265,6 +300,28 @@ public class RoformerSetupSafetyTests
         {
             Assert.ThrowsAny<Exception>(() => VocalSeparationSetupService.PromoteDownloadedFile(
                 Path.Combine(root, "missing.download"), destination));
+
+            Assert.Equal("known-good", File.ReadAllText(destination));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void RollbackDownloadedFilePromotion_RestoresPreviousModelAfterSuccessfulSwap()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "roformer-model-rollback-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var destination = Path.Combine(root, "model.gguf");
+        var incoming = Path.Combine(root, "model.downloading");
+        File.WriteAllText(destination, "known-good");
+        File.WriteAllText(incoming, "new");
+        try
+        {
+            var backup = VocalSeparationSetupService.PromoteDownloadedFile(incoming, destination);
+            VocalSeparationSetupService.RollbackDownloadedFilePromotion(destination, backup);
 
             Assert.Equal("known-good", File.ReadAllText(destination));
         }
@@ -337,6 +394,30 @@ public class RoformerSetupSafetyTests
             Assert.ThrowsAny<Exception>(() => service.PromoteStagedDirectory(missingStaging));
 
             Assert.Equal("old", File.ReadAllText(Path.Combine(service.BinDirectory, "known-good")));
+        }
+        finally
+        {
+            if (Directory.Exists(dataPath)) Directory.Delete(dataPath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void RollbackDirectoryPromotion_RestoresPreviousInstallAfterSuccessfulSwap()
+    {
+        var dataPath = Path.Combine(Path.GetTempPath(), "roformer-directory-rollback-" + Guid.NewGuid().ToString("N"));
+        var service = CreateService(dataPath);
+        var staging = Path.Combine(service.RootDirectory, "bin.staging-test");
+        Directory.CreateDirectory(service.BinDirectory);
+        Directory.CreateDirectory(staging);
+        File.WriteAllText(Path.Combine(service.BinDirectory, "known-good"), "old");
+        File.WriteAllText(Path.Combine(staging, "new"), "new");
+        try
+        {
+            var backup = service.PromoteStagedDirectory(staging);
+            service.RollbackDirectoryPromotion(backup);
+
+            Assert.Equal("old", File.ReadAllText(Path.Combine(service.BinDirectory, "known-good")));
+            Assert.False(File.Exists(Path.Combine(service.BinDirectory, "new")));
         }
         finally
         {

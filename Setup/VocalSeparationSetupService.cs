@@ -129,6 +129,7 @@ namespace WhisperSubs.Setup
                 Platform = GetPlatformIdentifier(),
                 SetupComplete = binaryOk && modelOk,
                 InstalledVariant = config.VocalSeparationBinaryVariant,
+                InstalledModelQuant = configModelValid ? config.VocalSeparationModelQuant : "",
                 Gpu = WhisperSetupService.DetectGpu()
             };
         }
@@ -159,6 +160,7 @@ namespace WhisperSubs.Setup
                 response.EnsureSuccessStatusCode();
 
                 var totalBytes = response.Content.Headers.ContentLength ?? -1;
+                ValidateContentLength(totalBytes, option.SizeBytes, option.FileName);
 
                 await using (var stream = await response.Content.ReadAsStreamAsync(downloadToken))
                 await using (var fileStream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None, 81920))
@@ -168,6 +170,7 @@ namespace WhisperSubs.Setup
                     int bytesRead;
                     while ((bytesRead = await stream.ReadAsync(buffer, downloadToken)) > 0)
                     {
+                        EnsureDownloadSize(downloaded + bytesRead, option.SizeBytes, option.FileName);
                         await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead), downloadToken);
                         downloaded += bytesRead;
                         if (totalBytes > 0)
@@ -205,15 +208,38 @@ namespace WhisperSubs.Setup
                 VerifySha256(tempPath, option.Sha256, option.FileName);
                 VerifyGgufMagic(tempPath, option.FileName);
 
-                PromoteDownloadedFile(tempPath, destPath);
+                var modelBackupPath = PromoteDownloadedFile(tempPath, destPath);
 
                 var sha256 = WhisperSetupService.ComputeSha256(destPath);
                 _logger.LogInformation("Vocal-separation model {Model} SHA256: {Hash}", option.FileName, sha256);
 
                 var config = Plugin.Instance.Configuration;
-                config.VocalSeparationModelPath = destPath;
-                config.VocalSeparationModelQuant = option.Key;
-                Plugin.Instance.SaveConfiguration();
+                var previousModelPath = config.VocalSeparationModelPath;
+                var previousModelQuant = config.VocalSeparationModelQuant;
+                try
+                {
+                    config.VocalSeparationModelPath = destPath;
+                    config.VocalSeparationModelQuant = option.Key;
+                    Plugin.Instance.SaveConfiguration();
+                    CompleteDownloadedFilePromotion(modelBackupPath);
+                }
+                catch (Exception configurationError)
+                {
+                    config.VocalSeparationModelPath = previousModelPath;
+                    config.VocalSeparationModelQuant = previousModelQuant;
+                    try
+                    {
+                        RollbackDownloadedFilePromotion(destPath, modelBackupPath);
+                    }
+                    catch (Exception rollbackError)
+                    {
+                        throw new AggregateException(
+                            "Failed to save model configuration and restore the previous model.",
+                            configurationError,
+                            rollbackError);
+                    }
+                    throw;
+                }
 
                 lock (_lock)
                 {
@@ -286,11 +312,6 @@ namespace WhisperSubs.Setup
 
                     if (validationError == null)
                     {
-                        var config = Plugin.Instance.Configuration;
-                        config.VocalSeparationBinaryPath = FindInstalledBinary() ?? "";
-                        config.VocalSeparationBinaryVariant = currentVariant;
-                        Plugin.Instance.SaveConfiguration();
-
                         lock (_lock)
                         {
                             _progress = 100;
@@ -346,6 +367,7 @@ namespace WhisperSubs.Setup
         {
             var platform = GetPlatformIdentifier();
             var assetName = RoformerCatalog.GetAssetName(platform, variant);
+            var assetSizeBytes = RoformerCatalog.GetAssetSizeBytes(platform, variant);
             var url = $"{RoformerCatalog.ReleaseBaseUrl}/{assetName}";
             _logger.LogInformation("Downloading bs_roformer-cli from {Url} for platform {Platform}", url, platform);
 
@@ -363,6 +385,7 @@ namespace WhisperSubs.Setup
                     using var response = await SharedHttpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, downloadToken);
                     response.EnsureSuccessStatusCode();
                     var totalBytes = response.Content.Headers.ContentLength ?? -1;
+                    ValidateContentLength(totalBytes, assetSizeBytes, assetName);
 
                     await using var stream = await response.Content.ReadAsStreamAsync(downloadToken);
                     await using var fileStream = new FileStream(archivePath, FileMode.Create, FileAccess.Write, FileShare.None, 81920);
@@ -372,6 +395,7 @@ namespace WhisperSubs.Setup
                     int bytesRead;
                     while ((bytesRead = await stream.ReadAsync(buffer, downloadToken)) > 0)
                     {
+                        EnsureDownloadSize(downloaded + bytesRead, assetSizeBytes, assetName);
                         await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead), downloadToken);
                         downloaded += bytesRead;
                         if (totalBytes > 0)
@@ -401,7 +425,7 @@ namespace WhisperSubs.Setup
                 VerifySha256(archivePath, RoformerCatalog.GetAssetSha256(platform, variant), assetName);
 
                 Directory.CreateDirectory(stagingDirectory);
-                await ExtractArchiveAsync(archivePath, stagingDirectory, cancellationToken);
+                await ExtractArchiveAsync(archivePath, assetName, stagingDirectory, cancellationToken);
 
                 if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
                 {
@@ -431,7 +455,35 @@ namespace WhisperSubs.Setup
                 var validationError = ValidateBinary(stagedExePath, variant);
                 if (validationError != null) return validationError;
 
-                PromoteStagedDirectory(stagingDirectory);
+                var binaryBackupDirectory = PromoteStagedDirectory(stagingDirectory);
+                var config = Plugin.Instance.Configuration;
+                var previousBinaryPath = config.VocalSeparationBinaryPath;
+                var previousBinaryVariant = config.VocalSeparationBinaryVariant;
+                try
+                {
+                    config.VocalSeparationBinaryPath = FindInstalledBinary()
+                        ?? throw new InvalidOperationException("Installed bs_roformer-cli could not be located after promotion.");
+                    config.VocalSeparationBinaryVariant = variant;
+                    Plugin.Instance.SaveConfiguration();
+                    CompleteDirectoryPromotion(binaryBackupDirectory);
+                }
+                catch (Exception configurationError)
+                {
+                    config.VocalSeparationBinaryPath = previousBinaryPath;
+                    config.VocalSeparationBinaryVariant = previousBinaryVariant;
+                    try
+                    {
+                        RollbackDirectoryPromotion(binaryBackupDirectory);
+                    }
+                    catch (Exception rollbackError)
+                    {
+                        throw new AggregateException(
+                            "Failed to save binary configuration and restore the previous installation.",
+                            configurationError,
+                            rollbackError);
+                    }
+                    throw;
+                }
                 return null;
             }
             finally
@@ -449,9 +501,13 @@ namespace WhisperSubs.Setup
         /// including Jellyfin's official container.
         /// </summary>
         [ExcludeFromCodeCoverage(Justification = "Spawns tar / uses filesystem APIs")]
-        private async Task ExtractArchiveAsync(string archivePath, string destDir, CancellationToken cancellationToken)
+        private async Task ExtractArchiveAsync(
+            string archivePath,
+            string sourceAssetName,
+            string destDir,
+            CancellationToken cancellationToken)
         {
-            if (archivePath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+            if (IsZipArchiveName(sourceAssetName))
             {
                 ZipFile.ExtractToDirectory(archivePath, destDir, overwriteFiles: true);
                 return;
@@ -646,7 +702,7 @@ namespace WhisperSubs.Setup
             return Directory.GetFiles(directory, exeName, SearchOption.AllDirectories).FirstOrDefault();
         }
 
-        internal void PromoteStagedDirectory(string stagingDirectory)
+        internal string? PromoteStagedDirectory(string stagingDirectory)
         {
             var backupDirectory = BinDirectory + ".backup-" + Guid.NewGuid().ToString("N");
             var hadPreviousInstall = Directory.Exists(BinDirectory);
@@ -672,7 +728,12 @@ namespace WhisperSubs.Setup
                 throw;
             }
 
-            if (hadPreviousInstall && Directory.Exists(backupDirectory))
+            return hadPreviousInstall ? backupDirectory : null;
+        }
+
+        private void CompleteDirectoryPromotion(string? backupDirectory)
+        {
+            if (backupDirectory != null && Directory.Exists(backupDirectory))
             {
                 try
                 {
@@ -685,6 +746,22 @@ namespace WhisperSubs.Setup
             }
         }
 
+        internal void RollbackDirectoryPromotion(string? backupDirectory)
+        {
+            try
+            {
+                if (Directory.Exists(BinDirectory)) Directory.Delete(BinDirectory, recursive: true);
+                if (backupDirectory != null && Directory.Exists(backupDirectory))
+                {
+                    Directory.Move(backupDirectory, BinDirectory);
+                }
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException("Failed to restore the previous bs_roformer-cli installation.", ex);
+            }
+        }
+
         internal static void VerifySha256(string filePath, string expectedSha256, string assetName)
         {
             var actualSha256 = WhisperSetupService.ComputeSha256(filePath);
@@ -692,6 +769,27 @@ namespace WhisperSubs.Setup
             {
                 throw new InvalidDataException(
                     $"SHA-256 verification failed for {assetName}: expected {expectedSha256}, received {actualSha256}.");
+            }
+        }
+
+        internal static bool IsZipArchiveName(string assetName)
+            => assetName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase);
+
+        internal static void ValidateContentLength(long contentLength, long expectedBytes, string assetName)
+        {
+            if (contentLength > 0 && contentLength != expectedBytes)
+            {
+                throw new InvalidDataException(
+                    $"Unexpected size for {assetName}: server declared {contentLength} bytes; expected {expectedBytes}.");
+            }
+        }
+
+        internal static void EnsureDownloadSize(long downloadedBytes, long maximumBytes, string assetName)
+        {
+            if (downloadedBytes > maximumBytes)
+            {
+                throw new InvalidDataException(
+                    $"Download for {assetName} exceeded its pinned size of {maximumBytes} bytes and was stopped.");
             }
         }
 
@@ -709,7 +807,7 @@ namespace WhisperSubs.Setup
             }
         }
 
-        internal static void PromoteDownloadedFile(string tempPath, string destPath)
+        internal static string? PromoteDownloadedFile(string tempPath, string destPath)
         {
             var backupPath = destPath + ".backup-" + Guid.NewGuid().ToString("N");
             var hadPreviousFile = File.Exists(destPath);
@@ -735,9 +833,27 @@ namespace WhisperSubs.Setup
                 throw;
             }
 
-            if (hadPreviousFile && File.Exists(backupPath))
+            return hadPreviousFile ? backupPath : null;
+        }
+
+        internal static void CompleteDownloadedFilePromotion(string? backupPath)
+        {
+            if (backupPath != null && File.Exists(backupPath))
             {
                 try { File.Delete(backupPath); } catch { /* the new verified model is already active */ }
+            }
+        }
+
+        internal static void RollbackDownloadedFilePromotion(string destPath, string? backupPath)
+        {
+            try
+            {
+                if (File.Exists(destPath)) File.Delete(destPath);
+                if (backupPath != null && File.Exists(backupPath)) File.Move(backupPath, destPath);
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException("Failed to restore the previous vocal-separation model.", ex);
             }
         }
     }
@@ -751,6 +867,7 @@ namespace WhisperSubs.Setup
         public string Platform { get; set; } = "";
         public bool SetupComplete { get; set; }
         public string InstalledVariant { get; set; } = "";
+        public string InstalledModelQuant { get; set; } = "";
         public GpuInfo Gpu { get; set; } = new();
     }
 }

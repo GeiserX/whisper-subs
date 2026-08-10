@@ -23,6 +23,7 @@ namespace WhisperSubs.Providers
         // BSRoformer.cpp requires 44.1 kHz input (see README); mono is auto-expanded, so the plugin
         // extracts mono to keep the file small. 16-bit PCM -> 2 bytes/sample.
         internal const int RequiredSampleRate = 44100;
+        internal const int MaximumOverlap = 8;
         private const double BytesPerSecondMono16Bit = RequiredSampleRate * 2.0;
 
         private readonly ILogger _logger;
@@ -47,12 +48,15 @@ namespace WhisperSubs.Providers
             _logger = logger;
             _binaryPath = binaryPath ?? "";
             _modelPath = modelPath ?? "";
-            _overlap = overlap;
+            _overlap = NormalizeOverlap(overlap);
             _chunkSize = chunkSize;
             _realtimeFactor = realtimeFactor;
             _minTimeoutSeconds = minTimeoutSeconds;
             _maxTimeoutHours = maxTimeoutHours;
         }
+
+        internal static int NormalizeOverlap(int overlap)
+            => overlap is >= 1 and <= MaximumOverlap ? overlap : 0;
 
         /// <summary>True when both the binary and model are configured and present on disk.</summary>
         public bool IsConfigured =>
@@ -130,7 +134,7 @@ namespace WhisperSubs.Providers
 
                 process.Start();
                 process.BeginErrorReadLine();
-                _ = process.StandardOutput.ReadToEndAsync();
+                var stdoutTask = process.StandardOutput.ReadToEndAsync();
 
                 try
                 {
@@ -138,11 +142,14 @@ namespace WhisperSubs.Providers
                 }
                 catch (OperationCanceledException)
                 {
-                    try { process.Kill(entireProcessTree: true); } catch { /* best-effort */ }
+                    await TerminateProcessAsync(process, stdoutTask);
                     if (cancellationToken.IsCancellationRequested) throw;
                     _logger.LogWarning("Vocal separation timed out after {Deadline}; continuing with original audio.", deadline);
                     return false;
                 }
+
+                await stdoutTask;
+                process.WaitForExit(); // flush asynchronous stderr events before reading the builder
 
                 if (process.ExitCode != 0)
                 {
@@ -168,6 +175,16 @@ namespace WhisperSubs.Providers
                 _logger.LogWarning(ex, "Vocal separation errored. Continuing with original audio.");
                 return false;
             }
+        }
+
+        private static async Task TerminateProcessAsync(Process process, Task stdoutTask)
+        {
+            try { process.Kill(entireProcessTree: true); } catch { /* best-effort */ }
+
+            using var exitCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            try { await process.WaitForExitAsync(exitCts.Token); } catch { /* bounded best-effort reap */ }
+            try { await stdoutTask.WaitAsync(TimeSpan.FromSeconds(1)); } catch { /* stream closes with process */ }
+            if (process.HasExited) process.WaitForExit();
         }
     }
 }

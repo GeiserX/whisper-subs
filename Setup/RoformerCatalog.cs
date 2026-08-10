@@ -84,6 +84,21 @@ namespace WhisperSubs.Setup
             _ => throw new NotSupportedException($"No BSRoformer.cpp release digest for platform '{platform}' variant '{variant}'.")
         };
 
+        /// <summary>Exact byte sizes published for the pinned v0.1.0 assets.</summary>
+        public static long GetAssetSizeBytes(string platform, string variant) => (platform, variant) switch
+        {
+            ("linux-x64", "cpu") => 640204,
+            ("linux-x64", "vulkan") => 5900692,
+            ("linux-x64", "cuda12") => 237738556,
+            ("linux-arm64", "cpu") => 583476,
+            ("osx-arm64", "cpu") => 636996,
+            ("osx-x64", "cpu") => 780976,
+            ("win-x64", "cpu") => 671031,
+            ("win-x64", "vulkan") => 22779026,
+            ("win-x64", "cuda12") => 140056366,
+            _ => throw new NotSupportedException($"No BSRoformer.cpp release size for platform '{platform}' variant '{variant}'.")
+        };
+
         /// <summary>The bs_roformer-cli executable name inside the extracted archive, per platform.</summary>
         public static string ExecutableFileName(string platform) =>
             platform.StartsWith("win", StringComparison.OrdinalIgnoreCase) ? "bs_roformer-cli.exe" : "bs_roformer-cli";

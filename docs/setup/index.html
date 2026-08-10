@@ -138,7 +138,7 @@ services:
         </div>
 
         <h2 id="vocal-separation">Vocal Separation (Optional)</h2>
-        <p><strong>Vocal separation is optional</strong> and enhances transcription accuracy on noisy content. If not configured, the plugin transcribes the original unseparated audio — there is no penalty.</p>
+        <p><strong>Vocal separation is optional</strong> and enhances transcription accuracy on noisy content. If it is missing or fails, the plugin transcribes the original unseparated audio. A failed or hung custom separator can add processing time before its timeout, but it does not prevent transcription.</p>
         <p><a href="https://github.com/chenmozhijin/BSRoformer.cpp">BSRoformer.cpp</a> provides <code>bs_roformer-cli</code>, which isolates vocals from background music and noise before transcription. The plugin can download its pinned binary and model automatically on Linux, macOS, and Windows.</p>
 
         <h3>Variant Requirements</h3>

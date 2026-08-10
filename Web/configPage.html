@@ -126,7 +126,7 @@
                     <div style="background:rgba(0,0,0,0.3); border-radius:4px; overflow:hidden; height:24px;">
                         <div id="roformerProgressBar" role="progressbar" aria-label="Vocal separation download progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" style="background:#52B54B; height:100%; width:0%; transition:width 0.3s ease;"></div>
                     </div>
-                    <div id="roformerProgressText" class="fieldDescription" style="margin-top:0.5em;"></div>
+                    <div id="roformerProgressText" class="fieldDescription" role="status" aria-live="polite" style="margin-top:0.5em;"></div>
                 </div>
 
                 <details style="margin-bottom:1em;">
@@ -1397,23 +1397,36 @@
                 },
 
                 // ── Vocal separation (BSRoformer.cpp) setup ──────────────────
+                isRoformerPageActive: function (generation) {
+                    return WhisperSubsConfig._roformerPageActive === true
+                        && WhisperSubsConfig._roformerPageGeneration === generation;
+                },
+
                 loadRoformer: function () {
+                    var generation = WhisperSubsConfig._roformerPageGeneration;
                     WhisperSubsConfig.ajaxGet(ApiClient.getUrl('Plugins/WhisperSubs/Setup/VocalSeparation/Status'))
                         .then(function (s) {
+                            if (!WhisperSubsConfig.isRoformerPageActive(generation)) return;
                             WhisperSubsConfig._roformerStatus = s;
                             if (s.BinaryPath) document.querySelector('#txtVocalSeparationBinaryPath').value = s.BinaryPath;
                             if (s.ModelPath) document.querySelector('#txtVocalSeparationModelPath').value = s.ModelPath;
                             WhisperSubsConfig.renderRoformerBinaryStatus(s);
-                            WhisperSubsConfig.loadRoformerVariants(s.Gpu, s.InstalledVariant);
+                            WhisperSubsConfig.loadRoformerVariants(s.Gpu, s.InstalledVariant, generation);
                             WhisperSubsConfig.ajaxGet(ApiClient.getUrl('Plugins/WhisperSubs/Setup/VocalSeparation/AvailableModels'))
                                 .then(function (models) {
+                                    if (!WhisperSubsConfig.isRoformerPageActive(generation)) return;
                                     WhisperSubsConfig._roformerCatalogModels = models || [];
                                     WhisperSubsConfig.renderRoformerModelStatus(s);
                                 })
-                                .catch(function () { WhisperSubsConfig._roformerCatalogModels = []; });
-                            WhisperSubsConfig.resumeRoformerProgressPolling();
+                                .catch(function () {
+                                    if (WhisperSubsConfig.isRoformerPageActive(generation)) {
+                                        WhisperSubsConfig._roformerCatalogModels = [];
+                                    }
+                                });
+                            WhisperSubsConfig.resumeRoformerProgressPolling(generation);
                         })
                         .catch(function (err) {
+                            if (!WhisperSubsConfig.isRoformerPageActive(generation)) return;
                             console.error('WhisperSubs: vocal-separation status check failed', err);
                             var text = document.querySelector('#roformerBinaryText');
                             if (text) { text.textContent = 'Status unavailable'; }
@@ -1434,9 +1447,10 @@
                     }
                 },
 
-                loadRoformerVariants: function (gpuInfo, installedVariant) {
+                loadRoformerVariants: function (gpuInfo, installedVariant, generation) {
                     WhisperSubsConfig.ajaxGet(ApiClient.getUrl('Plugins/WhisperSubs/Setup/VocalSeparation/BinaryVariants'))
                         .then(function (variants) {
+                            if (!WhisperSubsConfig.isRoformerPageActive(generation)) return;
                             var select = document.querySelector('#roformerBinaryVariant');
                             var btn = document.querySelector('#btnRoformerDownloadBinary');
                             select.innerHTML = '';
@@ -1472,6 +1486,7 @@
                             select.addEventListener('change', WhisperSubsConfig.updateRoformerVariantHint);
                         })
                         .catch(function (err) {
+                            if (!WhisperSubsConfig.isRoformerPageActive(generation)) return;
                             console.error('WhisperSubs: error loading vocal-separation binary variants', err);
                         });
                 },
@@ -1535,7 +1550,7 @@
                         if (m.IsRecommended) opt.textContent += ' \u2605';
                         select.appendChild(opt);
                     });
-                    var currentQuant = (WhisperSubsConfig._pluginConfig || {}).VocalSeparationModelQuant;
+                    var currentQuant = status.InstalledModelQuant;
                     if (currentQuant && catalog.some(function (m) { return m.Key === currentQuant; })) {
                         select.value = currentQuant;
                     } else {
@@ -1575,6 +1590,7 @@
                 },
 
                 startRoformerDownload: function (type) {
+                    var generation = WhisperSubsConfig._roformerPageGeneration;
                     var binBtn = document.querySelector('#btnRoformerDownloadBinary');
                     var modBtn = document.querySelector('#btnRoformerDownloadModel');
                     WhisperSubsConfig._roformerDownloadRunning = true;
@@ -1588,8 +1604,10 @@
                             type: 'POST',
                             url: ApiClient.getUrl('Plugins/WhisperSubs/Setup/VocalSeparation/DownloadBinary', { variant: variant })
                         }).then(function () {
-                            WhisperSubsConfig.startRoformerProgressPolling();
+                            if (!WhisperSubsConfig.isRoformerPageActive(generation)) return;
+                            WhisperSubsConfig.startRoformerProgressPolling(generation);
                         }).catch(function (err) {
+                            if (!WhisperSubsConfig.isRoformerPageActive(generation)) return;
                             WhisperSubsConfig.resetRoformerButtons();
                             Dashboard.alert('Download failed: ' + (err.message || err));
                         });
@@ -1605,15 +1623,19 @@
                             type: 'POST',
                             url: ApiClient.getUrl('Plugins/WhisperSubs/Setup/VocalSeparation/DownloadModel', { quant: quant })
                         }).then(function () {
-                            WhisperSubsConfig.startRoformerProgressPolling();
+                            if (!WhisperSubsConfig.isRoformerPageActive(generation)) return;
+                            WhisperSubsConfig.startRoformerProgressPolling(generation);
                         }).catch(function (err) {
+                            if (!WhisperSubsConfig.isRoformerPageActive(generation)) return;
                             WhisperSubsConfig.resetRoformerButtons();
                             Dashboard.alert('Download failed: ' + (err.message || err));
                         });
                     }
                 },
 
-                startRoformerProgressPolling: function () {
+                startRoformerProgressPolling: function (generation) {
+                    generation = generation === undefined ? WhisperSubsConfig._roformerPageGeneration : generation;
+                    if (!WhisperSubsConfig.isRoformerPageActive(generation)) return;
                     var bar = document.querySelector('#roformerProgressBar');
                     var text = document.querySelector('#roformerProgressText');
                     var container = document.querySelector('#roformerProgressContainer');
@@ -1627,8 +1649,13 @@
                     }
 
                     WhisperSubsConfig._roformerProgressPollTimer = setInterval(function () {
+                        if (!WhisperSubsConfig.isRoformerPageActive(generation)) {
+                            WhisperSubsConfig.stopRoformerProgressPolling();
+                            return;
+                        }
                         WhisperSubsConfig.ajaxGet(ApiClient.getUrl('Plugins/WhisperSubs/Setup/VocalSeparation/Progress'))
                             .then(function (p) {
+                                if (!WhisperSubsConfig.isRoformerPageActive(generation)) return;
                                 bar.style.width = Math.min(p.Percent, 100) + '%';
                                 bar.setAttribute('aria-valuenow', Math.min(p.Percent, 100));
                                 text.textContent = p.Message || '';
@@ -1644,7 +1671,12 @@
                                 if (!p.IsRunning && p.Percent >= 100) {
                                     WhisperSubsConfig.stopRoformerProgressPolling();
                                     WhisperSubsConfig.resetRoformerButtons();
-                                    setTimeout(function () { WhisperSubsConfig.loadRoformer(); }, 500);
+                                    WhisperSubsConfig._roformerReloadTimer = setTimeout(function () {
+                                        WhisperSubsConfig._roformerReloadTimer = null;
+                                        if (WhisperSubsConfig.isRoformerPageActive(generation)) {
+                                            WhisperSubsConfig.loadRoformer();
+                                        }
+                                    }, 500);
                                 }
                             })
                             .catch(function () { /* ignore transient fetch errors */ });
@@ -1658,9 +1690,11 @@
                     }
                 },
 
-                resumeRoformerProgressPolling: function () {
+                resumeRoformerProgressPolling: function (generation) {
+                    generation = generation === undefined ? WhisperSubsConfig._roformerPageGeneration : generation;
                     WhisperSubsConfig.ajaxGet(ApiClient.getUrl('Plugins/WhisperSubs/Setup/VocalSeparation/Progress'))
                         .then(function (p) {
+                            if (!WhisperSubsConfig.isRoformerPageActive(generation)) return;
                             if (!p || !p.IsRunning) {
                                 if (WhisperSubsConfig._roformerDownloadRunning === true) {
                                     WhisperSubsConfig.resetRoformerButtons();
@@ -1674,7 +1708,7 @@
                             bar.setAttribute('aria-valuenow', Math.min(p.Percent, 100));
                             text.textContent = p.Message || '';
                             text.style.color = '';
-                            WhisperSubsConfig.startRoformerProgressPolling();
+                            WhisperSubsConfig.startRoformerProgressPolling(generation);
                         })
                         .catch(function () { /* status panel remains usable if progress is unavailable */ });
                 },
@@ -1993,7 +2027,7 @@
                         config.VocalSeparationModelPath = (page.querySelector('#txtVocalSeparationModelPath').value || '').trim();
                         var roformerOverlapRaw = (page.querySelector('#numVocalSeparationOverlap').value || '').trim();
                         var roformerOverlap = parseInt(roformerOverlapRaw, 10);
-                        config.VocalSeparationOverlap = (roformerOverlapRaw === '' || isNaN(roformerOverlap) || roformerOverlap <= 0) ? 0 : roformerOverlap;
+                        config.VocalSeparationOverlap = (roformerOverlapRaw === '' || isNaN(roformerOverlap) || roformerOverlap < 1 || roformerOverlap > 8) ? 0 : roformerOverlap;
                         var roformerChunkRaw = (page.querySelector('#numVocalSeparationChunkSize').value || '').trim();
                         var roformerChunk = parseInt(roformerChunkRaw, 10);
                         config.VocalSeparationChunkSize = (roformerChunkRaw === '' || isNaN(roformerChunk) || roformerChunk <= 0) ? -1 : roformerChunk;
@@ -2914,6 +2948,8 @@
             document.querySelector('#selectSubtitleMode').addEventListener('change', updateTranslationVisibility);
 
             document.querySelector('[data-role="page"]').addEventListener('pageshow', function () {
+                WhisperSubsConfig._roformerPageActive = true;
+                WhisperSubsConfig._roformerPageGeneration = (WhisperSubsConfig._roformerPageGeneration || 0) + 1;
                 WhisperSubsConfig.loadConfiguration(this);
                 WhisperSubsConfig.loadEngine();
                 WhisperSubsConfig.loadRoformer();
@@ -2931,7 +2967,13 @@
             });
 
             document.querySelector('[data-role="page"]').addEventListener('pagehide', function () {
+                WhisperSubsConfig._roformerPageActive = false;
+                WhisperSubsConfig._roformerPageGeneration = (WhisperSubsConfig._roformerPageGeneration || 0) + 1;
                 WhisperSubsConfig.stopRoformerProgressPolling();
+                if (WhisperSubsConfig._roformerReloadTimer) {
+                    clearTimeout(WhisperSubsConfig._roformerReloadTimer);
+                    WhisperSubsConfig._roformerReloadTimer = null;
+                }
             });
 
             document.querySelector('#btnEngineDownloadBinary').addEventListener('click', function () {

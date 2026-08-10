@@ -483,7 +483,7 @@ whisper.cpp emits subtitle segments back-to-back with no gaps, so the next line 
 
 [BSRoformer.cpp](https://github.com/chenmozhijin/BSRoformer.cpp) is an optional enhancement that isolates vocals from background music and noise **before** transcription. This improves accuracy when content has heavy background noise or music.
 
-**Vocal separation is fully optional and fail-soft:** if the binary or model is missing or encounters an error, the plugin falls back to transcribing the original unseparated audio — there is no penalty for misconfiguration beyond missing this quality enhancement.
+**Vocal separation is fully optional and fail-soft:** if the binary or model is missing or encounters an error, the plugin falls back to transcribing the original unseparated audio. A failed or hung custom separator can add processing time before its timeout, but it does not prevent transcription.
 
 ### Setup
 
