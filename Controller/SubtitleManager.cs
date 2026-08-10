@@ -500,7 +500,7 @@ namespace WhisperSubs.Controller
                     containerStartTime,
                     effectiveAudioOffset);
                 SubtitleQueueService.Instance.ReportPhase("Extracting audio");
-                await ExtractAudioAsync(
+                await ExtractAudioForTranscriptionAsync(
                     mediaPath, tempAudioPath, lang, cancellationToken, extractionOffset, audioStreamIndex);
                 SubtitleQueueService.Instance.ReportPhase("Transcribing");
                 string srtContent = await provider.TranscribeAsync(tempAudioPath, lang, cancellationToken);
@@ -717,7 +717,7 @@ namespace WhisperSubs.Controller
                 var effectiveAudioOffset = EffectiveAudioOffset(
                     timingConfig?.CompensateAudioOffset == true, audioStartTime);
                 SubtitleQueueService.Instance.ReportPhase("Extracting audio (translation)");
-                await ExtractAudioAsync(
+                await ExtractAudioForTranscriptionAsync(
                     mediaPath, tempAudioPath, sourceLanguage, cancellationToken, audioStreamIndex: audioStreamIndex);
                 SubtitleQueueService.Instance.ReportPhase("Translating to English");
                 string srtContent = await provider.TranscribeAsync(tempAudioPath, sourceLanguage, cancellationToken, translate: true);
@@ -1195,7 +1195,7 @@ namespace WhisperSubs.Controller
             try
             {
                 SubtitleQueueService.Instance.ReportPhase("Extracting audio");
-                await ExtractAudioAsync(mediaPath, tempAudioPath, lang, cancellationToken);
+                await ExtractAudioForTranscriptionAsync(mediaPath, tempAudioPath, lang, cancellationToken);
                 SubtitleQueueService.Instance.ReportPhase("Transcribing");
                 string srtContent = await provider.TranscribeAsync(tempAudioPath, lang, cancellationToken);
                 string lrcContent = ConvertSrtToLrc(srtContent, item.Name);
@@ -1752,7 +1752,8 @@ namespace WhisperSubs.Controller
             string? targetLanguage,
             CancellationToken cancellationToken,
             double startOffsetSeconds = 0,
-            int audioStreamIndex = -1)
+            int audioStreamIndex = -1,
+            int sampleRate = 16000)
         {
             var ffmpegPath = FindFfmpegExecutable();
             if (ffmpegPath == null)
@@ -1799,7 +1800,7 @@ namespace WhisperSubs.Controller
             extractInfo.ArgumentList.Add("-ac");
             extractInfo.ArgumentList.Add("1");
             extractInfo.ArgumentList.Add("-ar");
-            extractInfo.ArgumentList.Add("16000");
+            extractInfo.ArgumentList.Add(sampleRate.ToString());
             extractInfo.ArgumentList.Add("-y");
             extractInfo.ArgumentList.Add(outputAudioPath);
 
@@ -1845,6 +1846,66 @@ namespace WhisperSubs.Controller
             }
 
             _logger.LogInformation("Extracted audio to {AudioPath}", outputAudioPath);
+        }
+
+        /// <summary>
+        /// Wraps <see cref="ExtractAudioAsync"/> with an optional vocal-separation pass: when
+        /// <see cref="PluginConfiguration.EnableVocalSeparation"/> is on, audio is extracted at the
+        /// 44.1 kHz BSRoformer.cpp requires, separated into an isolated vocal track, then downsampled
+        /// to the plugin's standard 16 kHz mono — so <paramref name="outputAudioPath"/> always ends up
+        /// in the same format whisper expects, whether or not separation ran. Separation is best-effort:
+        /// if the binary/model aren't configured, or the process fails, transcription proceeds on the
+        /// original (unseparated) audio instead of failing the job. Not used for the shorter
+        /// forced-subtitle/language-detection probes, which stay on the original extraction path.
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Orchestrates FFmpeg extraction and the bs_roformer-cli process")]
+        private async Task ExtractAudioForTranscriptionAsync(
+            string videoPath,
+            string outputAudioPath,
+            string? targetLanguage,
+            CancellationToken cancellationToken,
+            double startOffsetSeconds = 0,
+            int audioStreamIndex = -1)
+        {
+            var config = Plugin.Instance?.Configuration;
+            if (config?.EnableVocalSeparation != true)
+            {
+                await ExtractAudioAsync(videoPath, outputAudioPath, targetLanguage, cancellationToken, startOffsetSeconds, audioStreamIndex);
+                return;
+            }
+
+            var rawPath = outputAudioPath + ".raw.wav";
+            var vocalsPath = outputAudioPath + ".vocals.wav";
+            try
+            {
+                await ExtractAudioAsync(
+                    videoPath, rawPath, targetLanguage, cancellationToken, startOffsetSeconds, audioStreamIndex,
+                    sampleRate: VocalSeparationProvider.RequiredSampleRate);
+
+                var separationProvider = new VocalSeparationProvider(
+                    _logger, config.VocalSeparationBinaryPath, config.VocalSeparationModelPath,
+                    config.VocalSeparationOverlap, config.VocalSeparationChunkSize,
+                    config.JobTimeoutRealtimeFactor, config.JobMinTimeoutSeconds, config.JobMaxTimeoutHours);
+
+                var separated = false;
+                if (separationProvider.IsConfigured)
+                {
+                    SubtitleQueueService.Instance.ReportPhase("Separating vocals");
+                    separated = await separationProvider.SeparateAsync(rawPath, vocalsPath, cancellationToken);
+                }
+                else
+                {
+                    _logger.LogDebug("Vocal separation enabled but binary/model not configured; using original audio.");
+                }
+
+                var sourceForResample = separated ? vocalsPath : rawPath;
+                await ExtractAudioAsync(sourceForResample, outputAudioPath, null, cancellationToken, sampleRate: 16000);
+            }
+            finally
+            {
+                if (File.Exists(rawPath)) { try { File.Delete(rawPath); } catch (Exception ex) { _logger.LogWarning(ex, "Failed to delete temp audio: {Path}", rawPath); } }
+                if (File.Exists(vocalsPath)) { try { File.Delete(vocalsPath); } catch (Exception ex) { _logger.LogWarning(ex, "Failed to delete temp audio: {Path}", vocalsPath); } }
+            }
         }
 
         [ExcludeFromCodeCoverage(Justification = "Spawns FFprobe process for duration query")]

@@ -1255,9 +1255,143 @@ namespace WhisperSubs.Api
             }
         }
 
-        private BaseItemKind[] GetBaseItemKinds(string input)
+        // ── Vocal separation (BSRoformer.cpp) setup endpoints ───────────────
+        // Mirror the whisper-cli Setup/* endpoints above, but for the standalone BSRoformer.cpp
+        // vocal-separation binary/model — a separate download lock and progress state
+        // (VocalSeparationSetupService) so a download here never blocks or is confused with an
+        // in-progress whisper-cli/model download.
+
+        private VocalSeparationSetupService GetVocalSeparationSetupService()
         {
-            if (string.IsNullOrWhiteSpace(input))
+            return new VocalSeparationSetupService(
+                _loggerFactory.CreateLogger<VocalSeparationSetupService>(),
+                Plugin.Instance.DataFolderPath);
+        }
+
+        /// <summary>Returns whether the bs_roformer-cli binary and model are configured and reachable.</summary>
+        [HttpGet("Setup/VocalSeparation/Status")]
+        [Authorize(Policy = "RequiresElevation")]
+        public ActionResult GetVocalSeparationStatus()
+        {
+            try
+            {
+                var status = GetVocalSeparationSetupService().GetStatus();
+                return Ok(status);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error checking vocal-separation setup status");
+                return StatusCode(500, new { error = ex.Message });
+            }
+        }
+
+        /// <summary>Lists available BSRoformer.cpp binary variants (CPU, CUDA, Vulkan) for this platform.</summary>
+        [HttpGet("Setup/VocalSeparation/BinaryVariants")]
+        [Authorize(Policy = "RequiresElevation")]
+        public ActionResult GetVocalSeparationBinaryVariants()
+        {
+            var platform = VocalSeparationSetupService.GetPlatformIdentifier();
+            var variants = RoformerCatalog.GetAvailableVariants(platform);
+            return Ok(variants.Select(v => new
+            {
+                v.Id,
+                v.DisplayName,
+                v.Description,
+                v.IsDefault,
+                Platform = platform
+            }));
+        }
+
+        /// <summary>
+        /// Downloads the bs_roformer-cli archive for the current platform from the upstream
+        /// BSRoformer.cpp GitHub release, extracts it, and validates it launches. Returns 202
+        /// immediately; poll GET Setup/VocalSeparation/Progress for status.
+        /// </summary>
+        [HttpPost("Setup/VocalSeparation/DownloadBinary")]
+        [Authorize(Policy = "RequiresElevation")]
+        public ActionResult DownloadVocalSeparationBinary([FromQuery] string variant = "cpu")
+        {
+            var platform = VocalSeparationSetupService.GetPlatformIdentifier();
+            var available = RoformerCatalog.GetAvailableVariants(platform);
+            var matchedVariant = available.FirstOrDefault(v => string.Equals(v.Id, variant, StringComparison.OrdinalIgnoreCase));
+            if (matchedVariant == null)
+                return BadRequest(new { error = $"No prebuilt bs_roformer-cli binary for variant '{variant}' on {platform}." });
+
+            var canonicalVariant = matchedVariant.Id;
+
+            if (!VocalSeparationSetupService.TryAcquire("roformer-binary", $"Starting bs_roformer-cli ({canonicalVariant}) download..."))
+                return Conflict(new { error = "A download is already in progress." });
+
+            var service = GetVocalSeparationSetupService();
+
+            _ = Task.Run(async () =>
+            {
+                try { await service.DownloadBinaryAsync(canonicalVariant, CancellationToken.None); }
+                catch (Exception ex) { _logger.LogError(ex, "Background bs_roformer-cli binary download failed"); }
+            });
+
+            return Accepted(new { message = $"bs_roformer-cli download started (variant: {canonicalVariant})." });
+        }
+
+        /// <summary>Lists the vocal-separation GGUF model quantizations available for download.</summary>
+        [HttpGet("Setup/VocalSeparation/AvailableModels")]
+        [Authorize(Policy = "RequiresElevation")]
+        public ActionResult GetVocalSeparationAvailableModels()
+        {
+            return Ok(RoformerModelCatalog.Models.Select(m => new
+            {
+                m.Key,
+                m.FileName,
+                m.DisplayName,
+                m.SizeMB,
+                m.IsRecommended,
+                m.Description
+            }));
+        }
+
+        /// <summary>
+        /// Downloads a BSRoformer.cpp GGUF model quantization from HuggingFace. Returns 202
+        /// immediately; poll GET Setup/VocalSeparation/Progress for status.
+        /// </summary>
+        [HttpPost("Setup/VocalSeparation/DownloadModel")]
+        [Authorize(Policy = "RequiresElevation")]
+        public ActionResult DownloadVocalSeparationModel([FromQuery] string quant)
+        {
+            if (string.IsNullOrEmpty(quant))
+                return BadRequest(new { error = "Model quantization key is required." });
+
+            var catalogEntry = RoformerModelCatalog.Models.FirstOrDefault(m =>
+                string.Equals(m.Key, quant, StringComparison.OrdinalIgnoreCase));
+            if (catalogEntry == null)
+                return BadRequest(new { error = $"Unknown vocal-separation model: {quant}" });
+
+            var canonicalKey = catalogEntry.Key;
+
+            if (!VocalSeparationSetupService.TryAcquire("roformer-model", $"Starting download of {catalogEntry.FileName}..."))
+                return Conflict(new { error = "A download is already in progress." });
+
+            var service = GetVocalSeparationSetupService();
+
+            _ = Task.Run(async () =>
+            {
+                try { await service.DownloadModelAsync(canonicalKey, CancellationToken.None); }
+                catch (Exception ex) { _logger.LogError(ex, "Background vocal-separation model download failed"); }
+            });
+
+            return Accepted(new { message = $"Download of {catalogEntry.FileName} started." });
+        }
+
+        /// <summary>Returns the current vocal-separation download progress (binary or model).</summary>
+        [HttpGet("Setup/VocalSeparation/Progress")]
+        [Authorize(Policy = "RequiresElevation")]
+        public ActionResult GetVocalSeparationProgress()
+        {
+            var p = VocalSeparationSetupService.CurrentProgress;
+            return Ok(p);
+        }
+
+        private BaseItemKind[] GetBaseItemKinds(string input)
+        {            if (string.IsNullOrWhiteSpace(input))
             {
                 return Array.Empty<BaseItemKind>();
             }
