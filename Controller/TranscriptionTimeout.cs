@@ -29,15 +29,19 @@ namespace WhisperSubs.Controller
         /// bound on how much slower than real-time a healthy worker may run before it is presumed hung —
         /// so a slow-but-working large-v3 pass is never guillotined, while a dead endpoint is cut off fast.
         /// Non-positive settings fall back to safe defaults (factor 6, floor 60s, cap 12h).
+        /// <paramref name="bytesPerSecond"/> defaults to the plugin's standard 16 kHz mono PCM
+        /// extraction; pass a different value for audio in another format (e.g. the 44.1 kHz mono PCM
+        /// used for vocal-separation input).
         /// </summary>
-        public static TimeSpan Compute(long audioBytes, double realtimeFactor, int minSeconds, int maxHours)
+        public static TimeSpan Compute(long audioBytes, double realtimeFactor, int minSeconds, int maxHours, double bytesPerSecond = BytesPerAudioSecond)
         {
             double factor = realtimeFactor > 0 ? realtimeFactor : 6.0;
             double min = minSeconds > 0 ? minSeconds : 60;
             double maxSeconds = (maxHours > 0 ? maxHours : 12) * 3600.0;
             if (maxSeconds > MaxDeadlineSeconds) maxSeconds = MaxDeadlineSeconds; // stay CancelAfter-safe
 
-            double audioSeconds = Math.Max(0, audioBytes) / BytesPerAudioSecond;
+            double bps = bytesPerSecond > 0 ? bytesPerSecond : BytesPerAudioSecond;
+            double audioSeconds = Math.Max(0, audioBytes) / bps;
             double seconds = audioSeconds * factor;
 
             if (seconds < min) seconds = min;

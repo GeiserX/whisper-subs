@@ -373,6 +373,51 @@ namespace WhisperSubs.Configuration
         /// </summary>
         public bool EnableLocalWorker { get; set; } = true;
 
+        // ── Vocal separation (issue: separate vocals from background noise/music) ───────────
+        // Runs BSRoformer.cpp (https://github.com/chenmozhijin/BSRoformer.cpp) as a standalone binary,
+        // after audio extraction and before VAD/transcription, so whisper transcribes an isolated vocal
+        // track instead of the full mix. Off by default: an unconfigured install behaves exactly as
+        // before, and the binary/model are auto-downloaded from the setup page like whisper-cli/models.
+
+        /// <summary>
+        /// Master switch. When enabled, extracted audio is passed through BSRoformer.cpp to isolate
+        /// vocals from music/background noise before VAD and transcription. Default false — an
+        /// unconfigured install transcribes the original mix exactly as before this feature. If the
+        /// binary or model is missing, or separation fails for any reason, generation falls back to the
+        /// original (unseparated) audio rather than failing the job.
+        /// </summary>
+        public bool EnableVocalSeparation { get; set; } = false;
+
+        /// <summary>Filesystem path to the bs_roformer-cli binary. Auto-set after a successful download.</summary>
+        public string VocalSeparationBinaryPath { get; set; } = "";
+
+        /// <summary>
+        /// The BSRoformer.cpp binary variant that was actually downloaded and validated (e.g. "cpu",
+        /// "vulkan", "cuda12"). Persisted so the setup page re-offers the installed variant instead of
+        /// re-defaulting to the GPU recommendation on every load.
+        /// </summary>
+        public string VocalSeparationBinaryVariant { get; set; } = "";
+
+        /// <summary>Filesystem path to the downloaded GGUF vocal-separation model. Auto-set after download.</summary>
+        public string VocalSeparationModelPath { get; set; } = "";
+
+        /// <summary>
+        /// Which <see cref="Setup.RoformerModelCatalog"/> quantization was downloaded (e.g. "q8_0").
+        /// Empty/unknown falls back to the catalog default. Informational — the resolved
+        /// <see cref="VocalSeparationModelPath"/> is what is actually used.
+        /// </summary>
+        public string VocalSeparationModelQuant { get; set; } = "";
+
+        /// <summary>
+        /// BSRoformer.cpp <c>--overlap</c>. 0 = model default. Values ≥ 1 are passed through.
+        /// </summary>
+        public int VocalSeparationOverlap { get; set; } = 0;
+
+        /// <summary>
+        /// BSRoformer.cpp <c>--chunk-size</c> in samples at 44.1 kHz. -1 = model default.
+        /// </summary>
+        public int VocalSeparationChunkSize { get; set; } = -1;
+
         public PluginConfiguration()
         {
         }

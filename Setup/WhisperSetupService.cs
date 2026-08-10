@@ -953,7 +953,7 @@ namespace WhisperSubs.Setup
         /// <summary>
         /// Returns an apt-install hint for a missing shared library.
         /// </summary>
-        private static string GetInstallHint(string libraryName) => libraryName switch
+        internal static string GetInstallHint(string libraryName) => libraryName switch
         {
             "libgomp.so.1" => "e.g. 'apt install libgomp1'",
             "libvulkan.so.1" => "e.g. 'apt install libvulkan1'",
@@ -962,7 +962,7 @@ namespace WhisperSubs.Setup
             _ => $"e.g. 'apt install' the package providing {libraryName}"
         };
 
-        private static string ComputeSha256(string filePath)
+        internal static string ComputeSha256(string filePath)
         {
             using var sha = SHA256.Create();
             using var stream = File.OpenRead(filePath);
