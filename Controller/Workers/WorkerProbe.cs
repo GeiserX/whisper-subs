@@ -56,7 +56,8 @@ namespace WhisperSubs.Controller.Workers
         /// The classifier is total over its inputs (never throws) and applies its rules in precedence order:
         /// unreachable dominates, then a timeout, then the HTTP status.
         /// </summary>
-        internal static (bool ok, bool warning, string message) ClassifyProbeOutcome(bool reachable, int? httpStatus, bool timedOut)
+        internal static (bool ok, bool warning, string message) ClassifyProbeOutcome(
+            bool reachable, int? httpStatus, bool timedOut, string? redirectTarget = null)
         {
             if (!reachable)
             {
@@ -82,6 +83,21 @@ namespace WhisperSubs.Controller.Workers
                 if (status == 401 || status == 403)
                 {
                     return (false, false, "Reachable, but authentication failed — check the API key.");
+                }
+
+                // A transcription endpoint never redirects an API call; a 3xx here means something else is
+                // answering in its place — almost always an auth/SSO gateway or an http→https rewrite. Name
+                // the target when we have it: seeing your own login page's URL is the one-line diagnosis
+                // (issue #157 — a silent 302 cost the reporter a subtitle library full of saved login pages).
+                if (status is 301 or 302 or 303 or 307 or 308)
+                {
+                    var target = string.IsNullOrWhiteSpace(redirectTarget)
+                        ? string.Empty
+                        : " to " + redirectTarget;
+                    return (false, false,
+                        "Reachable, but the endpoint redirected the request (HTTP " + status + ")" + target +
+                        " instead of answering it — usually an auth/SSO gateway or an http-to-https rewrite in front" +
+                        " of the API. Point the worker at the API's direct, final address.");
                 }
 
                 return (false, false, "Reachable, but the transcription endpoint returned HTTP " + status + ".");

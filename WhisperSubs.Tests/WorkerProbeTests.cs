@@ -72,6 +72,36 @@ public class WorkerProbeTests
         Assert.Equal("Reachable, but the transcription endpoint returned HTTP " + status + ".", message);
     }
 
+    [Theory]
+    [InlineData(301)]
+    [InlineData(302)]
+    [InlineData(303)]
+    [InlineData(307)]
+    [InlineData(308)]
+    public void Reachable_Redirect_IsHardFailureWithTheGatewayDiagnosis(int status)
+    {
+        // #157: a redirect means something else (an auth/SSO gateway, an http→https rewrite) answered in
+        // the endpoint's place. The message must say that, not just repeat the number.
+        var (ok, warning, message) = WorkerProbe.ClassifyProbeOutcome(reachable: true, httpStatus: status, timedOut: false);
+
+        Assert.False(ok);
+        Assert.False(warning);
+        Assert.Contains("HTTP " + status, message, System.StringComparison.Ordinal);
+        Assert.Contains("auth/SSO gateway", message, System.StringComparison.Ordinal);
+        // No-target formatting stays clean: the status parenthesis runs straight into the explanation.
+        Assert.Contains("(HTTP " + status + ") instead", message, System.StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Reachable_RedirectWithTarget_NamesWhereItWent()
+    {
+        var (ok, _, message) = WorkerProbe.ClassifyProbeOutcome(
+            reachable: true, httpStatus: 302, timedOut: false, redirectTarget: "https://auth.example.com/login");
+
+        Assert.False(ok);
+        Assert.Contains("to https://auth.example.com/login instead", message, System.StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Reachable_ButTranscribeTimedOut_IsWarningNotFailure()
     {

@@ -159,6 +159,46 @@ namespace WhisperSubs.Controller.Workers
         /// would hide exactly what the admin needs.
         /// </para>
         /// </summary>
+        /// <summary>
+        /// Sanitizes a redirect Location for display, with the same rules as <see cref="SanitizeEndpoint"/>.
+        /// The target is usually the diagnosis in one word — an SSO login page, the https:// twin of an
+        /// http:// URL — but it is upstream-controlled and its query string routinely embeds the ORIGINAL
+        /// request URL (rd=/redirect_uri=), which may carry a key the admin pasted there. Tolerates the
+        /// relative form ("/login") a gateway may emit; empty when the response carried no Location at all.
+        /// </summary>
+        public static string SanitizeRedirectTarget(Uri? location)
+        {
+            if (location is null)
+            {
+                return string.Empty;
+            }
+            if (location.IsAbsoluteUri)
+            {
+                return SanitizeEndpoint(location.OriginalString);
+            }
+
+            // The relative form cannot ride SanitizeEndpoint's query-dropping (that path needs an absolute
+            // URI), and the free-text rules must not be trusted with it either: an SSO "state"/"rd" value is
+            // opaque or percent-encoded, so it matches no secret pattern yet may embed the original request
+            // URL with a key in it. The PATH alone carries the diagnosis — cut everything after it, keeping
+            // the same "?[redacted]" marker the absolute form shows.
+            var raw = location.OriginalString;
+            var fragmentStart = raw.IndexOf('#', StringComparison.Ordinal);
+            if (fragmentStart >= 0)
+            {
+                raw = raw[..fragmentStart];
+            }
+            var queryStart = raw.IndexOf('?', StringComparison.Ordinal);
+            var hadQuery = queryStart >= 0;
+            if (hadQuery)
+            {
+                raw = raw[..queryStart];
+            }
+
+            var sanitized = Sanitize(raw, apiKey: null, maxLength: 200);
+            return hadQuery && sanitized.Length > 0 ? sanitized + "?" + Redacted : sanitized;
+        }
+
         public static string SanitizeEndpoint(string? url)
         {
             if (string.IsNullOrWhiteSpace(url))

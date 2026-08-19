@@ -100,6 +100,11 @@ public class RemoteUploadEdgeCaseTests
     [InlineData(403, "billing")]
     [InlineData(405, "audio uploads")]
     [InlineData(501, "audio uploads")]
+    [InlineData(301, "redirected the request")]
+    [InlineData(302, "auth/SSO gateway")]
+    [InlineData(303, "never follows a redirect")]
+    [InlineData(307, "direct, final address")]
+    [InlineData(308, "redirected the request")]
     public void MoreStatusesCarryGuidance(int status, string expected)
     {
         Assert.Contains(expected, RemoteErrorGuidance.For((HttpStatusCode)status),

@@ -96,6 +96,19 @@ namespace WhisperSubs.Providers
                 : string.Empty;
         }
 
+        /// <summary>
+        /// The admin-safe detail for a redirect answer, naming where the endpoint tried to send the call.
+        /// A redirect's BODY is an empty stub, so the generic body-snippet path has nothing to show — the
+        /// Location header is the actual diagnosis (the SSO login page, the https:// twin of an http:// URL).
+        /// Issue #157: a misconfigured gateway 302'd every upload and the admin had no way to see where to.
+        /// Empty when the response carried no usable Location, so the caller can fall back to the body.
+        /// </summary>
+        internal static string DescribeRedirectDetail(Uri? location)
+        {
+            var target = UpstreamErrorSanitizer.SanitizeRedirectTarget(location);
+            return target.Length == 0 ? string.Empty : $"it redirected this call to {target}";
+        }
+
         internal const int MaxTranscriptionResponseBytes = 32 * 1024 * 1024;
         internal const int MaxErrorResponseBytes = 4096;
         private static readonly Regex SrtTimingLineRegex = new(
@@ -809,9 +822,16 @@ namespace WhisperSubs.Providers
                         response.Content, MaxErrorResponseBytes, timeoutCts.Token, truncate: true).ConfigureAwait(false);
                     // Echo the provider's own explanation, sanitized and media-type gated, so the admin can
                     // see WHY without turning on debug logging (#138). The raw body is retained on the
-                    // exception for the response-format negotiation matcher.
-                    var detail = DescribeUpstreamErrorBody(
-                        errorBody, _apiKey, response.Content.Headers.ContentType?.MediaType);
+                    // exception for the response-format negotiation matcher. For a redirect the body is an
+                    // empty stub and the Location header is the real explanation (#157), so it wins.
+                    var detail = (int)response.StatusCode is >= 300 and < 400
+                        ? DescribeRedirectDetail(response.Headers.Location)
+                        : string.Empty;
+                    if (detail.Length == 0)
+                    {
+                        detail = DescribeUpstreamErrorBody(
+                            errorBody, _apiKey, response.Content.Headers.ContentType?.MediaType);
+                    }
                     throw new RemoteApiException(response.StatusCode, errorBody, detail);
                 }
 
