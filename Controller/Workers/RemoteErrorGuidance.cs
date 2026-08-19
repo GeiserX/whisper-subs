@@ -21,6 +21,13 @@ namespace WhisperSubs.Controller.Workers
         /// </summary>
         public static string For(HttpStatusCode statusCode) => (int)statusCode switch
         {
+            // Refused, never followed: following would re-send the whole audio upload, and a 302's
+            // POST-becomes-GET rewrite silently drops the audio anyway — the exact failure mode that made
+            // pre-v4.4 builds save a login page as a subtitle (issue #157).
+            301 or 302 or 303 or 307 or 308 =>
+                "The endpoint redirected the request instead of answering it. WhisperSubs never follows a redirect with your audio - " +
+                "usually an auth/SSO gateway or an http-to-https rewrite is intercepting the URL. " +
+                "Point the worker at the API's direct, final address (and exempt it from any login gateway).",
             401 => "The endpoint rejected the API key. Check it is pasted in full, belongs to this provider, and has not expired.",
             403 => "The key was accepted but this account is not allowed to use it here - check model access and billing on the provider's dashboard.",
             404 => "No transcription endpoint at that address. Enter only the BASE url (WhisperSubs appends /v1/audio/transcriptions itself), so it must not already end in /v1.",

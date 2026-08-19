@@ -498,7 +498,7 @@ namespace WhisperSubs.Api
                 MaxResponseContentBufferSize = 1024 * 1024
             };
 
-            async Task<(System.Net.HttpStatusCode StatusCode, string Body)> SendProbeAsync(
+            async Task<(System.Net.HttpStatusCode StatusCode, string Body, System.Uri? RedirectLocation)> SendProbeAsync(
                 string responseFormat, CancellationToken cancellationToken)
             {
                 using var content = new System.Net.Http.MultipartFormDataContent();
@@ -532,7 +532,9 @@ namespace WhisperSubs.Api
                     cancellationToken);
                 var body = await Providers.RemoteWhisperProvider.ReadUtf8BoundedAsync(
                     response.Content, 1024 * 1024, cancellationToken);
-                return (response.StatusCode, body);
+                // Location is only meaningful on a 3xx; surfaced so the classifier can name the redirect
+                // target (issue #157 — the target IS the diagnosis: a login page, an https:// twin).
+                return (response.StatusCode, body, response.Headers.Location);
             }
 
             static bool IsValidSrtProbeBody(string body)
@@ -566,7 +568,8 @@ namespace WhisperSubs.Api
                 sw.Stop();
                 var status = (int)response.StatusCode;
                 var (ok, warning, msg) = Controller.Workers.WorkerProbe.ClassifyProbeOutcome(
-                    reachable: true, httpStatus: status, timedOut: false);
+                    reachable: true, httpStatus: status, timedOut: false,
+                    redirectTarget: Controller.Workers.UpstreamErrorSanitizer.SanitizeRedirectTarget(response.RedirectLocation));
                 if (ok && !warning)
                 {
                     var emptyResult = string.Equals(responseFormat, "verbose_json", StringComparison.Ordinal)

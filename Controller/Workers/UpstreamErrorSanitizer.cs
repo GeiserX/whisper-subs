@@ -159,6 +159,16 @@ namespace WhisperSubs.Controller.Workers
         /// would hide exactly what the admin needs.
         /// </para>
         /// </summary>
+        /// <summary>
+        /// Sanitizes a redirect Location for display, with the same rules as <see cref="SanitizeEndpoint"/>.
+        /// The target is usually the diagnosis in one word — an SSO login page, the https:// twin of an
+        /// http:// URL — but it is upstream-controlled and its query string routinely embeds the ORIGINAL
+        /// request URL (rd=/redirect_uri=), which may carry a key the admin pasted there. Tolerates the
+        /// relative form ("/login") a gateway may emit; empty when the response carried no Location at all.
+        /// </summary>
+        public static string SanitizeRedirectTarget(Uri? location)
+            => location is null ? string.Empty : SanitizeEndpoint(location.OriginalString);
+
         public static string SanitizeEndpoint(string? url)
         {
             if (string.IsNullOrWhiteSpace(url))
