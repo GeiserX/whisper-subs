@@ -220,6 +220,31 @@ public class UpstreamErrorSanitizerTests
     }
 
     [Fact]
+    public void RedirectTarget_RelativeQuery_IsDroppedEvenWhenOpaque()
+    {
+        // An SSO "state" value is opaque — it matches no secret pattern, yet may embed the original
+        // request URL with a key in it. The relative form must lose its whole query, same as the
+        // absolute form does, and keep the "?[redacted]" marker so the admin knows one was there.
+        var target = UpstreamErrorSanitizer.SanitizeRedirectTarget(
+            new System.Uri("/login?state=b64.opaque_blob-with-secrets&rd=%2Fv1%3Fapi_key%3Dsk-abc", System.UriKind.Relative));
+
+        Assert.StartsWith("/login?[redacted]", target, System.StringComparison.Ordinal);
+        Assert.DoesNotContain("state=", target, System.StringComparison.Ordinal);
+        Assert.DoesNotContain("sk-abc", target, System.StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RedirectTarget_RelativeFragment_IsDropped()
+    {
+        // SPA-style gateways put the route after '#': "/portal#/auth?token=x". Nothing after the path
+        // is worth the risk; the path alone names the page.
+        var target = UpstreamErrorSanitizer.SanitizeRedirectTarget(
+            new System.Uri("/portal#/auth?token=xyz123", System.UriKind.Relative));
+
+        Assert.Equal("/portal", target);
+    }
+
+    [Fact]
     public void RedirectTarget_MissingLocation_IsEmpty()
     {
         Assert.Equal(string.Empty, UpstreamErrorSanitizer.SanitizeRedirectTarget(null));
