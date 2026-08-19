@@ -193,4 +193,89 @@ public class UpstreamErrorSanitizerTests
         Assert.Contains("401", message, System.StringComparison.Ordinal);
         Assert.Contains("API key", message, System.StringComparison.OrdinalIgnoreCase);
     }
+
+    // ---- redirect answers (#157) ------------------------------------------------------------------
+    // A redirect's body is an empty stub; its Location header is the diagnosis. But Location is
+    // upstream-controlled, and an SSO gateway's target routinely embeds the ORIGINAL request URL in its
+    // query (rd=/redirect_uri=) — where an admin may have pasted a key — so it crosses the same boundary
+    // as any upstream text: sanitized, never raw.
+
+    [Fact]
+    public void RedirectTarget_AbsoluteWithSecretQuery_KeepsHostDropsQuery()
+    {
+        var target = UpstreamErrorSanitizer.SanitizeRedirectTarget(
+            new System.Uri("https://auth.example.com/login?rd=https%3A%2F%2Fapi.example.com%2Fv1%3Fapi_key%3Dsk-secret123456"));
+
+        Assert.Contains("auth.example.com/login", target, System.StringComparison.Ordinal);
+        Assert.DoesNotContain("sk-secret123456", target, System.StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void RedirectTarget_RelativeForm_Survives()
+    {
+        // Gateways may emit a relative Location ("/login"); it still names the page and carries no host.
+        var target = UpstreamErrorSanitizer.SanitizeRedirectTarget(new System.Uri("/login", System.UriKind.Relative));
+
+        Assert.Contains("/login", target, System.StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RedirectTarget_RelativeQuery_IsDroppedEvenWhenOpaque()
+    {
+        // An SSO "state" value is opaque — it matches no secret pattern, yet may embed the original
+        // request URL with a key in it. The relative form must lose its whole query, same as the
+        // absolute form does, and keep the "?[redacted]" marker so the admin knows one was there.
+        var target = UpstreamErrorSanitizer.SanitizeRedirectTarget(
+            new System.Uri("/login?state=b64.opaque_blob-with-secrets&rd=%2Fv1%3Fapi_key%3Dsk-abc", System.UriKind.Relative));
+
+        Assert.StartsWith("/login?[redacted]", target, System.StringComparison.Ordinal);
+        Assert.DoesNotContain("state=", target, System.StringComparison.Ordinal);
+        Assert.DoesNotContain("sk-abc", target, System.StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RedirectTarget_RelativeFragment_IsDropped()
+    {
+        // SPA-style gateways put the route after '#': "/portal#/auth?token=x". Nothing after the path
+        // is worth the risk; the path alone names the page.
+        var target = UpstreamErrorSanitizer.SanitizeRedirectTarget(
+            new System.Uri("/portal#/auth?token=xyz123", System.UriKind.Relative));
+
+        Assert.Equal("/portal", target);
+    }
+
+    [Fact]
+    public void RedirectTarget_MissingLocation_IsEmpty()
+    {
+        Assert.Equal(string.Empty, UpstreamErrorSanitizer.SanitizeRedirectTarget(null));
+    }
+
+    [Fact]
+    public void RedirectDetail_NamesWhereTheCallWasSent()
+    {
+        var detail = RemoteWhisperProvider.DescribeRedirectDetail(new System.Uri("https://auth.example.com/login"));
+
+        Assert.Contains("redirected this call to", detail, System.StringComparison.Ordinal);
+        Assert.Contains("https://auth.example.com/login", detail, System.StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RedirectDetail_MissingLocation_IsEmpty_SoTheBodyPathStillApplies()
+    {
+        Assert.Equal(string.Empty, RemoteWhisperProvider.DescribeRedirectDetail(null));
+    }
+
+    [Fact]
+    public void AssembledRedirectMessage_CarriesStatusGuidanceAndTarget()
+    {
+        // The full #157 admin experience in one string: what happened (302), why it usually happens
+        // (a gateway intercepting the URL), and where the call was actually sent.
+        var message = RemoteWhisperProvider.BuildRemoteApiMessage(
+            HttpStatusCode.Found,
+            RemoteWhisperProvider.DescribeRedirectDetail(new System.Uri("https://auth.example.com/login")));
+
+        Assert.Contains("302", message, System.StringComparison.Ordinal);
+        Assert.Contains("auth/SSO gateway", message, System.StringComparison.Ordinal);
+        Assert.Contains("https://auth.example.com/login", message, System.StringComparison.Ordinal);
+    }
 }
