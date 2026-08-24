@@ -59,6 +59,21 @@ public class SweepBudgetTests
         Assert.True(SweepBudget.Expired(deadline, Start.AddHours(11)));
     }
 
+    // ---- a misconfigured huge value must not throw out of AddHours ------------------------------
+
+    [Theory]
+    [InlineData(int.MaxValue)]
+    [InlineData(1_000_000_000)]
+    public void AbsurdlyLargeHours_SaturateInsteadOfThrowing(int hours)
+    {
+        // AddHours would throw ArgumentOutOfRangeException and kill the task. Saturating gives an
+        // unreachable deadline, which is the "effectively unlimited" the operator asked for.
+        var deadline = SweepBudget.Deadline(hours, Start);
+
+        Assert.Equal(DateTime.MaxValue, deadline);
+        Assert.False(SweepBudget.Expired(deadline, new DateTime(9999, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
+    }
+
     // ---- the real incident: 02:00 start, still running at 13:00 ---------------------------------
 
     [Fact]

@@ -13,7 +13,14 @@ namespace WhisperSubs.ScheduledTasks
         /// disabled (<paramref name="maxRuntimeHours"/> of 0 or less means unlimited).
         /// </summary>
         internal static DateTime? Deadline(int maxRuntimeHours, DateTime startUtc)
-            => maxRuntimeHours > 0 ? startUtc.AddHours(maxRuntimeHours) : (DateTime?)null;
+        {
+            if (maxRuntimeHours <= 0) return null;
+
+            // A misconfigured huge value must not throw out of AddHours and kill the task; an
+            // unreachable deadline behaves like "effectively unlimited", which is what was asked for.
+            var remainingHours = (DateTime.MaxValue - startUtc).TotalHours;
+            return maxRuntimeHours >= remainingHours ? DateTime.MaxValue : startUtc.AddHours(maxRuntimeHours);
+        }
 
         /// <summary>True once <paramref name="nowUtc"/> has reached a real deadline.</summary>
         internal static bool Expired(DateTime? deadline, DateTime nowUtc)
