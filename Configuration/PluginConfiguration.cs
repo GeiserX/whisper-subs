@@ -355,6 +355,16 @@ namespace WhisperSubs.Configuration
         /// </summary>
         public int JobMaxRetries { get; set; } = 3;
 
+        /// <summary>
+        /// Wall-clock cap on a single sweep of the Generate Subtitles task, in hours. The per-call
+        /// deadlines above bound one transcription; nothing bounded the sweep itself, so a large library
+        /// could keep the task running deep into the day, holding a database connection and saturating
+        /// disk I/O the whole time. When the cap is reached the sweep stops cleanly between items:
+        /// finished work is kept, the skip cache is persisted, and the next scheduled run resumes from
+        /// where this one stopped. 0 = unlimited (the behaviour before this setting). Default 6.
+        /// </summary>
+        public int TaskMaxRuntimeHours { get; set; } = 6;
+
         // ── Worker pool (v4.0; power-user feature, empty by default) ─────────
         // Simple by default: a normal single-server install leaves Workers empty and EnableLocalWorker on,
         // so the plugin behaves exactly as today (the host's own whisper, one job at a time). Power users

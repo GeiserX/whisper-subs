@@ -220,6 +220,25 @@ namespace WhisperSubs.ScheduledTasks
             // items are ever in flight. With the default one local worker (TotalCapacity 1) the producer
             // cannot dispatch item k+1 until item k releases its slot — transcriptions stay strictly
             // one-at-a-time in enumeration order, exactly like the old inline await.
+            var sweepDeadline = SweepBudget.Deadline(config.TaskMaxRuntimeHours, DateTime.UtcNow);
+            if (sweepDeadline.HasValue)
+            {
+                _logger.LogInformation("Sweep budget: {Hours}h (stops cleanly between items; next run resumes)", config.TaskMaxRuntimeHours);
+            }
+
+            // Every pre-dispatch wait below (playback idle, priority drain, parking on AcquireAsync)
+            // can outlast a budget that was still valid at loop entry, so the check is re-run after
+            // each of them rather than once per item. Logs only on the call that actually stops.
+            bool SweepBudgetExhausted()
+            {
+                if (!SweepBudget.Expired(sweepDeadline, DateTime.UtcNow)) return false;
+                _logger.LogWarning(
+                    "Stopping this sweep after {Hours}h (TaskMaxRuntimeHours): {Done}/{Total} item(s) processed. " +
+                    "Finished work is kept and the next scheduled run continues from here.",
+                    config.TaskMaxRuntimeHours, Volatile.Read(ref completed), allItems.Count);
+                return true;
+            }
+
             var inFlight = new List<Task>();
             if (pool.TotalCapacity > 1)
             {
@@ -231,6 +250,11 @@ namespace WhisperSubs.ScheduledTasks
             for (int i = 0; i < allItems.Count; i++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+
+                // Stop cleanly at the sweep budget rather than running into the day. Breaking (not
+                // throwing) lets the finally below persist the skip cache, so the next scheduled run
+                // resumes from here instead of re-probing everything already done.
+                if (SweepBudgetExhausted()) break;
 
                 // Wait for active playback to finish before processing next item
                 if (config.PauseOnPlayback)
@@ -244,6 +268,9 @@ namespace WhisperSubs.ScheduledTasks
                     _logger.LogInformation("Pausing auto-generation to process {Count} priority request(s)", queue.PriorityCount);
                     await queue.DrainPriorityAsync(manager, pool, requirements, config.JobMaxRetries, _logger, cancellationToken);
                 }
+
+                // Either wait above can run for hours; do not start another item past the budget.
+                if (SweepBudgetExhausted()) break;
 
                 var (item, libName) = allItems[i];
                 var itemType = item.GetType().Name;
@@ -446,6 +473,14 @@ namespace WhisperSubs.ScheduledTasks
                         _logger.LogInformation("Yielding worker slot to {Count} priority request(s) before the next swept item", queue.PriorityCount);
                         await queue.DrainPriorityAsync(manager, pool, requirements, config.JobMaxRetries, _logger, cancellationToken);
                         lease = await pool.AcquireAsync(requirements, cancellationToken);
+                    }
+
+                    // Parking on AcquireAsync (and any priority drain above) can outlast the budget.
+                    // Hand the slot straight back instead of starting a transcription past the deadline.
+                    if (SweepBudgetExhausted())
+                    {
+                        pool.Release(lease.Key);
+                        break;
                     }
 
                     // Report AFTER the slot is won, so the panel names the item that is actually starting —
