@@ -332,8 +332,19 @@ jobs:
 
       - name: Prepare Pages content
         run: |
-          mkdir -p _pages
+          mkdir -p _pages/docs
           cp manifest.json _pages/
+          cp -r docs/setup _pages/docs/
+
+      - name: Gate - the catalog must be in the artifact and valid
+        run: |
+          set -euo pipefail
+          test -f _pages/manifest.json
+          jq -e 'type == "array"' _pages/manifest.json > /dev/null
+          jq -e '.[0].guid == "97124bd9-c8cd-4a53-a213-e593aa3fef52"' _pages/manifest.json > /dev/null
+          test -f _pages/docs/setup/index.html
+          V=$(jq -er '.[0].versions[0].version' _pages/manifest.json)
+          echo "gate ok: publishing catalog newest=$V plus docs/setup"
 
       - name: Setup Pages
         uses: actions/configure-pages@v6
