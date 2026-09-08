@@ -40,8 +40,9 @@ const config: Config = {
     image: 'img/social-preview.png',
     colorMode: {defaultMode: 'dark', respectPrefersColorScheme: true},
     navbar: {
+      // No logo image: the project banner already contains the wordmark, so
+      // pairing it with the title rendered "WhisperSubs" twice.
       title: 'WhisperSubs',
-      logo: {alt: 'WhisperSubs', src: 'img/logo.svg'},
       items: [
         {type: 'docSidebar', sidebarId: 'docs', position: 'left', label: 'Documentation'},
         {href: 'https://github.com/GeiserX/whisper-subs', label: 'GitHub', position: 'right'},
