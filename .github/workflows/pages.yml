@@ -1,0 +1,98 @@
+name: Pages
+
+# The SOLE owner of GitHub Pages for this repository.
+#
+# Pages publishes one artifact as the ENTIRE site: whatever is not in the
+# artifact is deleted. The Jellyfin plugin catalog (manifest.json) and the
+# documentation site therefore have to ship together, from here, or one
+# would silently delete the other.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - 'manifest.json'
+      - '.github/workflows/pages.yml'
+  # A push made by the release workflow's GITHUB_TOKEN does NOT create a
+  # workflow run, so the manifest commit can never trigger the push event
+  # above. Fire on the release run completing instead.
+  workflow_run:
+    workflows: ['Build and Release']
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Shared with build-release.yml so a docs push and a release can never
+# interleave and publish half a site. Never cancel: cancelling between
+# "release created" and "catalog published" strands the catalog.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+
+      - name: Install docs dependencies
+        id: deps
+        continue-on-error: true
+        working-directory: site
+        run: npm ci
+
+      - name: Build documentation
+        id: docs
+        if: steps.deps.outcome == 'success'
+        continue-on-error: true
+        working-directory: site
+        run: npm run build
+
+      # The catalog must publish even when the docs are broken. Missing docs
+      # is the status quo; a missing catalog breaks every installed plugin.
+      - name: Assemble the site
+        run: |
+          set -euo pipefail
+          mkdir -p _site
+          if [ "${{ steps.docs.outcome }}" = "success" ]; then
+            cp -r site/build/. _site/
+            echo "docs: included"
+          else
+            echo "docs: BUILD FAILED - publishing the catalog only"
+          fi
+          cp manifest.json _site/manifest.json
+
+      - name: Gate - the catalog must be present and valid
+        run: |
+          set -euo pipefail
+          test -f _site/manifest.json
+          jq -e 'type == "array"' _site/manifest.json > /dev/null
+          jq -e '.[0].guid == "97124bd9-c8cd-4a53-a213-e593aa3fef52"' _site/manifest.json > /dev/null
+          V=$(jq -er '.[0].versions[0].version' _site/manifest.json)
+          echo "gate ok: publishing catalog newest=$V"
+
+      - name: Fail the run if the docs build broke
+        if: steps.deps.outcome != 'success' || steps.docs.outcome != 'success'
+        run: |
+          echo "::error::The documentation build failed. The catalog was still published."
+          exit 1
+
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v5

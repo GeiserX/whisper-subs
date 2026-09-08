@@ -1,0 +1,33 @@
+:root {
+  --ifm-color-primary: #52b54b;
+  --ifm-color-primary-dark: #49a343;
+  --ifm-color-primary-darker: #459a3f;
+  --ifm-color-primary-darkest: #397f34;
+  --ifm-color-primary-light: #63bc5d;
+  --ifm-color-primary-lighter: #6cc066;
+  --ifm-color-primary-lightest: #86cb81;
+  --ifm-code-font-size: 92%;
+  --ifm-font-family-base: system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.08);
+}
+
+[data-theme='dark'] {
+  --ifm-color-primary: #71c26c;
+  --ifm-color-primary-dark: #5cb957;
+  --ifm-color-primary-darker: #52b54c;
+  --ifm-color-primary-darkest: #43953e;
+  --ifm-color-primary-light: #86cb81;
+  --ifm-color-primary-lighter: #90cf8c;
+  --ifm-color-primary-lightest: #afddac;
+  --docusaurus-highlighted-code-line-bg: rgba(255, 255, 255, 0.10);
+}
+
+/* Readable measure for long troubleshooting prose. */
+.markdown {
+  --ifm-h2-vertical-rhythm-top: 2.2;
+}
+
+.markdown table {
+  display: table;
+  width: 100%;
+}

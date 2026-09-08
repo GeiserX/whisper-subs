@@ -20,3 +20,8 @@ Thumbs.db
 # Build logs
 *.log
 build_log.txt
+
+# Docusaurus documentation site
+site/node_modules/
+site/build/
+site/.docusaurus/
