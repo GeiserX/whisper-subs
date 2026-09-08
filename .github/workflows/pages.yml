@@ -35,6 +35,11 @@ concurrency:
 
 jobs:
   deploy:
+    # workflow_run fires on completion regardless of outcome. Only follow a
+    # release that actually succeeded; a failed one has no new catalog.
+    if: >-
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
@@ -61,6 +66,37 @@ jobs:
         working-directory: site
         run: npm run build
 
+      # The release workflow attaches manifest.json to every release, so the
+      # newest release carries the authoritative catalog. There is no read of
+      # the live site here: that would be circular, since this job is what
+      # publishes it.
+      - name: Resolve the catalog
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p _catalog
+          cp manifest.json _catalog/committed.json
+          if gh release download --repo "$GITHUB_REPOSITORY" \
+               --pattern manifest.json --dir _catalog --clobber 2>/dev/null; then
+            mv _catalog/manifest.json _catalog/released.json
+          else
+            echo "no release carries a catalog yet; using the committed copy"
+            cp _catalog/committed.json _catalog/released.json
+          fi
+          # Never publish an older catalog than the one in git. Whichever names
+          # the higher newest-version wins.
+          RV=$(jq -er '.[0].versions[0].version' _catalog/released.json)
+          CV=$(jq -er '.[0].versions[0].version' _catalog/committed.json)
+          WINNER=$(printf '%s\n%s\n' "$RV" "$CV" | sort -V | tail -1)
+          if [ "$WINNER" = "$RV" ]; then
+            cp _catalog/released.json _catalog/manifest.json
+            echo "catalog: release asset (newest=$RV, committed=$CV)"
+          else
+            cp _catalog/committed.json _catalog/manifest.json
+            echo "catalog: committed copy (newest=$CV, release=$RV)"
+          fi
+
       # The catalog must publish even when the docs are broken. Missing docs
       # is the status quo; a missing catalog breaks every installed plugin.
       - name: Assemble the site
@@ -73,7 +109,7 @@ jobs:
           else
             echo "docs: BUILD FAILED - publishing the catalog only"
           fi
-          cp manifest.json _site/manifest.json
+          cp _catalog/manifest.json _site/manifest.json
 
       - name: Gate - the catalog must be present and valid
         run: |

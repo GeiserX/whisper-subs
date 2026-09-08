@@ -16,8 +16,6 @@ concurrency:
 
 permissions:
   contents: write
-  pages: write
-  id-token: write
 
 jobs:
   # ── Build whisper.cpp static binaries ──────────────────────────────
@@ -287,14 +285,10 @@ jobs:
             --arg ts "$TIMESTAMP" \
             '{version: $ver, changelog: "See https://github.com/GeiserX/whisper-subs/releases", targetAbi: "10.11.0.0", sourceUrl: "https://github.com/GeiserX/whisper-subs/releases/download/v\($ver)/WhisperSubs_\($ver).zip", checksum: $cs, timestamp: $ts}')
 
-          # Fetch live manifest from Pages (has accumulated history)
-          LIVE_MANIFEST=$(curl -sf https://geiserx.github.io/whisper-subs/manifest.json || echo "")
-
-          if [ -n "$LIVE_MANIFEST" ] && echo "$LIVE_MANIFEST" | jq -e '.[0].versions' > /dev/null 2>&1; then
-            echo "$LIVE_MANIFEST" | jq --argjson entry "$NEW_ENTRY" \
-              '.[0].versions = ([$entry] + [.[0].versions[] | select(.version != $entry.version)]) | .[0].versions = .[0].versions[:5]' \
-              > manifest.json
-          elif [ -f manifest.json ] && jq -e '.[0].versions' manifest.json > /dev/null 2>&1; then
+          # The committed manifest is the source of truth. This used to read the
+          # live Pages copy first, so a single failed fetch would silently rebuild
+          # the catalog from whatever stale copy happened to be in git.
+          if [ -f manifest.json ] && jq -e '.[0].versions' manifest.json > /dev/null 2>&1; then
             jq --argjson entry "$NEW_ENTRY" \
               '.[0].versions = ([$entry] + [.[0].versions[] | select(.version != $entry.version)]) | .[0].versions = .[0].versions[:5]' \
               manifest.json > manifest.json.tmp && mv manifest.json.tmp manifest.json
@@ -316,6 +310,7 @@ jobs:
           tag_name: v${{ steps.version.outputs.version }}
           name: WhisperSubs v${{ steps.version.outputs.version }}
           files: |
+            manifest.json
             WhisperSubs_${{ steps.version.outputs.version }}.zip
             whisper-cli-linux-x64
             whisper-cli-linux-x64-noavx
@@ -330,30 +325,3 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Prepare Pages content
-        run: |
-          mkdir -p _pages/docs
-          cp manifest.json _pages/
-          cp -r docs/setup _pages/docs/
-
-      - name: Gate - the catalog must be in the artifact and valid
-        run: |
-          set -euo pipefail
-          test -f _pages/manifest.json
-          jq -e 'type == "array"' _pages/manifest.json > /dev/null
-          jq -e '.[0].guid == "97124bd9-c8cd-4a53-a213-e593aa3fef52"' _pages/manifest.json > /dev/null
-          test -f _pages/docs/setup/index.html
-          V=$(jq -er '.[0].versions[0].version' _pages/manifest.json)
-          echo "gate ok: publishing catalog newest=$V plus docs/setup"
-
-      - name: Setup Pages
-        uses: actions/configure-pages@v6
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v5
-        with:
-          path: _pages
-
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v5
