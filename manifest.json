@@ -8,44 +8,44 @@
     "category": "Subtitles",
     "versions": [
       {
-        "version": "3.17.0.0",
+        "version": "4.8.0.0",
         "changelog": "See https://github.com/GeiserX/whisper-subs/releases",
         "targetAbi": "10.11.0.0",
-        "sourceUrl": "https://github.com/GeiserX/whisper-subs/releases/download/v3.17.0.0/WhisperSubs_3.17.0.0.zip",
-        "checksum": "d6ce12b9241b064b7e6f852017f84eb4",
-        "timestamp": "2026-05-12T09:15:19Z"
+        "sourceUrl": "https://github.com/GeiserX/whisper-subs/releases/download/v4.8.0.0/WhisperSubs_4.8.0.0.zip",
+        "checksum": "3bb0436171b861b6f25856217b81b488",
+        "timestamp": "2026-08-24T21:28:48Z"
       },
       {
-        "version": "3.16.0.0",
+        "version": "4.7.0.1",
         "changelog": "See https://github.com/GeiserX/whisper-subs/releases",
         "targetAbi": "10.11.0.0",
-        "sourceUrl": "https://github.com/GeiserX/whisper-subs/releases/download/v3.16.0.0/WhisperSubs_3.16.0.0.zip",
-        "checksum": "67089ffc4844d631f1a58ffe286bf454",
-        "timestamp": "2026-05-11T10:49:18Z"
+        "sourceUrl": "https://github.com/GeiserX/whisper-subs/releases/download/v4.7.0.1/WhisperSubs_4.7.0.1.zip",
+        "checksum": "296706be5216ce49e94887a5ce4f1122",
+        "timestamp": "2026-08-19T12:55:58Z"
       },
       {
-        "version": "3.15.0.0",
+        "version": "4.7.0.0",
         "changelog": "See https://github.com/GeiserX/whisper-subs/releases",
         "targetAbi": "10.11.0.0",
-        "sourceUrl": "https://github.com/GeiserX/whisper-subs/releases/download/v3.15.0.0/WhisperSubs_3.15.0.0.zip",
-        "checksum": "01a051fb6a6c0956bd441676349a64f3",
-        "timestamp": "2026-05-11T09:36:39Z"
+        "sourceUrl": "https://github.com/GeiserX/whisper-subs/releases/download/v4.7.0.0/WhisperSubs_4.7.0.0.zip",
+        "checksum": "d5cd213de795f8d39254099b65b85169",
+        "timestamp": "2026-08-10T22:09:41Z"
       },
       {
-        "version": "3.14.2.0",
+        "version": "4.6.0.1",
         "changelog": "See https://github.com/GeiserX/whisper-subs/releases",
         "targetAbi": "10.11.0.0",
-        "sourceUrl": "https://github.com/GeiserX/whisper-subs/releases/download/v3.14.2.0/WhisperSubs_3.14.2.0.zip",
-        "checksum": "5ef4abc9d9c73d1088b1d1b7934a3421",
-        "timestamp": "2026-05-07T22:59:39Z"
+        "sourceUrl": "https://github.com/GeiserX/whisper-subs/releases/download/v4.6.0.1/WhisperSubs_4.6.0.1.zip",
+        "checksum": "b274563e322051c25bc5dcef59819528",
+        "timestamp": "2026-08-06T23:33:24Z"
       },
       {
-        "version": "3.14.1.0",
+        "version": "4.6.0.0",
         "changelog": "See https://github.com/GeiserX/whisper-subs/releases",
         "targetAbi": "10.11.0.0",
-        "sourceUrl": "https://github.com/GeiserX/whisper-subs/releases/download/v3.14.1.0/WhisperSubs_3.14.1.0.zip",
-        "checksum": "8dcbeae7fbc9c01c6184ec2cf8ef5aca",
-        "timestamp": "2026-05-07T21:48:47Z"
+        "sourceUrl": "https://github.com/GeiserX/whisper-subs/releases/download/v4.6.0.0/WhisperSubs_4.6.0.0.zip",
+        "checksum": "52fe46e2b285a8c532ee7a7cfb86c519",
+        "timestamp": "2026-08-06T12:18:30Z"
       }
     ]
   }
