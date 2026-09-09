@@ -206,7 +206,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: '9.0.x'
+          dotnet-version: '10.0.x'
 
       - name: Restore dependencies
         run: dotnet restore
@@ -232,8 +232,8 @@ jobs:
           fi
           TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           mkdir -p release
-          cp bin/Release/net9.0/WhisperSubs.dll release/
-          cp bin/Release/net9.0/WhisperSubs.pdb release/
+          cp bin/Release/net10.0/WhisperSubs.dll release/
+          cp bin/Release/net10.0/WhisperSubs.pdb release/
           jq -n \
             --arg version "$VERSION" \
             --arg timestamp "$TIMESTAMP" \
@@ -245,7 +245,7 @@ jobs:
               name: "WhisperSubs",
               overview: "Generate subtitles using local or remote Whisper workers.",
               owner: "GeiserX",
-              targetAbi: "10.11.0.0",
+              targetAbi: "12.0.0.0",
               timestamp: $timestamp,
               version: $version,
               status: "Active",
@@ -285,7 +285,7 @@ jobs:
             --arg ver "$VERSION" \
             --arg cs "$CHECKSUM" \
             --arg ts "$TIMESTAMP" \
-            '{version: $ver, changelog: "See https://github.com/GeiserX/whisper-subs/releases", targetAbi: "10.11.0.0", sourceUrl: "https://github.com/GeiserX/whisper-subs/releases/download/v\($ver)/WhisperSubs_\($ver).zip", checksum: $cs, timestamp: $ts}')
+            '{version: $ver, changelog: "See https://github.com/GeiserX/whisper-subs/releases", targetAbi: "12.0.0.0", sourceUrl: "https://github.com/GeiserX/whisper-subs/releases/download/v\($ver)/WhisperSubs_\($ver).zip", checksum: $cs, timestamp: $ts}')
 
           # Fetch live manifest from Pages (has accumulated history)
           LIVE_MANIFEST=$(curl -sf https://geiserx.github.io/whisper-subs/manifest.json || echo "")

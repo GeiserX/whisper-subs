@@ -4,11 +4,11 @@
 Jellyfin plugin for AI-powered subtitle generation using whisper.cpp. By default all transcription runs on this Jellyfin server (no third-party services). Optionally, the v4.0 worker pool distributes transcription across additional self-hosted — or cloud — OpenAI-compatible workers; when workers are configured, the plugin extracts audio locally and sends it over HTTP to the workers you set up. Supports GPU acceleration (CUDA, Vulkan, ROCm).
 
 - **Plugin GUID:** `97124bd9-c8cd-4a53-a213-e593aa3fef52`
-- **Target:** Jellyfin 10.11+ / .NET 9.0
+- **Target:** Jellyfin 12.0+ / .NET 10.0
 
 ## Tech Stack
-- C# / .NET 9.0
-- Jellyfin Plugin API (10.11+)
+- C# / .NET 10.0
+- Jellyfin Plugin API (12.0+)
 - whisper.cpp (local AI inference)
 - xUnit for testing (`WhisperSubs.Tests/`)
 - GitHub Actions for CI/build/release
@@ -264,7 +264,7 @@ Version is read from `<Version>` in `WhisperSubs.csproj`. Bump there before push
 - **Orphaned docker-proxy**: If Jellyfin crashes, docker-proxy may hold port 8096. On Unraid: `rc.docker restart`.
 - **Memory limits**: Large models consume 5-10 GB RAM. Set `mem_limit` in docker-compose.
 - **Plugin directory moves on version change**: Always check actual path with `docker exec jellyfin find /config/plugins -name "WhisperSubs*" -type d`.
-- **Jellyfin SDK pinning**: ALWAYS pin `Jellyfin.Controller` and `Jellyfin.Model` to MINIMUM supported minor version (e.g., `10.11.0`). NEVER use wildcards like `10.11.*`.
+- **Jellyfin SDK pinning**: ALWAYS pin `Jellyfin.Controller` and `Jellyfin.Model` to MINIMUM supported minor version (e.g., `12.0.0`). NEVER use wildcards like `12.0.*`. `Jellyfin.Data` is not referenced directly — it comes transitively via `Jellyfin.Model` — but the plugin uses `Jellyfin.Data.Enums` (`Api/SubtitleController.cs`, `Controller/MediaItemResolver.cs`, `ScheduledTasks/SubtitleGenerationTask.cs`), so a bump that breaks that transitive resolution would surface as a missing-namespace build error, not a silent runtime issue.
 
 ## Language Detection
 
