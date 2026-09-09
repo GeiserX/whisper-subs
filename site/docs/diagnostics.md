@@ -17,7 +17,7 @@ In the Jellyfin dashboard, go to **API Keys**, click **New API Key**, give it an
 ### 2. Call the endpoint
 
 ```bash
-JF_URL="http://your-jellyfin:8096"
+JF_URL="https://your-jellyfin"
 JF_KEY="paste-your-api-key-here"
 
 curl -s -H "Authorization: MediaBrowser Token=$JF_KEY" \
@@ -26,9 +26,14 @@ curl -s -H "Authorization: MediaBrowser Token=$JF_KEY" \
 
 The response is one long line of JSON. Add `| jq .` if you have `jq` installed.
 
+If your server has no TLS, the URL is `http://your-jellyfin:8096` instead. Your API key then crosses the network in cleartext and anything on the path can read it, so only do that on a network you trust.
+
 On Windows PowerShell, use `curl.exe`. Plain `curl` there is an alias for `Invoke-WebRequest`, which does not take `-H` the same way:
 
 ```text
+$JF_URL = "https://your-jellyfin"
+$JF_KEY = "paste-your-api-key-here"
+
 curl.exe -H "Authorization: MediaBrowser Token=$JF_KEY" "$JF_URL/Plugins/WhisperSubs/Setup/Status"
 ```
 
@@ -39,7 +44,7 @@ Two forms work, and they are not equally reliable:
 | Header | Works |
 |---|---|
 | `Authorization: MediaBrowser Token=<key>` | Always. Quotes around the value are optional: `Token="<key>"` parses identically. |
-| `X-Emby-Token: <key>` | Only while the server has legacy authorization enabled. It is on by default, but an admin can switch it off, and then this header is ignored and you get 401. |
+| `X-Emby-Token: <key>` | Only while the server has legacy authorization enabled, which depends on your Jellyfin version and its configuration. Jellyfin 10.11, the version this plugin targets, has it on by default and an admin can switch it off. Jellyfin 12.0 turns it off by default, on new and upgraded servers alike. When it is off this header is ignored and you get 401. |
 
 Use the `Authorization` form. It is the one the plugin's own settings page uses, and it does not depend on a server setting.
 
@@ -66,7 +71,7 @@ curl -s -H "Authorization: MediaBrowser Token=$JF_KEY" \
 
 Reverse proxy setups and prebuilt NAS templates set this often, and it is the most common reason a copied command returns 404.
 
-**404 cause 2: the path was anchored under `/web`.** Your address bar shows something like `http://your-jellyfin:8096/web/#/dashboard`, so it is tempting to build the URL from there. The API does not live under `/web`. The path starts at the server root, and the full route is exactly:
+**404 cause 2: the path was anchored under `/web`.** Your address bar shows something like `https://your-jellyfin/web/#/dashboard`, so it is tempting to build the URL from there. The API does not live under `/web`. The path starts at the server root, and the full route is exactly:
 
 ```text
 /Plugins/WhisperSubs/Setup/Status
@@ -192,13 +197,17 @@ Read `Level` and `Message` first: they carry the diagnosis and the remedy in pla
 
 **The plugin's own settings page.** **Dashboard → Plugins → WhisperSubs** already calls the status endpoint and renders it. That is the fastest way to see whether the binary and model are installed. It does not give you the raw JSON a bug report wants.
 
-**A query parameter.** The `ApiKey` query parameter works in the address bar, with no header needed:
+**A query parameter, as a last resort.** The `ApiKey` query parameter works in the address bar, with no header needed. Use it only when you cannot send a header.
+
+:::warning
+A key in a URL leaks. It is written to your browser history, to the access log of every reverse proxy or gateway in front of Jellyfin, and to Jellyfin's own log, and it travels with the URL into any bug report or screenshot you paste it into. Revoke the key in **Dashboard → API Keys** as soon as you have the JSON.
+:::
 
 ```text
-http://your-jellyfin:8096/Plugins/WhisperSubs/Setup/Status?ApiKey=your-api-key
+https://your-jellyfin/Plugins/WhisperSubs/Setup/Status?ApiKey=your-api-key
 ```
 
-The capitalisation matters: `ApiKey`, not `api_key`. Note that the key then sits in your browser history, in any reverse proxy access log, and in Jellyfin's own log, so revoke it when you are done.
+The capitalisation matters: `ApiKey`, not `api_key`.
 
 **The browser console, with no API key at all.** Sign in to Jellyfin as an admin, open the developer tools console on any Jellyfin page, and run:
 

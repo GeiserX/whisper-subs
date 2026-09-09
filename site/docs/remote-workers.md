@@ -21,8 +21,8 @@ Two rules govern dispatch:
 
 You want the pool when you have a second machine with a real GPU, when the Jellyfin host is a NAS too weak to transcribe (turn **Also use this server as a worker** off and offload entirely), or when you want a backlog to clear in parallel across several boxes.
 
-:::warning
-The scheduled auto-generation task still processes its backlog one item at a time. Only manual **Generate** and **Generate All** fan out across the pool, so extra workers will not speed up an overnight sweep.
+:::note
+The scheduled task runs in two phases and both dispatch across the pool. It first drains queued requests, then sweeps the library. Each phase leases a worker slot per item and starts the next item without waiting for the previous one to finish, so up to the pool's total concurrency runs at once. Manual **Generate** and **Generate All** feed the same dispatcher. Extra workers speed up all of it, including an overnight sweep.
 :::
 
 ## Running the worker container
@@ -142,11 +142,11 @@ A subtitle needs timings, so this decides whether a provider can be used at all.
 
 WhisperSubs asks for `srt` first. If the endpoint rejects it, the plugin retries once with `verbose_json`, validates the returned segments, converts them to SRT, and caches that choice for the endpoint so the retry does not repeat on every job. If a provider ignores the requested format and answers with untimed JSON, the plugin retries with the other format rather than accepting it.
 
-The plugin deliberately does **not** send `timestamp_granularities[]`. `segment` is already the default for `verbose_json`, and OpenRouter returns `400` for that field unless your chosen model happens to route to an OpenAI-compatible backend.
+The plugin deliberately does **not** send `timestamp_granularities[]`. The field is optional, and `segment` is already the default for `verbose_json`. Segment is also the only granularity WhisperSubs reads. Support for it varies by model and provider, and some combinations answer `400`: OpenRouter does so unless your chosen model routes to an OpenAI-compatible backend. Omitting the field works everywhere.
 
 Provider-specific limits:
 
-- **OpenAI**: SRT and timestamps exist on `whisper-1` only. `gpt-4o-transcribe` and `gpt-4o-mini-transcribe` return `json`/`text` with no timings and cannot be used for subtitles.
+- **OpenAI**: on `/v1/audio/transcriptions`, SRT and timestamps exist on `whisper-1` only. `gpt-4o-transcribe` and `gpt-4o-mini-transcribe` accept `json` and `text` only, so they carry no timings and cannot be used for subtitles; asking either for `verbose_json` fails with `response_format 'verbose_json' is not compatible with model 'gpt-4o-transcribe'`. The separate `gpt-4o-transcribe-diarize` model answers with `diarized_json`, which WhisperSubs neither requests nor parses.
 - **OpenRouter**: has **no `/v1/audio/translations` endpoint**, so untick **Can translate to English** for it. Timestamps are only available on its OpenAI-compatible models; models that return text without timings (Chirp, Deepgram, Nova) cannot produce synchronized subtitles at all.
 
 ### Upload size, in minutes of audio
@@ -205,7 +205,7 @@ A **502 or a dropped connection on a long title** is usually the same problem: a
 
 The error reads:
 
-```
+```text
 Remote Whisper API returned JSON without timestamped segments.
 Use a model/provider that supports response_format=verbose_json;
 plain json text cannot be synchronized.

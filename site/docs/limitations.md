@@ -26,7 +26,9 @@ Proper diarization (WhisperX, whisper-diarization, NVIDIA NeMo) is a second mach
 
 In practice that means a Python and PyTorch runtime sitting next to this plugin's self-contained native binary, plus pyannote's gated models, which require a Hugging Face account and a manually accepted licence before they can be downloaded at all. It is typically the slowest and most memory-hungry stage of the pipelines that use it, often comparable to the transcription itself.
 
-The accuracy is the harder problem. Published error rates for the current pyannote pipeline are about 18.8% DER on AMI meeting audio and 21.7% on DIHARD III. Measured on TV series specifically, audio-only diarization comes in at 25.6% DER, and the difficulty is exactly what film audio is made of: overlapping dialogue, background score and effects masking voice differences, and short speaker turns. About a quarter of speech mislabelled is not a feature that can ship as correct.
+The accuracy is the harder problem. The [pyannote speaker-diarization-3.1 model card](https://huggingface.co/pyannote/speaker-diarization-3.1) publishes that pipeline's own error rates, measured the strict way: no forgiveness collar, overlapped speech included, no manual voice activity detection and no manual speaker count. On that setup it reports 18.8% DER on AMI (headset mix, `only_words`) and 21.7% on DIHARD 3 (full). Neither set is film audio. The closest one in the same table is [AVA-AVD](https://arxiv.org/abs/2111.14448), 351 five-minute clips cut from 117 movies, and there the pipeline reports 50.0%.
+
+DER counts missed speech, false alarms and speaker confusion against total speech time. At 50% on movie clips there is no version of this that ships as correct. The reasons are what film audio is made of: overlapping dialogue, background score and effects masking voice differences, and short speaker turns.
 
 Even at its best, it produces anonymous cluster labels — `SPEAKER_00`, `SPEAKER_01` — never character or actor names. Getting from those to "Ellie" and "Joel" is a further unsolved step that needs per-show voice enrollment.
 
@@ -105,11 +107,11 @@ A dedicated ~148 MB base model is downloaded for the detection pass specifically
 
 If you do not need foreign-dialogue-only tracks, use **Full** mode.
 
-## The scheduled sweep processes one item at a time
+## One worker still means one item at a time
 
-The worker pool fans out across every configured worker for manual **Generate** and **Generate All**. The scheduled auto-generation task still walks its backlog serially, so adding workers does not speed up an overnight sweep. Parallelizing it is on the roadmap.
+Transcription concurrency is capped by the pool's total concurrency, which is the sum of every worker's max concurrency. A default install has one local worker at max concurrency 1, so everything runs one item at a time: the scheduled task's queued requests, its library sweep, and manual **Generate** and **Generate All** alike.
 
-The workaround today is to run **Generate All** from the admin dashboard, which does use the whole pool.
+You can raise a worker's own max concurrency, but whisper.cpp runs one transcription per GPU context, so a single-GPU worker should stay at 1. Raising the ceiling means adding workers. See [Remote workers and hosted providers](./remote-workers.md).
 
 ## Engine auto-download is Linux only
 
@@ -134,6 +136,8 @@ PGS and VOBSUB tracks are images. WhisperSubs does not OCR them — it transcrib
 
 A subtitle needs timings. `response_format=json` returns the transcript text and no timestamps at all, so it cannot be synchronized, and WhisperSubs rejects such a response rather than fabricating timings.
 
-On OpenAI, timestamps and SRT are available on `whisper-1` only; `gpt-4o-transcribe` and `gpt-4o-mini-transcribe` return text with no timings and cannot be used for subtitles. On OpenRouter, timestamps exist only on its OpenAI-compatible models.
+On OpenAI, timestamps are available on `whisper-1` only. `gpt-4o-transcribe` and `gpt-4o-mini-transcribe` accept `json` and `text` only, so they return no timings and cannot be used for subtitles.
+
+The `.srt` WhisperSubs writes is not always the provider's own `srt` response. When an endpoint refuses `srt`, the plugin converts the segments of a `verbose_json` response into SRT itself. Both paths still need the provider to return timestamps. On OpenRouter, timestamps exist only on its OpenAI-compatible models.
 
 Details, and the matching upload-size limits, are in [Remote workers and hosted providers](./remote-workers.md).

@@ -28,7 +28,7 @@ const config: Config = {
         docs: {
           routeBasePath: '/',
           sidebarPath: './sidebars.ts',
-          editUrl: 'https://github.com/GeiserX/whisper-subs/tree/main/site/',
+          editUrl: 'https://github.com/GeiserX/whisper-subs/edit/main/site/',
         },
         blog: false,
         theme: {customCss: './src/css/custom.css'},

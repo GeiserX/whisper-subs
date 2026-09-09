@@ -120,15 +120,19 @@ jobs:
           V=$(jq -er '.[0].versions[0].version' _site/manifest.json)
           echo "gate ok: publishing catalog newest=$V"
 
-      - name: Fail the run if the docs build broke
-        if: steps.deps.outcome != 'success' || steps.docs.outcome != 'success'
-        run: |
-          echo "::error::The documentation build failed. The catalog was still published."
-          exit 1
-
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5
         with:
           path: _site
       - id: deployment
         uses: actions/deploy-pages@v5
+
+      # Reported LAST, on purpose. Placed before the deploy, a non-zero exit
+      # here would skip the upload and deploy steps (they default to
+      # if: success()), so a broken docs build would take the catalog offline -
+      # the exact outcome the fail-soft design exists to prevent.
+      - name: Report the documentation build failure
+        if: steps.deps.outcome != 'success' || steps.docs.outcome != 'success'
+        run: |
+          echo "::error::The documentation build failed. The catalog was published without it."
+          exit 1

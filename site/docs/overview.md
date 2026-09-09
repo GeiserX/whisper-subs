@@ -20,7 +20,7 @@ https://geiserx.github.io/whisper-subs/manifest.json
 
 Then install **WhisperSubs** from the catalogue and restart Jellyfin.
 
-The plugin needs a whisper engine binary and a model before it can transcribe anything. Both are downloaded from the plugin's own settings page.
+The plugin needs a whisper engine binary and a model before it can transcribe anything. On Linux both download from the plugin's own settings page; on macOS and Windows there are no prebuilt binaries, so you install `whisper-cli` yourself and set **Whisper Binary Path**, while the model still downloads as usual. The [setup guide](/docs/setup) covers both.
 
 ## Where to go next
 

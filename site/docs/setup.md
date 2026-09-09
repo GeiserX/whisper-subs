@@ -38,11 +38,19 @@ Seven variants are published. The three `*-noavx` builds are compiled with OpenM
 |---|---|---|
 | CPU (`cpu`) | `libgomp1` | `apt install libgomp1` |
 | CPU compatibility (`noavx`) | none, self-contained | — |
-| Vulkan (`vulkan`) | `libgomp1` `libvulkan1` `mesa-vulkan-drivers` | `apt install libgomp1 libvulkan1 mesa-vulkan-drivers` |
-| Vulkan compatibility (`vulkan-noavx`) | `libvulkan1` `mesa-vulkan-drivers` | `apt install libvulkan1 mesa-vulkan-drivers` |
+| Vulkan (`vulkan`) | `libgomp1` `libvulkan1` + your GPU's Vulkan driver | Intel/AMD: `apt install libgomp1 libvulkan1 mesa-vulkan-drivers`. NVIDIA: [see below](#vulkan-nvidia) |
+| Vulkan compatibility (`vulkan-noavx`) | `libvulkan1` + your GPU's Vulkan driver | Intel/AMD: `apt install libvulkan1 mesa-vulkan-drivers`. NVIDIA: [see below](#vulkan-nvidia) |
 | CUDA 12 (`cuda12`) | `libgomp1` + NVIDIA Container Toolkit on the host | [NVIDIA docs](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) |
 | CUDA 12 compatibility (`cuda12-noavx`) | NVIDIA Container Toolkit on the host | [NVIDIA docs](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) |
 | ROCm (`rocm`) | `libgomp1` + ROCm runtime | [ROCm docs](https://rocm.docs.amd.com/) |
+
+### Vulkan on NVIDIA {#vulkan-nvidia}
+
+The dropdown offers Vulkan for NVIDIA too, but the packages differ. `libvulkan1` is only the loader. It finds a driver, it does not provide one. The driver, the ICD, comes from the GPU vendor: `mesa-vulkan-drivers` supplies the Intel (ANV) and AMD (RADV) ICDs and nothing for NVIDIA. On NVIDIA the ICD ships with the proprietary driver and registers as `/usr/share/vulkan/icd.d/nvidia_icd.json`. Install Mesa on an NVIDIA-only box and the loader finds no device, so `whisper-cli` runs on the CPU.
+
+Prefer **CUDA 12 (`cuda12`)** on NVIDIA. It is the better-supported path, and the plugin recommends it on its own when it finds an NVIDIA device plus `libcuda.so.1`. Vulkan is still the right pick when CUDA is not available to you: the CUDA build will not run in your container, or one binary has to drive an NVIDIA card and an Intel or AMD GPU in the same machine.
+
+Container setup differs as well. See [Vulkan variant, NVIDIA GPU](#vulkan-docker-nvidia).
 
 ### Which variants your platform gets
 
@@ -94,6 +102,38 @@ apt-get install -y -qq --no-install-recommends \
 rm -rf /var/lib/apt/lists/*
 ```
 
+### Vulkan variant (NVIDIA GPU) {#vulkan-docker-nvidia}
+
+Do not pass `/dev/dri`, and do not install `mesa-vulkan-drivers`. The NVIDIA Vulkan driver is injected into the container by the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html), and only when `NVIDIA_DRIVER_CAPABILITIES` includes `graphics`. The compute-oriented values (`utility`, `compute,utility`) leave it out, which is why a container where `nvidia-smi` works can still have no Vulkan device.
+
+```yaml
+# docker-compose.yml
+services:
+  jellyfin:
+    image: jellyfin/jellyfin
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
+```
+
+Then inside the container, the loader and OpenMP only:
+
+```bash
+apt-get update -qq && \
+apt-get install -y -qq --no-install-recommends \
+  libgomp1 libvulkan1 && \
+rm -rf /var/lib/apt/lists/*
+```
+
+Check the driver actually arrived:
+
+```bash
+docker exec jellyfin ls /usr/share/vulkan/icd.d/
+```
+
+No `nvidia_icd.json` means the `graphics` capability is not set, and Vulkan will not see the card whatever else you install.
+
 ### Persistent install via entrypoint
 
 Libraries installed interactively inside a running container are lost when the container is recreated or updated. To reinstall them automatically, override the entrypoint:
@@ -136,7 +176,7 @@ Linux and macOS archive extraction requires `tar` with xz support. Every Linux `
 | Variant | Required packages | Install command |
 |---|---|---|
 | CPU | `libgomp1` `xz-utils` | `apt install libgomp1 xz-utils` |
-| Vulkan | `libgomp1` `xz-utils` `libvulkan1` `mesa-vulkan-drivers` | `apt install libgomp1 xz-utils libvulkan1 mesa-vulkan-drivers` |
+| Vulkan | `libgomp1` `xz-utils` `libvulkan1` + your GPU's Vulkan driver | Intel/AMD: `apt install libgomp1 xz-utils libvulkan1 mesa-vulkan-drivers`. NVIDIA: [see above](#vulkan-nvidia) |
 | CUDA 12 | `libgomp1` `xz-utils` + NVIDIA Container Toolkit on the host | [NVIDIA docs](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) |
 
 Vulkan and CUDA are not published for every platform:
@@ -190,8 +230,11 @@ Or switch to the matching `*-noavx` variant, which does not need it. The plugin 
 The Vulkan variants need the Vulkan loader. Jellyfin's bundled FFmpeg includes its own copy, but `whisper-cli` needs the system one:
 
 ```bash
-apt install libvulkan1 mesa-vulkan-drivers
+apt install libvulkan1 mesa-vulkan-drivers   # Intel / AMD
+apt install libvulkan1                       # NVIDIA, the driver comes from the container toolkit
 ```
+
+The plugin only checks for the loader, so clearing this warning does not prove Vulkan works. The driver is a separate thing: see [Vulkan on NVIDIA](#vulkan-nvidia).
 
 ### Illegal instruction, or exit code 132
 

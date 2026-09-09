@@ -1,43 +1,29 @@
-# Website
+# WhisperSubs documentation site
 
-This website is built using [Docusaurus](https://docusaurus.io/), a modern static website generator.
+The published documentation at <https://geiserx.github.io/whisper-subs/>, built with [Docusaurus](https://docusaurus.io/).
 
-## Installation
-
-```bash
-npm install
-```
-
-**Note**: feel free to use the package manager of your choice.
-
-## Local Development
+## Local development
 
 ```bash
-npm run start
+npm ci
+npm start        # dev server with hot reload
+npm run build    # production build into build/
+npm run serve    # serve the production build locally
 ```
 
-This command starts a local development server and opens up a browser window. Most changes are reflected live without having to restart the server.
-
-## Build
-
-```bash
-npm run build
-```
-
-This command generates static content into the `build` directory and can be served using any static contents hosting service.
+`npm run serve` is the honest check: the site is published under the `/whisper-subs/` base path, and `npm start` does not exercise that.
 
 ## Deployment
 
-Using SSH:
+Deployment is automatic and there is no manual step. **Do not run `npm run deploy`** — it pushes to a `gh-pages` branch, which this repository does not use, and it would not publish anything.
 
-```bash
-USE_SSH=true npm run deploy
-```
+`.github/workflows/pages.yml` is the only thing that publishes to GitHub Pages. It builds this site, adds the Jellyfin plugin catalog (`manifest.json`) to the output, and uploads the result as a single Pages artifact. It runs on pushes to `main` that touch `site/`, and after a release completes.
 
-Not using SSH:
+Two things about that workflow are load-bearing:
 
-```bash
-GIT_USER=<Your GitHub username> npm run deploy
-```
+- **A Pages deployment replaces the whole site.** The catalog and the docs have to ship in the same artifact, or publishing one would delete the other. A gate fails the build if the catalog is missing or carries the wrong GUID.
+- **The docs build fails soft.** If this site fails to build, the catalog is still published and the run is marked failed afterwards. Missing documentation is recoverable; a missing catalog breaks the plugin repository for every installed user.
 
-If you are using GitHub Pages for hosting, this command is a convenient way to build the website and push to the `gh-pages` branch.
+## The one URL that cannot move
+
+`docs/setup.md` sets `slug: /docs/setup`. That path is compiled into the plugin's settings page and ships inside released binaries, so installed users request it forever and it cannot be changed for them. Keep the slug, whatever the rest of the structure does.
