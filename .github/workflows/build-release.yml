@@ -10,9 +10,13 @@ on:
       - '.github/workflows/build-release.yml'
   workflow_dispatch:
 
+# Never cancel in progress. This job spans "GitHub Release created" through
+# "catalog attached", and a merge that touches any trigger path would otherwise
+# kill a release mid-publish. A queued duplicate is harmless: check-version
+# skips when the tag already exists.
 concurrency:
   group: build-release-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: write
