@@ -56,6 +56,14 @@ updates:
       - dependency-name: '@docusaurus/*'
         update-types:
           - version-update:semver-major
+      # TypeScript 7 removed the `baseUrl` compiler option, and
+      # @docusaurus/tsconfig still sets it, so `npm run typecheck` fails on
+      # the inherited value no matter what this repo does. Drop this entry
+      # once @docusaurus/tsconfig stops shipping baseUrl, and remove the
+      # baseUrl in site/tsconfig.json at the same time - both have to go.
+      - dependency-name: typescript
+        update-types:
+          - version-update:semver-major
   - package-ecosystem: github-actions
     directory: /
     schedule:

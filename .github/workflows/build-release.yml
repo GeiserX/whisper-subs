@@ -10,9 +10,13 @@ on:
       - '.github/workflows/build-release.yml'
   workflow_dispatch:
 
+# Never cancel in progress. This job spans "GitHub Release created" through
+# "catalog attached", and a merge that touches any trigger path would otherwise
+# kill a release mid-publish. A queued duplicate is harmless: check-version
+# skips when the tag already exists.
 concurrency:
   group: build-release-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -183,14 +187,38 @@ jobs:
 
       - name: Get version and check tag
         id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           VERSION=$(grep -oP '(?<=<Version>)[^<]+' WhisperSubs.csproj)
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          if git ls-remote --tags origin "refs/tags/v${VERSION}" | grep -q .; then
+
+          if ! git ls-remote --tags origin "refs/tags/v${VERSION}" | grep -q .; then
+            echo "should_release=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # A tag is not proof the release finished. action-gh-release creates
+          # the tag before uploading, so a failure mid-upload leaves a release
+          # with no catalog attached - and skipping on the tag alone would make
+          # that permanent. Require the assets a release is not usable without.
+          ASSETS='[]'
+          for attempt in 1 2 3; do
+            if FETCHED=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/v${VERSION}" \
+                           --jq '[.assets[].name]' 2>/dev/null); then
+              ASSETS="$FETCHED"
+              break
+            fi
+            sleep 5
+          done
+
+          if echo "$ASSETS" | jq -e --arg zip "WhisperSubs_${VERSION}.zip" \
+               'index("manifest.json") != null and index($zip) != null' > /dev/null 2>&1; then
             echo "should_release=false" >> $GITHUB_OUTPUT
-            echo "::notice::Tag v${VERSION} already exists — skipping release"
+            echo "::notice::Release v${VERSION} is complete — skipping"
           else
             echo "should_release=true" >> $GITHUB_OUTPUT
+            echo "::warning::Tag v${VERSION} exists but required assets are missing — re-running to repair"
           fi
 
   # ── Build plugin + create release ──────────────────────────────────
