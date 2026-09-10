@@ -49,8 +49,11 @@ updates:
         patterns:
           - '*'
     ignore:
-      # Docusaurus majors change config and theme APIs; take those deliberately.
-      - dependency-name: '*'
+      # Docusaurus majors change config and theme APIs, so take those
+      # deliberately. Scoped to Docusaurus rather than '*': a blanket major
+      # ignore also silences security fixes that need a major bump, which is
+      # how Action majors drifted unnoticed elsewhere.
+      - dependency-name: '@docusaurus/*'
         update-types:
           - version-update:semver-major
   - package-ecosystem: github-actions
