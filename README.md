@@ -100,7 +100,7 @@ The label is both the title shown in Jellyfin's subtitle picker and the marker t
 | **Full + forced** | Both, per audio track |
 | **Translation only** | An English translated subtitle, skipping native-language transcription |
 
-The scheduled task skips media that already has a usable subtitle in the needed language. Forced and image-based tracks do not satisfy that need unless you turn on **Count image-based subtitles as present**. A manual **Generate** on a single item always transcribes, bypassing the skip.
+The scheduled task skips media that already has a usable subtitle in the needed language. Forced tracks do not satisfy that need while **Ignore forced subtitles when skipping** is on (the default), and image-based tracks do not unless you turn on **Count image-based subtitles as present**. They are two independent settings. A manual **Generate** on a single item always transcribes, bypassing the skip.
 
 ## User subtitle requests
 

@@ -13,13 +13,19 @@ const sidebars: SidebarsConfig = {
       type: 'category',
       label: 'Running it',
       collapsed: false,
-      items: ['remote-workers'],
+      items: ['configuration', 'remote-workers'],
     },
     {
       type: 'category',
       label: 'Help',
       collapsed: false,
       items: ['diagnostics', 'limitations'],
+    },
+    {
+      type: 'category',
+      label: 'Reference',
+      collapsed: false,
+      items: ['api-and-internals'],
     },
   ],
 };
