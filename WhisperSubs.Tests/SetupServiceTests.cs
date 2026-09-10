@@ -178,7 +178,7 @@ public class SetupServiceTests
     [InlineData("noavx", false)]
     [InlineData("cuda12-noavx", false)]
     [InlineData("vulkan-noavx", false)]
-    [InlineData("rocm", false)]
+    [InlineData("rocm", true)]   // AVX2-native like cpu/cuda12/vulkan; falls back to noavx
     [InlineData("unknown", false)]
     public void VariantRequiresAvx2_OnlyNonNoavxBuilds(string variant, bool requiresAvx)
     {

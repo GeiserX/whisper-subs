@@ -899,8 +899,8 @@ namespace WhisperSubs.Setup
         /// </summary>
         internal static bool VariantRequiresAvx2(string variant) => variant switch
         {
-            "cpu" or "cuda12" or "vulkan" => true,
-            _ => false   // noavx, cuda12-noavx, vulkan-noavx, rocm, unknown
+            "cpu" or "cuda12" or "vulkan" or "rocm" => true,
+            _ => false   // noavx, cuda12-noavx, vulkan-noavx, unknown
         };
 
         /// <summary>
