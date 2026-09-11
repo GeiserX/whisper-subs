@@ -863,12 +863,16 @@
                 // dots), {.type} becomes "."+type when type is non-empty else "", {type} becomes type or
                 // "", then ".." collapses to "." and leading/trailing "." is trimmed.
                 buildSubtitleBaseName: function (template, name, lang, label, type) {
+                    // Replacement ORDER must match Controller/SubtitleNaming.BuildBaseName: name, lang,
+                    // label, then the type tokens. They diverge otherwise whenever a substituted value
+                    // itself contains a token, and the preview would stop predicting the real filename,
+                    // which the collision warning below depends on.
                     var result = (template || '')
-                        .split('{.type}').join(type ? ('.' + type) : '')
-                        .split('{type}').join(type || '')
                         .split('{name}').join(name)
                         .split('{lang}').join(lang)
-                        .split('{label}').join(label);
+                        .split('{label}').join(label)
+                        .split('{.type}').join(type ? ('.' + type) : '')
+                        .split('{type}').join(type || '');
                     while (result.indexOf('..') !== -1) { result = result.split('..').join('.'); }
                     return result.replace(/^\.+/, '').replace(/\.+$/, '');
                 },

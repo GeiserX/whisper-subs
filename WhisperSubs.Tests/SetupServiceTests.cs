@@ -194,6 +194,17 @@ public class SetupServiceTests
         Assert.False(WhisperSetupService.IsBinaryFromOlderRelease(true, installed, "4.8.0.2"));
     }
 
+    [Theory]
+    [InlineData("")]
+    [InlineData(null)]
+    [InlineData("   ")]
+    [InlineData("dev-build")]
+    public void IsBinaryFromOlderRelease_UnknownRunningVersionIsNeverStale(string? running)
+    {
+        // A plugin built without a parseable assembly version must not accuse every binary of being old.
+        Assert.False(WhisperSetupService.IsBinaryFromOlderRelease(true, "4.7.0.0", running));
+    }
+
     [Fact]
     public void IsBinaryFromOlderRelease_ManualBinaryIsTheAdminsToManage()
     {
