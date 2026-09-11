@@ -20,7 +20,7 @@ Choose one your CPU cannot run and it dies immediately with **exit code 132** an
 | `vulkan-noavx` | Vulkan (Compatibility) | SSE4.2 | Vulkan | `libvulkan1`, a Vulkan driver |
 | `cuda12` | NVIDIA CUDA 12 | AVX2, FMA, F16C, BMI2 | CUDA 12 | `libgomp1`, NVIDIA driver and CUDA runtime |
 | `cuda12-noavx` | NVIDIA CUDA 12 (Compatibility) | SSE4.2 | CUDA 12 | NVIDIA driver and CUDA runtime |
-| `rocm` | AMD ROCm | not pinned, see below | ROCm / HIP | `libgomp1`, ROCm runtime |
+| `rocm` | AMD ROCm | AVX2, FMA, F16C, BMI2 | ROCm / HIP | `libgomp1`, ROCm runtime |
 
 Every build is statically linked, so none of them needs `libwhisper.so`.
 
@@ -36,11 +36,15 @@ If you have read anywhere that every variant requires `libgomp1`, that is wrong.
 
 Only `cpu` and `noavx` are published for ARM64 (Raspberry Pi 4 and 5, Apple silicon Linux VMs, ARM servers). AVX does not exist on ARM, so on those machines the two builds differ **only** in OpenMP: pick `noavx` if `libgomp1` is missing, `cpu` otherwise.
 
-### The ROCm caveat
+:::warning[ROCm users: re-download your binary]
+ROCm binaries published before 4.8.0.2 were built for the CI machine's own CPU, which emitted AVX-512. They crash with an illegal instruction on any CPU without it, which includes every AMD Zen 1 to 3 and every Intel consumer chip from 12th gen onward.
 
-`rocm` is the one variant whose CPU instruction baseline we do not pin at build time. It follows the build machine, which is an AVX2-class CPU. There is no `rocm-noavx` build, and the plugin's automatic AVX2 guard does not cover `rocm`.
+Updating the plugin does not replace a binary you already downloaded: the setup check only looks for a file on disk, it does not record which release produced it. If you use the `rocm` variant, open **Whisper Engine** on the settings page and download it again after updating.
+:::
 
-So if your CPU lacks AVX2 and your GPU is AMD, there is no GPU variant for you. Use `noavx` and transcribe on the CPU.
+### No ROCm compatibility build
+
+There is no `rocm-noavx` build. If your CPU lacks AVX2 and your GPU is AMD, there is no GPU variant for you: the plugin detects this and falls back to `noavx`, so transcription runs on the CPU.
 
 ## Check what your CPU supports
 
