@@ -17,6 +17,15 @@ namespace WhisperSubs.Configuration
         /// </summary>
         public string WhisperBinaryVariant { get; set; } = "";
 
+        /// <summary>
+        /// The plugin version whose release the installed whisper-cli was downloaded from. The download
+        /// URL is version-pinned, so a binary keeps whatever the release that fetched it contained: the
+        /// setup check only looks for a file on disk and would never notice a later release replacing a
+        /// broken build (issue #165 shipped a ROCm binary compiled for the CI runner's own CPU). Empty
+        /// for a manually installed binary or one downloaded before this was recorded.
+        /// </summary>
+        public string WhisperBinaryVersion { get; set; } = "";
+
         public bool EnableAutoGeneration { get; set; } = false;
 
         /// <summary>

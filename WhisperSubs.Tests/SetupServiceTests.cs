@@ -1,4 +1,5 @@
 using System.Reflection;
+using WhisperSubs.Controller;
 using WhisperSubs.Setup;
 using Xunit;
 
@@ -169,6 +170,70 @@ public class SetupServiceTests
         // without AVX (or our detection) is steered to the compatibility builds.
         var validVariants = new[] { "cpu", "noavx", "cuda12", "cuda12-noavx", "vulkan", "vulkan-noavx", "rocm" };
         Assert.Contains(gpu.RecommendedVariant, validVariants);
+    }
+
+    // Issue #176: a version-pinned download plus a file-existence check means a binary from a
+    // superseded release survives every upgrade. These pin the advisory that surfaces it.
+    [Theory]
+    [InlineData("4.8.0.1", "4.8.0.2", true)]   // a binary fix shipped since this was fetched
+    [InlineData("4.8.0.2", "4.8.0.2", false)]  // current
+    [InlineData("4.8.0.3", "4.8.0.2", false)]  // newer than the plugin: never nag
+    [InlineData("4.7.0.0", "4.8.0.2", true)]
+    public void IsBinaryFromOlderRelease_ComparesVersions(string installed, string running, bool expected)
+    {
+        Assert.Equal(expected, WhisperSetupService.IsBinaryFromOlderRelease(true, installed, running));
+    }
+
+    [Theory]
+    [InlineData("")]      // download predates this tracking
+    [InlineData(null)]
+    [InlineData("   ")]
+    [InlineData("not-a-version")]
+    public void IsBinaryFromOlderRelease_UnknownVersionIsNeverStale(string? installed)
+    {
+        Assert.False(WhisperSetupService.IsBinaryFromOlderRelease(true, installed, "4.8.0.2"));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(null)]
+    [InlineData("   ")]
+    [InlineData("dev-build")]
+    public void IsBinaryFromOlderRelease_UnknownRunningVersionIsNeverStale(string? running)
+    {
+        // A plugin built without a parseable assembly version must not accuse every binary of being old.
+        Assert.False(WhisperSetupService.IsBinaryFromOlderRelease(true, "4.7.0.0", running));
+    }
+
+    [Fact]
+    public void IsBinaryFromOlderRelease_ManualBinaryIsTheAdminsToManage()
+    {
+        // A configured path or a PATH binary is not ours to judge, even if an older version is recorded.
+        Assert.False(WhisperSetupService.IsBinaryFromOlderRelease(false, "4.7.0.0", "4.8.0.2"));
+    }
+
+    // Issue #175: a filename template with no {.type} resolves the full and forced passes of one
+    // language to a single file, so whichever runs second overwrites the other. These are the
+    // templates offered as presets in Web/configPage.html.
+    [Theory]
+    [InlineData("{name}.{lang}.{label}{.type}")]
+    [InlineData("{name}.{lang}{.type}.{label}")]
+    [InlineData("{name}.{lang}{.type}.{label}.generated")]
+    public void ShippedNamingPresets_KeepFullAndForcedApart(string template)
+    {
+        var full = SubtitleNaming.BuildBaseName(template, "Movie", "es", "WhisperSubs", "");
+        var forced = SubtitleNaming.BuildBaseName(template, "Movie", "es", "WhisperSubs", "forced");
+        Assert.NotEqual(full, forced);
+    }
+
+    [Fact]
+    public void NamingTemplateWithoutTypeToken_CollapsesFullAndForced()
+    {
+        // The defect behind #175, pinned so nobody reintroduces such a template as a preset.
+        const string noType = "{name}.{lang}.{label}.generated";
+        Assert.Equal(
+            SubtitleNaming.BuildBaseName(noType, "Movie", "es", "WhisperSubs", ""),
+            SubtitleNaming.BuildBaseName(noType, "Movie", "es", "WhisperSubs", "forced"));
     }
 
     [Theory]
