@@ -154,6 +154,15 @@ namespace WhisperSubs.Setup
             var binaryOk = autoBinaryExists || configBinaryValid || inPath;
             var modelOk = autoModelPath != null || configModelValid;
 
+            // Only the auto-downloaded binary can be attributed to a release. A manual path or a
+            // PATH binary is the admin's to manage, and an empty recorded version means the download
+            // predates this tracking, so neither is flagged.
+            var pluginVersion = typeof(Plugin).Assembly.GetName().Version?.ToString() ?? string.Empty;
+            var binaryFromOlderRelease = IsBinaryFromOlderRelease(
+                isAutoDownloaded: autoBinaryExists && !configBinaryValid,
+                installedVersion: config.WhisperBinaryVersion,
+                runningVersion: pluginVersion);
+
             return new SetupStatus
             {
                 BinaryFound = binaryOk,
@@ -167,6 +176,9 @@ namespace WhisperSubs.Setup
                 Platform = GetPlatformIdentifier(),
                 SetupComplete = binaryOk && modelOk,
                 InstalledVariant = config.WhisperBinaryVariant,
+                InstalledBinaryVersion = config.WhisperBinaryVersion,
+                PluginVersion = pluginVersion,
+                BinaryFromOlderRelease = binaryFromOlderRelease,
                 Gpu = DetectGpu()
             };
         }
@@ -659,6 +671,10 @@ namespace WhisperSubs.Setup
                         // Persist the variant that actually validated (after any fallback walk) so the
                         // setup page can re-offer it instead of re-defaulting to the recommendation.
                         config.WhisperBinaryVariant = currentVariant;
+                        // Record the release this came from. The URL is version-pinned, so without this
+                        // there is no way to tell a binary from a superseded release from a current one.
+                        config.WhisperBinaryVersion =
+                            typeof(Plugin).Assembly.GetName().Version?.ToString() ?? string.Empty;
                         Plugin.Instance.SaveConfiguration();
 
                         lock (_lock)
@@ -897,6 +913,25 @@ namespace WhisperSubs.Setup
         /// These crash with SIGILL (exit 132) on CPUs that lack AVX2. The "*-noavx" builds use
         /// only SSE4.2 and are safe everywhere. ARM builds have no AVX and are always safe.
         /// </summary>
+        /// <summary>
+        /// Whether the installed binary came from an older release than the one running, which means a
+        /// binary fix shipped since then has not reached this install. Advisory only: the plugin never
+        /// silently re-downloads, matching the deliberate choice made for models.
+        /// </summary>
+        /// <remarks>
+        /// False unless the binary was auto-downloaded: a manual path or a PATH binary belongs to the
+        /// admin. False when either version is absent or unparseable, so a download predating this
+        /// tracking is never reported as stale. (Issue #176.)
+        /// </remarks>
+        internal static bool IsBinaryFromOlderRelease(bool isAutoDownloaded, string? installedVersion, string? runningVersion)
+        {
+            if (!isAutoDownloaded) return false;
+            if (string.IsNullOrWhiteSpace(installedVersion) || string.IsNullOrWhiteSpace(runningVersion)) return false;
+            if (!Version.TryParse(installedVersion, out var installed)) return false;
+            if (!Version.TryParse(runningVersion, out var running)) return false;
+            return installed < running;
+        }
+
         internal static bool VariantRequiresAvx2(string variant) => variant switch
         {
             "cpu" or "cuda12" or "vulkan" or "rocm" => true,
@@ -1016,6 +1051,19 @@ namespace WhisperSubs.Setup
         public string Platform { get; set; } = "";
         public bool SetupComplete { get; set; }
         public string InstalledVariant { get; set; } = "";
+
+        /// <summary>The plugin release the installed binary was downloaded from, empty when unknown.</summary>
+        public string InstalledBinaryVersion { get; set; } = "";
+
+        /// <summary>The plugin version running now, so a client can compare without knowing it.</summary>
+        public string PluginVersion { get; set; } = "";
+
+        /// <summary>
+        /// True when the binary was downloaded by an older release than the one running. Advisory only:
+        /// the plugin never silently re-downloads, matching the deliberate choice made for models.
+        /// </summary>
+        public bool BinaryFromOlderRelease { get; set; }
+
         public GpuInfo Gpu { get; set; } = new();
     }
 

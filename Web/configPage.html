@@ -888,18 +888,29 @@
                     if (template.indexOf('{name}') === -1) missing.push('{name}');
                     if (template.indexOf('{lang}') === -1) missing.push('{lang}');
                     if (template.indexOf('{label}') === -1) missing.push('{label}');
+
+                    var transcription = WhisperSubsConfig.buildSubtitleBaseName(template, 'Episode', 'en', label, '') + '.srt';
+                    var translation = WhisperSubsConfig.buildSubtitleBaseName(template, 'Episode', 'en', label, 'translated') + '.srt';
+                    var forced = WhisperSubsConfig.buildSubtitleBaseName(template, 'Episode', 'en', label, 'forced') + '.srt';
+
+                    var problems = [];
                     if (missing.length > 0) {
-                        warning.textContent = 'Template must contain {name}, {lang} and {label} (missing ' +
-                            missing.join(', ') + '). It will fall back to the default template.';
+                        problems.push('Template must contain {name}, {lang} and {label} (missing ' +
+                            missing.join(', ') + '). It will fall back to the default template.');
+                    }
+                    // A template with no {.type}/{type} resolves the full and forced passes of the
+                    // same language to one filename, so whichever runs second overwrites the other.
+                    if (transcription === forced) {
+                        problems.push('This template gives the full and forced subtitles of a language the same ' +
+                            'filename, so one would overwrite the other. Add {.type} to keep them apart.');
+                    }
+                    if (problems.length > 0) {
+                        warning.textContent = problems.join(' ');
                         warning.style.display = '';
                     } else {
                         warning.textContent = '';
                         warning.style.display = 'none';
                     }
-
-                    var transcription = WhisperSubsConfig.buildSubtitleBaseName(template, 'Episode', 'en', label, '') + '.srt';
-                    var translation = WhisperSubsConfig.buildSubtitleBaseName(template, 'Episode', 'en', label, 'translated') + '.srt';
-                    var forced = WhisperSubsConfig.buildSubtitleBaseName(template, 'Episode', 'en', label, 'forced') + '.srt';
 
                     page.querySelector('#previewTranscription').textContent = 'Transcription: ' + transcription;
                     page.querySelector('#previewTranslation').textContent = 'Translation: ' + translation;
@@ -942,6 +953,15 @@
                         // Split on BOTH separators — a Windows path (D:\Whisper\whisper-cli.exe) has no
                         // '/' at all, so splitting on '/' alone rendered the entire path here. (Issue #149.)
                         text.textContent = status.BinaryPath ? status.BinaryPath.split(/[\\/]/).pop() : 'Installed';
+                        // The download URL is version-pinned and the plugin never silently replaces a
+                        // binary already on disk, so a build from a superseded release stays forever
+                        // unless the admin is told. Advisory only, never automatic (issue #176).
+                        if (status.BinaryFromOlderRelease) {
+                            icon.style.color = '#CC7B19';
+                            text.textContent += ' \u2014 downloaded by ' + status.InstalledBinaryVersion +
+                                ', now running ' + status.PluginVersion +
+                                '. Download again to pick up binary fixes from newer releases.';
+                        }
                     } else if (status.BinaryFoundInPath) {
                         icon.innerHTML = '&#9745;';
                         icon.style.color = '#CC7B19';
@@ -3015,7 +3035,7 @@
             });
 
             document.querySelector('#btnPresetKeepGenerated').addEventListener('click', function () {
-                document.querySelector('#txtSubtitleFilenameTemplate').value = '{name}.{lang}.{label}.generated';
+                document.querySelector('#txtSubtitleFilenameTemplate').value = '{name}.{lang}{.type}.{label}.generated';
                 WhisperSubsConfig.updateSubtitleNamingPreview(document.querySelector('[data-role="page"]'));
             });
 
