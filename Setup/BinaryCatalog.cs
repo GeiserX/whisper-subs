@@ -36,7 +36,8 @@ namespace WhisperSubs.Setup
 
         /// <summary>
         /// Returns only the variants that have prebuilt binaries for the given platform.
-        /// CI builds: linux-x64 (cpu, cuda12, vulkan, rocm), linux-arm64 (cpu only).
+        /// CI builds: linux-x64 (cpu, noavx, cuda12, cuda12-noavx, vulkan, vulkan-noavx,
+        /// rocm), linux-arm64 (cpu, noavx).
         /// </summary>
         public static BinaryVariant[] GetAvailableVariants(string platform)
         {

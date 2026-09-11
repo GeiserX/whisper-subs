@@ -143,7 +143,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}/rocm-output/whisper-cli
-          key: whisper-1.8.4-rocm-6.1.2-v4
+          key: whisper-1.8.4-rocm-6.1.2-v5-avx2
 
       - name: Build whisper-cli with ROCm
         if: steps.cache-whisper-rocm.outputs.cache-hit != 'true'
@@ -161,6 +161,8 @@ jobs:
                 -DBUILD_SHARED_LIBS=OFF \
                 -DCMAKE_EXE_LINKER_FLAGS="-static-libgcc -static-libstdc++" \
                 -DGGML_HIP=ON \
+                -DGGML_NATIVE=OFF \
+                -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_BMI2=ON \
                 -DCMAKE_C_COMPILER=hipcc \
                 -DCMAKE_CXX_COMPILER=hipcc &&
               cmake --build build --config Release -j$(nproc) &&
