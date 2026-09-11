@@ -16,7 +16,7 @@ Every admin endpoint needs an administrator token. [Diagnostics](/diagnostics) c
 
 ### Admin endpoints {#admin-endpoints}
 
-The whole controller carries `[Authorize(Policy = "RequiresElevation")]`, so **admin only**, with no exceptions. The `Setup/*` methods repeat the attribute individually; that is redundant, not different.
+The whole controller carries `[Authorize(Policy = "RequiresElevation")]`, so **admin only**, with no exceptions. Most of the `Setup/*` methods repeat the attribute individually; that is redundant, not different.
 
 **Libraries and items**
 
@@ -83,11 +83,16 @@ These mirror the whisper endpoints for the BSRoformer.cpp binary and model. They
 
 Four endpoints let a signed-in user ask for subtitles instead of waiting for an admin. They live in their own controller with a plain `[Authorize]`, so **any authenticated user** can reach them. That is deliberate: opening one method on the admin controller would have meant dropping its class-level elevation, and an un-attributed method in Jellyfin becomes public.
 
-Three further gates apply on every call:
+The gates are not the same on all four.
 
-- The feature must be on. With **Allow user requests** off, all four behave as if they do not exist and return 404.
-- An API key is not enough. These endpoints re-derive the user from the session and reject key-only calls with 401, because a key carries no per-user visibility.
-- The item must be visible to that user. An item they cannot see returns 404, never 403.
+`Requests/Capabilities` answers for any authenticated user whether the feature is on, because the client script needs that answer either way to decide whether to show the request entry at all. It returns 200 with `enabled: false` when requests are switched off.
+
+The other three apply two gates:
+
+- The feature must be on. With **Allow users to request subtitles** off, they behave as if they do not exist and return 404.
+- An API key is not enough. They re-derive the user from the session and reject key-only calls with 401, because a key carries no per-user visibility.
+
+One further gate applies only to `Items/{itemId}/Request`: the item must be visible to that user. An item they cannot see returns 404, never 403, so the endpoint cannot be used to probe what exists.
 
 | Method | Path | Returns |
 |---|---|---|
@@ -162,7 +167,7 @@ Three JSON files live in the plugin's data folder, which is `/config/data/Whispe
 | `whisper/models/` | Downloaded whisper models, as `.bin` files. The active one is set in the configuration. |
 | `whisper/vad/` | The Silero VAD model, `ggml-silero-v5.1.2.bin`. Kept in its own directory so it is never mistaken for a transcription model. |
 | `whisper/detect/` | The dedicated language-detection model, `ggml-base.bin`. Separate for the same reason. |
-| `vocal-separation/bin/` | The extracted `bs_roformer-cli` and any libraries shipped alongside it. Wiped and re-extracted on every download, so a stale library from a previous variant cannot linger. |
+| `vocal-separation/bin/` | The extracted `bs_roformer-cli` and any libraries shipped alongside it. Replaced wholesale on every download on every download, so a stale library from a previous variant cannot linger. |
 | `vocal-separation/models/` | The downloaded GGUF vocal-separation model. |
 
 Working files go to the system temp directory and are deleted when the job ends, including on failure and cancellation. Nothing permanent is kept there.

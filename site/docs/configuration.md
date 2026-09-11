@@ -72,13 +72,16 @@ Files written by older versions are still recognised. Anything containing `.gene
 | Libraries | none selected | The checkbox list under Auto-Generation scopes the sweep. **With none selected, every library is scanned.** Selecting one or more restricts the sweep to those. It applies to the scheduled task only; a manual Generate on a single item ignores it. |
 | Enable Lyrics Generation (Experimental) | Off | Includes music libraries in the sweep and writes `.lrc` lyrics next to audio tracks. Whisper is trained on speech, not singing, so accuracy varies. See [Limitations](/limitations#lyrics-generation-is-experimental). |
 | Pause generation during playback | Off | Pauses transcription while any user is playing something, and resumes when playback stops. Useful when the same box transcodes and transcribes. |
+| Skip media that already has subtitles | On | The sweep skips media that already has a usable subtitle in the language it needs, embedded or external. For the translation pass, an existing English subtitle counts as already translated. |
+| Ignore forced subtitles when skipping | On | A forced subtitle track does not count as satisfying the need. Forced tracks only cover foreign-dialogue inserts, not the whole dialogue. |
 
-## Skipping media that already has subtitles
+## Subtitle generation
+
+Whisper transcribes the speech it hears, so it can only write a subtitle in the title's own audio language. Turning that audio into English is a separate pass, covered under Translation below.
 
 | Setting | Default | What it does |
 |---|---|---|
-| Skip media that already has subtitles | On | The sweep skips media that already has a usable subtitle in the language it needs, embedded or external. For the translation pass, an existing English subtitle counts as already translated. |
-| Ignore forced subtitles when skipping | On | A forced subtitle track does not count as satisfying the need. Forced tracks only cover foreign-dialogue inserts, not the whole dialogue. |
+| Generate original-language subtitles | On | The main generate switch. Transcribes each title in its own spoken language: a Korean film gets Korean subtitles, an English film gets English. Turning it off leaves the sweep producing only whatever forced or translated output the mode calls for. A manual single-item Generate always transcribes regardless of this setting. |
 | Count image-based subtitles as present | Off | When on, image-based tracks (PGS, VOBSUB) count as an existing subtitle. Off by default because image subtitles cannot be searched or edited, so the plugin still writes a text one. |
 
 :::note[The two filters are independent]
@@ -98,13 +101,6 @@ Re-checking the filesystem for every candidate item on every scheduled run is th
 
 The **Clear skip cache now** button next to the field empties the cache immediately, so the next scheduled run re-checks every item from scratch.
 
-## Subtitle generation
-
-Whisper transcribes the speech it hears, so it can only write a subtitle in the title's own audio language. Turning that audio into English is a separate pass, covered under Translation below.
-
-| Setting | Default | What it does |
-|---|---|---|
-| Generate original-language subtitles | On | The main generate switch. Transcribes each title in its own spoken language: a Korean film gets Korean subtitles, an English film gets English. Turning it off leaves the sweep producing only whatever forced or translated output the mode calls for. A manual single-item Generate always transcribes regardless of this setting. |
 
 ## Translation to English
 
@@ -131,7 +127,7 @@ Both apply to full and translated subtitles. Neither applies to forced subtitles
 
 | Setting | Default | What it does |
 |---|---|---|
-| Use speech detection (VAD) | On | Passes `--vad` to whisper-cli with the Silero model. The model is about 865 KB and downloads automatically on first use. Local whisper-cli only: it does not apply to a remote worker, which owns its own timing, nor to forced subtitles. |
+| Use speech detection (VAD) | On | Passes `--vad` to whisper-cli with the Silero model. The model is about 885 KB and downloads automatically on first use. Local whisper-cli only: it does not apply to a remote worker, which owns its own timing, nor to forced subtitles. |
 | Align subtitles to speech (fallback) | On | Enables the FFmpeg forward snap. On its own it runs only when VAD is off. Leave it on so the fallback exists. |
 | Also align VAD / worker timestamps to speech | Off | Layers the forward snap on top of VAD output and on top of remote worker output. Turn this on if lines still appear early. Requires "Align subtitles to speech" to be on. Off by default because the energy-based detector proved unreliable on some real material and can push a few starts slightly late. |
 | Compensate audio start offset | On | Shifts every timestamp by the audio stream's start time, for containers whose audio does not begin at exactly 0:00. Applies to local and to timestamped remote output, for full and translated subtitles, not forced. |
@@ -169,17 +165,19 @@ Leave a tuning field empty and the plugin stores `-1`, which it treats as unset.
 
 A matching flag placed in **Custom Whisper Arguments** supersedes the value set here. Custom arguments are appended last and whisper-cli takes the last value it sees.
 
+The next two sections on the page, **Remote Whisper API** and **Worker Pool**, are covered in [Remote workers](/remote-workers).
+
 ## Performance and advanced
 
 These sit under **Advanced / Manual Install** on the settings page.
 
 | Setting | Default | What it does |
 |---|---|---|
-| Whisper Thread Count | `0` | CPU threads for whisper inference. `0` emits no `-t` flag, so whisper.cpp uses its own default of 4. Set it to your core count. On a 16-thread i5-14500 a 2h15m film drops from an estimated 7 hours to 1h48m. Language detection is separately capped at 4 threads whatever you set here, because per-chunk process spawning does not benefit from more. |
+| Whisper Thread Count | `0` | CPU threads for whisper inference. `0` emits no `-t` flag, so whisper.cpp uses its own default of 4. Set it to your core count. On a 16-thread i5-14500 a 2h15m film drops from an estimated 7 hours to 1h48m. Language detection is separately capped at 4 threads whatever you set here, because detection is a trivial workload that gains nothing from more parallelism and would only cause CPU spikes. |
 | Maximum subtitle line length | `0` | Maximum characters per cue, emitted as `--max-len N` together with `--split-on-word` so a cap never breaks mid-word. `0` is unset, which leaves whisper.cpp's own default of unlimited. Raise it if subtitles arrive as one enormous run-on line: broadcast subtitling caps a line near 42 characters and `47` is a good starting point. Local whisper-cli only, since a remote worker owns its own segmentation. Set `WHISPER_MAX_LEN` on the worker instead. |
 | Custom Whisper Arguments | empty | Extra space-separated arguments appended to every whisper-cli invocation, for example `--beam-size 8`. Local whisper-cli only. |
 
-Arguments the plugin manages itself are blocked from that field: the model, input file, language, thread count, max context, non-speech suppression, every output format and the output path, `--translate`, `--detect-language`, `--prompt`, the offset and duration flags, and `--vad` with `--vad-model`. The VAD tuning flags and `--max-len` are deliberately **not** blocked, so you can override those settings from here.
+Arguments the plugin manages itself are blocked from that field: the model, input file, language, thread count, max context, non-speech suppression, every output format and the output path, `--translate`, `--detect-language`, the no-timestamps flags, `--prompt`, the offset and duration flags, and `--vad` with `--vad-model`. The VAD tuning flags and `--max-len` are deliberately **not** blocked, so you can override those settings from here.
 
 ## Config file only
 
@@ -220,24 +218,26 @@ Every call to a remote worker is bounded by a deadline derived from the length o
 
 ## Subtitle requests and priority
 
-Off by default. When **Allow user requests** is on, non-admin users get a **Request Subtitles** entry on the item page. Requests land as Pending and consume no CPU until an admin approves them, unless auto-approve is also on.
+Off by default. When **Allow users to request subtitles** is on, non-admin users get a **Request Subtitles** entry on the item page. Requests land as Pending and consume no CPU until an admin approves them, unless auto-approve is also on.
 
 Work is drained strongest tier first, and FIFO within a tier. Lower tiers never starve a higher one.
 
 | Setting | Default | What it does |
 |---|---|---|
-| Allow user requests | off | Master switch. While off, only admins can queue work. |
-| Auto-approve user requests | off | Enqueue a request immediately instead of holding it for an admin. |
-| Admin request tier | High | Tier for work an admin queues by hand. |
-| User request tier | Medium | Tier for an approved user request. Below admin work, above the sweep. |
-| Background sweep tier | Background | Tier for the scheduled library sweep. The weakest tier. |
-| Daily quota per user | 5 | Requests one user may make per rolling window. `0` means unlimited. |
-| Quota window | 24 hours | The rolling window the daily quota is measured over. |
-| Active cap per user | 3 | Requests one user may have in flight at once. `0` means unlimited. |
-| Items per request | 200 | Ceiling on the fan-out when a user requests a season or a series. `0` means unlimited. |
-| Global cap | 500 | Ceiling on pending requests across all users. `0` means unlimited. |
+| Allow users to request subtitles | off | Master switch. While off, only admins can queue work. |
+| Auto-approve user requests (skip my approval) | off | Enqueue a request immediately instead of holding it for an admin. |
+| Admin request priority | High | Tier for work an admin queues by hand. |
+| User request priority | Medium | Tier for an approved user request. Below admin work, above the sweep. |
+| Background sweep priority | Background | Tier for the scheduled library sweep. The weakest tier. |
+| Requests per user per window | 5 | Requests one user may make per rolling window. `0` means unlimited. |
+| Rolling window (hours) | 24 | The rolling window the daily quota is measured over. |
+| Max active requests per user | 3 | Requests one user may have in flight at once. `0` means unlimited. |
+| Max items per request | 200 | Ceiling on the fan-out when a user requests a season or a series. The settings page enforces a minimum of 1 and rewrites anything lower back to 200. |
+| Global active request cap | 500 | Ceiling on pending and queued requests across all users. `0` means unlimited. |
 
-Tiers are always assigned server-side from who made the request. A client cannot ask for a tier.
+The last five sit behind the collapsed **User request limits (anti-abuse)** disclosure on the settings page; expand it to find them.
+
+Priorities are always assigned server-side from who made the request. A client cannot ask for one.
 
 ## Settings documented elsewhere
 

@@ -262,7 +262,7 @@ WhisperSubs is GPL-3.0. It ships neither of these. Both are fetched at runtime, 
 | [BSRoformer.cpp](https://github.com/chenmozhijin/BSRoformer.cpp), which provides `bs_roformer-cli` | [MIT](https://github.com/chenmozhijin/BSRoformer.cpp/blob/master/LICENSE) |
 | [anvuew BS-RoFormer](https://huggingface.co/anvuew/BS-RoFormer), the separation model | GPL-3.0 |
 
-The GGUF files the plugin downloads are quantized conversions of that anvuew model, republished by the BSRoformer.cpp author.
+The GGUF files the plugin downloads are quantized conversions of that anvuew model, republished by the BSRoformer.cpp author. The GGUF repository itself declares no licence, so the terms that reach you are the upstream model's.
 
 ## Troubleshooting {#troubleshooting}
 
