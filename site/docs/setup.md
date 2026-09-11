@@ -213,6 +213,57 @@ services:
       - /mnt/user/appdata/roformer:/opt/roformer:ro   # optional custom assets on unRAID
 ```
 
+### Separation tuning (advanced)
+
+The **Separation tuning (advanced)** block sits under the two download panels and holds four fields. The Download buttons fill the two paths in for you; set them by hand only for a manual install.
+
+| Field | Default | What it does |
+|---|---|---|
+| BSRoformer binary path | empty | Absolute path to `bs_roformer-cli`, as visible to Jellyfin. |
+| BSRoformer model path | empty | Absolute path to a compatible GGUF model. |
+| Chunk overlap | `0`, meaning the model's own default | BSRoformer.cpp `--overlap`: how many times each chunk is reprocessed and blended with its neighbours to smooth the boundaries. 1 is the minimum, faster than the default and barely worse on dialogue. 2 to 4 reduce audible seams in music and multiply processing time proportionally. |
+| Chunk size (samples) | `-1`, meaning the model's own default | BSRoformer.cpp `--chunk-size`: the audio window fed to the model in one pass, in samples at 44.1 kHz. 2822400, about 64 seconds, works well on 8 GB of VRAM with the Q8_0 model. 176400, 4 seconds, cuts VRAM use at the cost of more passes. |
+
+Two more values are stored but not editable: which binary variant and which model quantization were actually downloaded. The setup page reads them back so it re-offers what you installed rather than defaulting to a GPU recommendation every time it loads.
+
+### Installing it manually {#vocal-separation-manual}
+
+Use this when the container cannot reach GitHub or Hugging Face, or when you want the files on storage the plugin does not manage.
+
+**The binary.** The plugin pins upstream BSRoformer.cpp **v0.1.0** and pulls the archive from that release. Take the same asset yourself:
+
+```text
+https://github.com/chenmozhijin/BSRoformer.cpp/releases/tag/v0.1.0
+```
+
+The assets are `.tar.xz` on Linux and macOS and `.zip` on Windows. Linux x64 has three: `BSRoformer-linux-x64-cpu.tar.xz`, `BSRoformer-linux-vulkan.tar.xz` and `BSRoformer-linux-cuda-12.9.1.tar.xz`. Extract the archive and keep its contents together, because some builds ship shared libraries next to `bs_roformer-cli` that it needs at runtime.
+
+**The model.** The downloader takes GGUF conversions of the anvuew BS-RoFormer model from [chenmozhijin/BSRoformer-GGUF](https://huggingface.co/chenmozhijin/BSRoformer-GGUF), under `anvuew/BS-RoFormer`, pinned to revision `df802a6773d25ba6ef785ff619daa3e510503168`.
+
+| File | Size | Notes |
+|---|---|---|
+| `BSRoformer-anvuew-Q4_0.gguf` | 31 MB | Lowest quality, smallest download. |
+| `BSRoformer-anvuew-Q5_1.gguf` | 40 MB | Quality and size trade-off for constrained setups. |
+| `BSRoformer-anvuew-Q8_0.gguf` | 56 MB | The recommended default. Near-FP32 separation quality at a fraction of the size. |
+| `BSRoformer-anvuew-FP16.gguf` | 102 MB | Maximum precision, marginal gain over Q8_0. |
+
+**Where they go.** When the downloader does it, both land in the plugin's data folder: the binary in `vocal-separation/bin/` and the model in `vocal-separation/models/`, so `/config/data/WhisperSubs/vocal-separation/` on a standard Docker install. A manual install can live anywhere Jellyfin can read, and the binary must be executable. Set the two paths under **Separation tuning (advanced)** and save.
+
+:::warning[unRAID: keep it off /opt]
+unRAID rebuilds its root filesystem in RAM from the flash drive on every boot, and `/opt` is part of that. Anything you put there is gone after a reboot. Keep the binary and the model under `/mnt/user/appdata` and bind-mount that into the container, as in the compose example above.
+:::
+
+### Licences {#vocal-separation-licences}
+
+WhisperSubs is GPL-3.0. It ships neither of these. Both are fetched at runtime, and both are optional, because vocal separation is off by default.
+
+| Component | Licence |
+|---|---|
+| [BSRoformer.cpp](https://github.com/chenmozhijin/BSRoformer.cpp), which provides `bs_roformer-cli` | [MIT](https://github.com/chenmozhijin/BSRoformer.cpp/blob/master/LICENSE) |
+| [anvuew BS-RoFormer](https://huggingface.co/anvuew/BS-RoFormer), the separation model | GPL-3.0 |
+
+The GGUF files the plugin downloads are quantized conversions of that anvuew model, republished by the BSRoformer.cpp author. The GGUF repository itself declares no licence, so the terms that reach you are the upstream model's.
+
 ## Troubleshooting {#troubleshooting}
 
 ### "Missing libgomp.so.1"
