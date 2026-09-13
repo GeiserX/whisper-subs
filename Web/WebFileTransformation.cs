@@ -52,11 +52,25 @@ namespace WhisperSubs.Web
         internal const string PluginInterfaceTypeName = "Jellyfin.Plugin.FileTransformation.PluginInterface";
         internal const string RegisterMethodName = "RegisterTransformation";
 
-        // File Transformation treats this as an unanchored REGEX over the served path, so anchor the
-        // end and escape the dot: matches "index.html", "web/index.html", "/jellyfin/web/index.html";
-        // rejects "index2html" or "index.htmlx". (Do NOT fully anchor with ^ — the served path carries
-        // a "web/" prefix.)
-        internal const string IndexFileNamePattern = "(^|/)index\\.html$";
+        // MUST be the bare literal "index.html", not a hand-rolled anchored regex — File
+        // Transformation 3.0's registry (Infrastructure/WebFileTransformationService.cs) keys its
+        // transformation pipelines by the RAW fileNamePattern string and, on each request, tries an
+        // EXACT dictionary match against the served path FIRST; it only falls back to walking keys as
+        // regexes when that exact match misses. Other ecosystem plugins (Moonfin/Moonbase,
+        // PluginPages/JellyfinEnhanced) register the literal "index.html" as their pattern, so that
+        // string is already an exact-match key. A differently-spelled-but-equivalent pattern here (the
+        // previous "(^|/)index\\.html$") lives under its OWN dictionary key — the exact match on
+        // "index.html" wins and short-circuits before the regex pass ever runs, so our transformation
+        // was registered successfully but silently never invoked (no error, no exception — the code
+        // path that would call it was simply never reached). Confirmed against live prod/staging: FT
+        // applied Moonfin's and JellyfinEnhanced/PluginPages' index.html transforms but not ours, right
+        // after FT was upgraded to 3.0.0.0 (a rewrite from Harmony/MonoMod patching to ASP.NET Core
+        // middleware — the old interception mechanism did not have this exact-match-shadows-regex
+        // behavior). Using the same literal string as everyone else puts us in the shared pipeline
+        // bucket instead of a shadowed one; it still works as a regex fallback for nested paths (an
+        // unanchored substring match) if the served path is ever something other than bare
+        // "index.html".
+        internal const string IndexFileNamePattern = "index.html";
 
         /// <summary>
         /// File Transformation deserializes its <c>{"contents": "..."}</c> callback payload into the
