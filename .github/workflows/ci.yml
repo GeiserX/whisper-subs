@@ -29,6 +29,53 @@ jobs:
       - name: Parse-check shipped browser JavaScript
         run: node scripts/check-web-js.mjs
 
+  # The documentation site is built and published only by pages.yml, which runs on push and
+  # workflow_run — never on a pull request. So a site dependency bump used to reach main with six
+  # green checks and no one having compiled it; the failure surfaced afterwards, as a red Pages run
+  # on main. pages.yml fails soft, so the plugin catalog survives that, but the docs silently stop
+  # updating. Build it here instead, where the PR can still be stopped.
+  site:
+    name: Docs site builds
+    runs-on: ubuntu-latest
+    # Least privilege: this job only reads the tree and runs a static build. Checkout leaves its
+    # token in .git/config by default, which npm ci and every lifecycle script it runs would inherit.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+
+      - name: Install
+        working-directory: site
+        run: npm ci
+
+      - name: Build
+        working-directory: site
+        run: npm run build
+
+      # /docs/setup/ is compiled into every shipped plugin DLL, so it has to exist in the output
+      # whatever the docs structure does. A generator emitting its own manifest.json at the site root
+      # would overwrite the Jellyfin plugin catalog that pages.yml publishes alongside these files:
+      # valid JSON, wrong contents, HTTP 200, invisible to any status-code check.
+      - name: Gate - required routes present, no catalog collision
+        working-directory: site
+        run: |
+          set -euo pipefail
+          test -f build/index.html
+          test -f build/docs/setup/index.html
+          if [ -e build/manifest.json ]; then
+            echo "::error::The site build emitted manifest.json, which would overwrite the plugin catalog."
+            exit 1
+          fi
+          echo "routes ok: $(find build -name index.html | wc -l | tr -d ' ') pages, docs/setup present"
+
   build:
     runs-on: ubuntu-latest
     steps:
