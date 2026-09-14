@@ -37,8 +37,14 @@ jobs:
   site:
     name: Docs site builds
     runs-on: ubuntu-latest
+    # Least privilege: this job only reads the tree and runs a static build. Checkout leaves its
+    # token in .git/config by default, which npm ci and every lifecycle script it runs would inherit.
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@v7
         with:
