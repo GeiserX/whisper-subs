@@ -195,10 +195,10 @@ While this is the case, the local worker is taken out of rotation. Queued items 
 retry budgets instead of failing one after another against a process that never starts, and any remote
 workers you have configured carry on as normal.
 
-Fix the container, or download the CPU variant from the settings page, and the binary is probed again the
-next time the queue runs: a new subtitle request, or the next run of the **Generate Subtitles** scheduled
-task, which also runs at Jellyfin startup. Recreating the container with the NVIDIA runtime therefore
-picks the queue back up by itself. To resume sooner, run that task by hand from **Scheduled Tasks**.
+Fix the container, or download the CPU variant from the settings page, and the queue picks itself back up:
+a parked queue re-checks the engine every five minutes and starts dispatching again as soon as the binary
+runs, with no restart and nothing to click. A new subtitle request or a run of the **Generate Subtitles**
+task re-checks it immediately, if you would rather not wait.
 
 ## Other endpoints worth capturing
 
