@@ -182,8 +182,7 @@ namespace WhisperSubs.Setup
                 ModelFound = modelOk,
                 ModelPath = configModelValid ? config.WhisperModelPath : autoModelPath,
                 Platform = GetPlatformIdentifier(),
-                // A binary that cannot start is not a complete setup, however present it is on disk.
-                SetupComplete = binaryOk && modelOk && launchError == null,
+                SetupComplete = IsSetupComplete(binaryOk, modelOk, launchError),
                 BinaryLaunchError = launchError,
                 InstalledVariant = config.WhisperBinaryVariant,
                 InstalledBinaryVersion = config.WhisperBinaryVersion,
@@ -192,6 +191,14 @@ namespace WhisperSubs.Setup
                 Gpu = DetectGpu()
             };
         }
+
+        /// <summary>
+        /// Whether setup is complete: a binary and a model are present AND the binary actually starts. Pure
+        /// so the third term is pinned by a test — "the file is on disk" standing in for "the binary runs" is
+        /// precisely the defect in issue #185, where the page reported ready while every job exited 127.
+        /// </summary>
+        internal static bool IsSetupComplete(bool binaryOk, bool modelOk, string? binaryLaunchError)
+            => binaryOk && modelOk && string.IsNullOrEmpty(binaryLaunchError);
 
         /// <summary>
         /// Downloads a whisper model from HuggingFace and saves it to the models directory.
