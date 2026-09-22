@@ -100,6 +100,14 @@ public class LocalBinaryLaunchTests
         Assert.Equal("exit 127", health.Check(() => throw new InvalidOperationException("must not probe")));
     }
 
+    [Fact]
+    public void Instance_IsTheOneSharedVerdict_ReprobedAtMostEveryFewMinutes()
+    {
+        // The status endpoint and the dispatcher must agree, and neither may spawn a process per call.
+        Assert.Same(LocalBinaryHealth.Instance, LocalBinaryHealth.Instance);
+        Assert.Equal(TimeSpan.FromMinutes(5), LocalBinaryHealth.DefaultProbeInterval);
+    }
+
     // ── Setup status: present is not the same as working ─────────────────
 
     [Theory]
@@ -278,6 +286,24 @@ public class LocalBinaryLaunchTests
         var lease = await pool.AcquireAsync(AnyJob, default);
         Assert.Equal("remote", lease.Worker.Id);          // normally local wins on cost — not while parked
         pool.Release(lease.Key);
+    }
+
+    [Fact]
+    public async Task AJobAlreadyWaitingOnTheLocalWorker_StopsWhenThatWorkerIsParkedMidWait()
+    {
+        // The binary can break while a job is queued behind the one slot. Without this, the waiter would
+        // wake, find nothing pickable, and spin on the 100 ms retry forever.
+        var pool = new WorkerPool(new[] { Worker("local", isLocal: true) });
+        var held = await pool.AcquireAsync(AnyJob, default);
+
+        var waiter = pool.AcquireAsync(AnyJob, default);
+        Assert.False(waiter.IsCompleted);
+
+        pool.SetLocalAvailability("missing libcuda.so.1");
+        pool.Release(held.Key);                          // wakes the waiter with the worker parked
+
+        var ex = await Assert.ThrowsAsync<NoAvailableWorkerException>(() => waiter);
+        Assert.Contains("libcuda.so.1", ex.Message);
     }
 
     [Fact]
