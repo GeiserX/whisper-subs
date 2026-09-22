@@ -117,6 +117,10 @@ namespace WhisperSubs.Controller
         // letting the pool dispatch the SAME (item,language) twice — two workers writing one .srt (v4.0).
         private readonly object _dispatchGate = new();
 
+        // Added to the launch-probe wait before a paused drain retries, so the retry lands just PAST the
+        // probe window. Landing exactly on it would race the cache and be served the stale verdict. (#185.)
+        private static readonly System.TimeSpan ResumeProbeMargin = System.TimeSpan.FromSeconds(1);
+
         private int _isDraining;
         private string? _currentItemName;
         private int _processedCount;
@@ -502,6 +506,35 @@ namespace WhisperSubs.Controller
             }
         }
 
+        /// <summary>What the background dispatch loop does once a drain returns.</summary>
+        public enum DrainFollowUp
+        {
+            /// <summary>Nothing left to do: the queue is empty, we are shutting down, or the pool never built.</summary>
+            Stop,
+
+            /// <summary>Items arrived while the drain was finishing — go straight round again.</summary>
+            ReDispatchNow,
+
+            /// <summary>
+            /// The drain paused because no worker could run the items. Wait for the launch probe to go stale,
+            /// then try again: the binary may be fixed by then, and re-firing at once would spin at full speed.
+            /// </summary>
+            ReDispatchAfterProbeWindow
+        }
+
+        /// <summary>
+        /// What to do after a drain. Pure so the paused case is pinned by a test rather than by watching a
+        /// live dispatcher: it must re-fire on a delay (never immediately — that is a busy loop against a
+        /// binary that cannot start), and must not re-fire at all on an empty queue or a cancelled token.
+        /// Without the delayed re-fire a local-only install would stay parked until the next request or the
+        /// daily task, which is up to a day for what may be a one-off failure. (Issue #185.)
+        /// </summary>
+        internal static DrainFollowUp DecideFollowUp(bool started, bool paused, bool queueEmpty, bool cancelled)
+        {
+            if (!started || queueEmpty || cancelled) return DrainFollowUp.Stop;
+            return paused ? DrainFollowUp.ReDispatchAfterProbeWindow : DrainFollowUp.ReDispatchNow;
+        }
+
         /// <summary>
         /// Terminally drop an in-flight identity that reached a final state (completed successfully, or
         /// given up on after exhausting retries, or unservable by any worker) and persist so queue.json no
@@ -835,12 +868,17 @@ namespace WhisperSubs.Controller
                         // Re-check: if items were enqueued during the finally block, restart the loop to avoid
                         // stuck items — but never on an already-cancelled token, and never if the pool build
                         // itself failed (a persistent bad-config throw must not busy-loop). (#112, v4.0.1)
-                        // A PAUSED drain (no worker can run the items right now) is the same busy-loop hazard:
-                        // the queue is deliberately left full, so re-firing here would spin at full speed.
-                        // The next enqueue or scheduled-task drain re-probes and resumes. (Issue #185.)
-                        if (started && !paused && !_lanes.IsEmpty && !cancellationToken.IsCancellationRequested)
+                        // A PAUSED drain adds a third case: re-firing at once would spin against a binary
+                        // that cannot start, and never re-firing would strand the queue until the next
+                        // request or the daily task. Retry when the launch probe goes stale. (Issue #185.)
+                        switch (DecideFollowUp(started, paused, _lanes.IsEmpty, cancellationToken.IsCancellationRequested))
                         {
-                            EnsureDispatching(manager, config, loggerFactory, logger, cancellationToken);
+                            case DrainFollowUp.ReDispatchNow:
+                                EnsureDispatching(manager, config, loggerFactory, logger, cancellationToken);
+                                break;
+                            case DrainFollowUp.ReDispatchAfterProbeWindow:
+                                ScheduleResumeAfterProbeWindow(manager, config, loggerFactory, logger, cancellationToken);
+                                break;
                         }
                     }
                     // Task.Run is deliberately NOT given the cancellation token: if it were and the token were
@@ -850,6 +888,40 @@ namespace WhisperSubs.Controller
                     // Task.Run, which is un-tokened for the same reason.)
                 });
             }
+        }
+
+        /// <summary>
+        /// Re-fires the dispatch loop once the cached launch verdict goes stale, so a paused queue resumes
+        /// by itself the moment the binary works again. A delayed continuation rather than a background
+        /// service: it exists only while a queue is actually parked, it dies with the cancellation token,
+        /// and the <see cref="EnsureDispatching"/> re-entry guard collapses any overlap with a drain started
+        /// by an incoming request. The extra second past the window is what makes the next
+        /// <c>LocalBinaryHealth.Check</c> genuinely re-probe instead of being served the same cached verdict
+        /// and pausing again immediately. (Issue #185.)
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "A timed continuation over the unit-tested DecideFollowUp + LocalBinaryHealth.TimeUntilStale")]
+        private void ScheduleResumeAfterProbeWindow(
+            SubtitleManager manager,
+            PluginConfiguration config,
+            ILoggerFactory loggerFactory,
+            ILogger logger,
+            CancellationToken cancellationToken)
+        {
+            var delay = LocalBinaryHealth.Instance.TimeUntilStale() + ResumeProbeMargin;
+            logger.LogInformation("[Dispatch] Re-checking the local engine in {Seconds:F0}s; {Count} item(s) waiting",
+                delay.TotalSeconds, _lanes.Count);
+
+            _ = Task.Run(async () =>
+            {
+                try { await Task.Delay(delay, cancellationToken); }
+                catch (System.OperationCanceledException) { return; }
+
+                // Something may have drained the queue (an incoming request re-fired the loop) or the server
+                // may be going down — either way there is nothing to resume.
+                if (_lanes.IsEmpty || cancellationToken.IsCancellationRequested) return;
+
+                EnsureDispatching(manager, config, loggerFactory, logger, cancellationToken);
+            });
         }
 
         /// <summary>

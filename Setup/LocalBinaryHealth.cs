@@ -43,6 +43,33 @@ namespace WhisperSubs.Setup
             => lastChecked is null || now - lastChecked.Value >= interval;
 
         /// <summary>
+        /// How long until the cached verdict goes stale and the next <see cref="Check"/> re-probes. Zero
+        /// when it already is (including "never probed"). The background dispatcher waits this long before
+        /// retrying a drain it paused, so a parked local worker is re-probed on its own rather than sitting
+        /// out until the next request or the daily task. Pure, via <see cref="TimeUntilStale(DateTimeOffset?,
+        /// DateTimeOffset, TimeSpan)"/>. (Issue #185.)
+        /// </summary>
+        public TimeSpan TimeUntilStale()
+        {
+            lock (_gate)
+            {
+                return TimeUntilStale(_checkedAt, _clock(), _interval);
+            }
+        }
+
+        /// <summary>
+        /// The wait before a verdict taken at <paramref name="lastChecked"/> may be re-probed. Never
+        /// negative, and never longer than the interval. The caller uses it as a delay, so a zero it should
+        /// not have returned becomes a hot loop — hence a test, not an inline subtraction.
+        /// </summary>
+        internal static TimeSpan TimeUntilStale(DateTimeOffset? lastChecked, DateTimeOffset now, TimeSpan interval)
+        {
+            if (lastChecked is null) return TimeSpan.Zero;
+            var remaining = interval - (now - lastChecked.Value);
+            return remaining <= TimeSpan.Zero ? TimeSpan.Zero : remaining;
+        }
+
+        /// <summary>
         /// The last known launch error (null when the binary launches, or when nothing has probed yet).
         /// Never spawns a process — for callers that must not block, such as a status render.
         /// </summary>

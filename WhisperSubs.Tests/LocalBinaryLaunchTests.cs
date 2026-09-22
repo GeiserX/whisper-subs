@@ -108,6 +108,103 @@ public class LocalBinaryLaunchTests
         Assert.Equal(TimeSpan.FromMinutes(5), LocalBinaryHealth.DefaultProbeInterval);
     }
 
+    // ── Resuming a parked queue on its own ───────────────────────────────
+
+    [Theory]
+    [InlineData(0, 0)]        // never probed → no wait, re-probe now
+    [InlineData(1, 299)]
+    [InlineData(299, 1)]
+    [InlineData(300, 0)]      // exactly stale
+    [InlineData(600, 0)]      // long past — never negative
+    public void TimeUntilStale_IsTheWaitBeforeTheNextProbe(int secondsSince, int expectedSeconds)
+    {
+        var now = new DateTimeOffset(2026, 1, 1, 12, 0, 0, TimeSpan.Zero);
+        DateTimeOffset? last = secondsSince == 0 ? null : now.AddSeconds(-secondsSince);
+        Assert.Equal(TimeSpan.FromSeconds(expectedSeconds),
+            LocalBinaryHealth.TimeUntilStale(last, now, FiveMinutes));
+    }
+
+    [Fact]
+    public void TimeUntilStale_AfterAProbe_IsNeverZero_SoTheResumeRetryCannotSpin()
+    {
+        // The dispatcher uses this as a delay. A zero here is a hot loop against a binary that cannot start.
+        var now = new DateTimeOffset(2026, 1, 1, 12, 0, 0, TimeSpan.Zero);
+        var health = new LocalBinaryHealth(() => now, FiveMinutes);
+
+        Assert.Equal(TimeSpan.Zero, health.TimeUntilStale());      // nothing probed yet
+        health.Check(() => "missing libcuda.so.1");
+        Assert.Equal(FiveMinutes, health.TimeUntilStale());
+
+        now = now.AddMinutes(2);
+        Assert.Equal(TimeSpan.FromMinutes(3), health.TimeUntilStale());
+    }
+
+    [Theory]
+    // started, paused, queueEmpty, cancelled → what the loop does next
+    [InlineData(true, false, false, false, SubtitleQueueService.DrainFollowUp.ReDispatchNow)]
+    [InlineData(true, true, false, false, SubtitleQueueService.DrainFollowUp.ReDispatchAfterProbeWindow)]
+    [InlineData(true, true, true, false, SubtitleQueueService.DrainFollowUp.Stop)]    // nothing left to resume
+    [InlineData(true, true, false, true, SubtitleQueueService.DrainFollowUp.Stop)]    // shutting down
+    [InlineData(false, false, false, false, SubtitleQueueService.DrainFollowUp.Stop)] // pool build threw
+    [InlineData(true, false, true, false, SubtitleQueueService.DrainFollowUp.Stop)]
+    public void DecideFollowUp_PausedQueueRetriesOnADelay_NeverImmediatelyAndNeverNotAtAll(
+        bool started, bool paused, bool queueEmpty, bool cancelled, SubtitleQueueService.DrainFollowUp expected)
+        => Assert.Equal(expected, SubtitleQueueService.DecideFollowUp(started, paused, queueEmpty, cancelled));
+
+    [Fact]
+    public async Task AParkedQueueComesBackOnceTheProbeWindowPassesAndTheBinaryWorks()
+    {
+        // End to end over the real pieces the timed retry drives, with the clock and the probe faked: the
+        // launch failure parks the local worker and no item can be leased; once the window passes and the
+        // probe succeeds, the same call chain the retry makes leases the worker again — no enqueue, no
+        // scheduled task, no restart.
+        var now = new DateTimeOffset(2026, 1, 1, 12, 0, 0, TimeSpan.Zero);
+        var health = new LocalBinaryHealth(() => now, FiveMinutes);
+        var pool = new WorkerPool(new[] { Worker("local", isLocal: true) });
+        var binaryBroken = true;
+
+        string? RunDrainPreflight()
+        {
+            var error = health.Check(() => binaryBroken ? "missing libcuda.so.1" : null);
+            pool.SetLocalAvailability(error);
+            return error;
+        }
+
+        Assert.NotNull(RunDrainPreflight());
+        await Assert.ThrowsAsync<NoAvailableWorkerException>(() => pool.AcquireAsync(AnyJob, default));
+
+        // The admin fixes the container. Inside the window nothing changes — that is the cache doing its job,
+        // and why the retry waits for TimeUntilStale rather than firing straight away.
+        binaryBroken = false;
+        now = now.Add(health.TimeUntilStale() - TimeSpan.FromSeconds(1));
+        Assert.NotNull(RunDrainPreflight());
+        await Assert.ThrowsAsync<NoAvailableWorkerException>(() => pool.AcquireAsync(AnyJob, default));
+
+        // Past the window — exactly where ScheduleResumeAfterProbeWindow puts the retry.
+        now = now.Add(health.TimeUntilStale() + TimeSpan.FromSeconds(1));
+        Assert.Null(RunDrainPreflight());
+
+        var lease = await pool.AcquireAsync(AnyJob, default);
+        Assert.Equal("local", lease.Worker.Id);
+        pool.Release(lease.Key);
+    }
+
+    [Fact]
+    public async Task AParkedQueueStaysParkedWhileTheBinaryIsStillBroken()
+    {
+        // The negative control for the test above: passing the window is not on its own enough.
+        var now = new DateTimeOffset(2026, 1, 1, 12, 0, 0, TimeSpan.Zero);
+        var health = new LocalBinaryHealth(() => now, FiveMinutes);
+        var pool = new WorkerPool(new[] { Worker("local", isLocal: true) });
+
+        pool.SetLocalAvailability(health.Check(() => "missing libcuda.so.1"));
+        now = now.AddMinutes(10);
+        pool.SetLocalAvailability(health.Check(() => "missing libcuda.so.1"));
+
+        await Assert.ThrowsAsync<NoAvailableWorkerException>(() => pool.AcquireAsync(AnyJob, default));
+        Assert.NotNull(pool.UnavailableReason("local"));
+    }
+
     // ── Setup status: present is not the same as working ─────────────────
 
     [Theory]
