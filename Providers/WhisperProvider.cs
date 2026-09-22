@@ -253,7 +253,7 @@ namespace WhisperSubs.Providers
                 {
                     var stderr = errorBuilder.ToString();
                     var failure = DescribeWhisperExitFailure(process.ExitCode, stderr);
-                    if (failure != null) throw new InvalidOperationException(failure);
+                    if (failure != null) throw new WhisperLaunchException(process.ExitCode, failure);
                     throw new InvalidOperationException($"Whisper process failed with exit code {process.ExitCode}. Error: {stderr}");
                 }
 
@@ -387,7 +387,7 @@ namespace WhisperSubs.Providers
             // truncated output and would otherwise be misreported as "could not detect language".
             // Surface the precise, actionable cause first — same diagnosis as the transcription path.
             var exitFailure = DescribeWhisperExitFailure(process.ExitCode, errorBuilder.ToString());
-            if (exitFailure != null) throw new InvalidOperationException(exitFailure);
+            if (exitFailure != null) throw new WhisperLaunchException(process.ExitCode, exitFailure);
 
             var allOutput = outputBuilder.ToString() + "\n" + errorBuilder.ToString();
 
@@ -738,6 +738,9 @@ namespace WhisperSubs.Providers
         // Maps a non-zero whisper-cli exit code to an actionable error message, or null if the code
         // is not a known fatal-launch failure. Shared by transcription and language detection so both
         // give the same precise diagnosis (e.g. a SIGILL on a non-AVX2 CPU) instead of a generic error.
+        // A non-null result means the process never ran, so both callers raise it as a
+        // WhisperLaunchException (a subclass of InvalidOperationException, so callers that only catch
+        // that still behave as before) and the dispatcher can pause the local worker. (Issue #185.)
         internal static string? DescribeWhisperExitFailure(int exitCode, string? stderr)
         {
             if (exitCode == 127)

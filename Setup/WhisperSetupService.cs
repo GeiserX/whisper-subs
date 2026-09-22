@@ -154,6 +154,14 @@ namespace WhisperSubs.Setup
             var binaryOk = autoBinaryExists || configBinaryValid || inPath;
             var modelOk = autoModelPath != null || configModelValid;
 
+            // "The file is there" is not "it runs". A CUDA build survives the container it was downloaded
+            // in being recreated without the NVIDIA runtime, and then exits 127 on every job while this
+            // page still says ready. Probe the binary that would actually run — cached, so polling this
+            // endpoint does not spawn a process each time. (Issue #185.)
+            var launchError = binaryOk
+                ? LocalBinaryHealth.Instance.Check(ProbeInstalledBinaryLaunch)
+                : null;
+
             // Only the auto-downloaded binary can be attributed to a release. A manual path or a
             // PATH binary is the admin's to manage, and an empty recorded version means the download
             // predates this tracking, so neither is flagged.
@@ -174,7 +182,9 @@ namespace WhisperSubs.Setup
                 ModelFound = modelOk,
                 ModelPath = configModelValid ? config.WhisperModelPath : autoModelPath,
                 Platform = GetPlatformIdentifier(),
-                SetupComplete = binaryOk && modelOk,
+                // A binary that cannot start is not a complete setup, however present it is on disk.
+                SetupComplete = binaryOk && modelOk && launchError == null,
+                BinaryLaunchError = launchError,
                 InstalledVariant = config.WhisperBinaryVariant,
                 InstalledBinaryVersion = config.WhisperBinaryVersion,
                 PluginVersion = pluginVersion,
@@ -802,6 +812,10 @@ namespace WhisperSubs.Setup
             var sha256 = ComputeSha256(BinaryPath);
             _logger.LogInformation("Binary {Variant} SHA256: {Hash}", variant, sha256);
 
+            // The cached launch verdict belongs to the file that was just replaced. Drop it so the next
+            // status poll re-probes THIS binary instead of reporting the old one's failure. (Issue #185.)
+            LocalBinaryHealth.Instance.Invalidate();
+
             // Validate the binary can actually run (catches missing shared libraries)
             return ValidateBinary(BinaryPath, variant);
         }
@@ -887,6 +901,111 @@ namespace WhisperSubs.Setup
                 _logger.LogDebug("Binary validation probe failed: {Error}", ex.Message);
                 return null; // Can't probe — don't block the download
             }
+        }
+
+        /// <summary>
+        /// Probes the binary the LOCAL worker would actually execute — the configured path, else the
+        /// auto-downloaded one — and returns the launch error to show the
+        /// admin, or null when it starts fine (or when nothing is installed, which
+        /// <see cref="SetupStatus.BinaryFound"/> already reports). Same <c>--help</c> probe
+        /// <see cref="ValidateBinary"/> uses at download time; only the wording differs, because here the
+        /// admin already had a working binary and the fix is on their side. (Issue #185.)
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Spawns the installed binary; the exit-code-to-message mapping (DescribeLaunchFailure) is unit-tested")]
+        public string? ProbeInstalledBinaryLaunch()
+        {
+            var config = Plugin.Instance?.Configuration;
+            string? path = null;
+            if (config != null && !string.IsNullOrEmpty(config.WhisperBinaryPath) && File.Exists(config.WhisperBinaryPath))
+                path = config.WhisperBinaryPath;
+            else if (File.Exists(BinaryPath))
+                path = BinaryPath;
+
+            // No managed binary: whatever is left is a PATH one, and GetStatus only counts that as found
+            // because IsWhisperInPath already ran --help and saw exit 0. Nothing to add.
+            if (path == null) return null;
+
+            var probe = RunLaunchProbe(path);
+            return probe is null ? null : DescribeLaunchFailure(probe.Value.ExitCode, probe.Value.Stderr);
+        }
+
+        /// <summary>
+        /// Runs <c>--help</c> against <paramref name="binaryPath"/> and returns its exit code and stderr, or
+        /// null when the probe could not decide — it timed out (a GPU build can take several seconds to
+        /// initialise drivers, and reaching the timeout still proves the process LAUNCHED) or the spawn
+        /// itself threw. Null therefore always means "no launch failure proven", never "broken".
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Spawns a process")]
+        private (int ExitCode, string Stderr)? RunLaunchProbe(string binaryPath)
+        {
+            try
+            {
+                using var process = new System.Diagnostics.Process
+                {
+                    StartInfo = new System.Diagnostics.ProcessStartInfo
+                    {
+                        FileName = binaryPath,
+                        Arguments = "--help",
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    }
+                };
+
+                process.Start();
+                var stdoutTask = process.StandardOutput.ReadToEndAsync();
+                var stderrTask = process.StandardError.ReadToEndAsync();
+
+                if (!process.WaitForExit(10000))
+                {
+                    try { process.Kill(entireProcessTree: true); } catch { }
+                    return null;
+                }
+
+                var stderr = stderrTask.GetAwaiter().GetResult();
+                _ = stdoutTask.GetAwaiter().GetResult();
+                return (process.ExitCode, stderr);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug("Binary launch probe failed: {Error}", ex.Message);
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Maps a launch probe's exit code to the message the setup page shows for an ALREADY-INSTALLED
+        /// binary that can no longer start. Separate wording from <see cref="ValidateBinary"/>, which talks
+        /// about falling back to another download variant: by this point the admin has a binary that used to
+        /// work, so the message names what left the container and both ways out. Returns null for every
+        /// other exit code — some whisper-cli builds exit non-zero on <c>--help</c>, which proves nothing.
+        /// Pure, so the wording is unit-testable. (Issue #185.)
+        /// </summary>
+        internal static string? DescribeLaunchFailure(int exitCode, string? stderr)
+        {
+            if (exitCode == 127)
+            {
+                var match = System.Text.RegularExpressions.Regex.Match(
+                    stderr ?? string.Empty, @"error while loading shared libraries:\s*(\S+?):");
+                var lib = match.Success ? match.Groups[1].Value : "a shared library";
+                // A missing CUDA userspace library is not an apt-install away inside the container: it is
+                // bind-mounted by the NVIDIA container runtime, so name that instead of the toolkit hint.
+                var fix = lib.StartsWith("libcuda", StringComparison.OrdinalIgnoreCase)
+                    ? "start the container with the NVIDIA runtime, or re-download the CPU variant on this page"
+                    : $"install the library in the container ({GetInstallHint(lib)}), or re-download the CPU variant on this page";
+                return $"The installed whisper-cli cannot start: missing {lib}. "
+                     + $"Every local transcription will fail until this is fixed — {fix}.";
+            }
+
+            if (exitCode == 132 || exitCode == 134 || exitCode == 135)
+            {
+                return $"The installed whisper-cli crashes on launch (exit {exitCode}, illegal instruction). "
+                     + "This CPU lacks an instruction set the build requires — re-download the "
+                     + "\"CPU (Compatibility)\" / noavx variant on this page.";
+            }
+
+            return null;
         }
 
         /// <summary>
@@ -1050,6 +1169,14 @@ namespace WhisperSubs.Setup
         public string? ModelPath { get; set; }
         public string Platform { get; set; } = "";
         public bool SetupComplete { get; set; }
+
+        /// <summary>
+        /// Why the installed binary cannot start, or null when it launches fine (and when none is
+        /// installed — <see cref="BinaryFound"/> covers that). Non-null forces
+        /// <see cref="SetupComplete"/> false: the file existing is not the same as it running. (Issue #185.)
+        /// </summary>
+        public string? BinaryLaunchError { get; set; }
+
         public string InstalledVariant { get; set; } = "";
 
         /// <summary>The plugin release the installed binary was downloaded from, empty when unknown.</summary>

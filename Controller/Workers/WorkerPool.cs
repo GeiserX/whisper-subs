@@ -15,6 +15,17 @@ namespace WhisperSubs.Controller.Workers
     internal readonly record struct WorkerLease(string Key, ITranscriptionWorker Worker);
 
     /// <summary>
+    /// Every worker that could serve the job has been taken out of rotation (issue #185: the host's
+    /// whisper-cli cannot launch). Raised by <see cref="WorkerPool.AcquireAsync"/> BEFORE anything is
+    /// dequeued, so the dispatcher can stop the drain with the queue — and every item's retry budget —
+    /// intact, rather than waiting on a worker that will not come back inside this drain.
+    /// </summary>
+    internal sealed class NoAvailableWorkerException : InvalidOperationException
+    {
+        public NoAvailableWorkerException(string message) : base(message) { }
+    }
+
+    /// <summary>
     /// The live transcription worker pool (v4.0): the immutable <see cref="ITranscriptionWorker"/>
     /// descriptors plus their mutable in-flight counts, behind one lock, gated by a ΣMaxConcurrency
     /// backpressure semaphore. It replaces the single global <c>TranscriptionLock(1,1)</c> — with the
@@ -30,6 +41,10 @@ namespace WhisperSubs.Controller.Workers
         private readonly List<string> _keys = new();
         private readonly Dictionary<string, ITranscriptionWorker> _byKey = new();
         private readonly Dictionary<string, int> _inFlight = new();
+        // Workers taken out of rotation, key → why (issue #185). A local whisper-cli that cannot launch
+        // fails every item identically, so it must stop being picked until a probe says otherwise. Empty
+        // in every normal install; nothing else writes to it.
+        private readonly Dictionary<string, string> _unavailable = new();
         // The item name(s) each worker is transcribing right now — surfaced in the status panel so the admin
         // sees "what's running where" (a worker with MaxConcurrency > 1 can hold several). (v4.0.)
         private readonly Dictionary<string, List<string>> _current = new();
@@ -167,6 +182,12 @@ namespace WhisperSubs.Controller.Workers
         /// True if ANY worker could serve <paramref name="job"/>'s hard requirements ignoring current load —
         /// i.e. a capable worker exists (maybe busy). The dispatcher checks this before <see cref="AcquireAsync"/>
         /// so a job no worker can EVER serve is failed fast instead of blocking a slot forever.
+        /// <para>
+        /// Deliberately ignores availability: this answers "is the CONFIG able to serve this job", whose only
+        /// cure is an admin edit, so it stays the fail-fast-and-drop signal it has always been. A worker that
+        /// is merely out of rotation is a temporary fault the items should WAIT for — that is
+        /// <see cref="HasAvailableWorker"/>. (Issue #185.)
+        /// </para>
         /// </summary>
         public bool HasCapableWorker(JobRequirements job)
         {
@@ -180,6 +201,88 @@ namespace WhisperSubs.Controller.Workers
                 }
                 return false;
             }
+        }
+
+        /// <summary>
+        /// Like <see cref="HasCapableWorker"/>, but a worker taken out of rotation does not count. False with
+        /// <see cref="HasCapableWorker"/> true means "capable, but nothing can run it right now" — the
+        /// dispatcher pauses instead of failing items. (Issue #185.)
+        /// </summary>
+        public bool HasAvailableWorker(JobRequirements job)
+        {
+            lock (_gate)
+            {
+                foreach (var key in _keys)
+                {
+                    if (_unavailable.ContainsKey(key)) continue;
+                    if (WorkerScheduling.CanServe(new WorkerSlot(key, true, 0, _byKey[key].Capabilities), job))
+                        return true;
+                }
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Takes one worker out of rotation with the reason why. Returns true only when this CHANGED the
+        /// worker's state, so a caller logs the cause once rather than once per queued item — the whole
+        /// complaint in issue #185 was the same error repeated for hundreds of items.
+        /// </summary>
+        public bool MarkUnavailable(string leaseKey, string reason)
+        {
+            lock (_gate)
+            {
+                if (!_byKey.ContainsKey(leaseKey)) return false;
+                if (_unavailable.ContainsKey(leaseKey)) return false;
+                _unavailable[leaseKey] = reason;
+                return true;
+            }
+        }
+
+        /// <summary>Puts a worker back in rotation. Returns true when it had been out.</summary>
+        public bool MarkAvailable(string leaseKey)
+        {
+            lock (_gate)
+            {
+                return _unavailable.Remove(leaseKey);
+            }
+        }
+
+        /// <summary>Why <paramref name="leaseKey"/> is out of rotation, or null when it is available.</summary>
+        public string? UnavailableReason(string leaseKey)
+        {
+            lock (_gate)
+            {
+                return _unavailable.TryGetValue(leaseKey, out var reason) ? reason : null;
+            }
+        }
+
+        /// <summary>
+        /// Applies one local-binary verdict to every LOCAL worker at once: a non-null
+        /// <paramref name="launchError"/> takes them out of rotation, null puts them back. The dispatcher
+        /// calls this at the start of each drain from the cached probe, so a fixed container resumes on the
+        /// next drain without a Jellyfin restart. Returns true when anything changed. (Issue #185.)
+        /// </summary>
+        public bool SetLocalAvailability(string? launchError)
+        {
+            var changed = false;
+            lock (_gate)
+            {
+                foreach (var key in _keys)
+                {
+                    if (!_byKey[key].Capabilities.IsLocal) continue;
+                    if (launchError != null)
+                    {
+                        if (_unavailable.ContainsKey(key)) continue;
+                        _unavailable[key] = launchError;
+                        changed = true;
+                    }
+                    else if (_unavailable.Remove(key))
+                    {
+                        changed = true;
+                    }
+                }
+            }
+            return changed;
         }
 
         /// <summary>
@@ -202,6 +305,10 @@ namespace WhisperSubs.Controller.Workers
                     "No worker in the pool can serve this job's requirements.");
             }
 
+            // Capable but all out of rotation: waiting is pointless (only a fresh probe puts one back, and
+            // that happens between drains), so say so before taking a slot. (Issue #185.)
+            ThrowIfNoneAvailable(job);
+
             while (true)
             {
                 await _slots.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -218,8 +325,27 @@ namespace WhisperSubs.Controller.Workers
                 // slot back and wait briefly for the capable-but-busy worker to free — the HasCapableWorker
                 // guard guarantees one exists, so this terminates.
                 ReleaseSlots();
+
+                // …unless the capable one was taken out of rotation while we waited, in which case nothing
+                // will ever free and the 100 ms retry would spin forever. (Issue #185.)
+                ThrowIfNoneAvailable(job);
                 await Task.Delay(100, cancellationToken).ConfigureAwait(false);
             }
+        }
+
+        // Raises NoAvailableWorkerException, carrying one out-of-rotation reason so the dispatcher can log
+        // and surface something actionable, when every worker that could serve the job is out of rotation.
+        private void ThrowIfNoneAvailable(JobRequirements job)
+        {
+            if (HasAvailableWorker(job)) return;
+
+            string? reason;
+            lock (_gate)
+            {
+                reason = _unavailable.Count > 0 ? System.Linq.Enumerable.First(_unavailable.Values) : null;
+            }
+            throw new NoAvailableWorkerException(
+                reason ?? "Every worker that could run this job is currently unavailable.");
         }
 
         /// <summary>
@@ -344,7 +470,7 @@ namespace WhisperSubs.Controller.Workers
         {
             var slots = new List<WorkerSlot>(_keys.Count);
             foreach (var key in _keys)
-                slots.Add(new WorkerSlot(key, true, _inFlight[key], _byKey[key].Capabilities));
+                slots.Add(new WorkerSlot(key, !_unavailable.ContainsKey(key), _inFlight[key], _byKey[key].Capabilities));
 
             var pick = WorkerScheduling.Pick(slots, job);
             if (pick is null) return null;

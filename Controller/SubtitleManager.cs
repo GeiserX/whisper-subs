@@ -922,6 +922,7 @@ namespace WhisperSubs.Controller
                 }
 
                 int consecutiveFailures = 0;
+                Exception? lastDetectionFailure = null;
                 const int maxConsecutiveDetectionFailures = 3;
                 for (int i = 0; i < chunks.Count; i++)
                 {
@@ -963,6 +964,7 @@ namespace WhisperSubs.Controller
                     catch (Exception ex)
                     {
                         consecutiveFailures++;
+                        lastDetectionFailure = ex;
                         _logger.LogWarning(ex, "Language detection failed for chunk {Index} ({Start:F1}s-{End:F1}s), skipping ({Consecutive}/{Max} consecutive)",
                             i, chunk.Start, chunk.End, consecutiveFailures, maxConsecutiveDetectionFailures);
 
@@ -973,8 +975,12 @@ namespace WhisperSubs.Controller
                         {
                             _logger.LogError("Aborting forced-subtitle detection for {ItemName}: {Count} consecutive language-detection failures (worker/endpoint likely down)",
                                 item.Name, consecutiveFailures);
+                            // Keep the real cause as the inner exception: when it is whisper-cli failing to
+                            // LAUNCH, the dispatcher reads that off the chain to pause the local worker rather
+                            // than charge the item a retry. Discarding it made every cause look alike. (#185.)
                             return (GenerationOutcome.Failed, new InvalidOperationException(
-                                $"Aborted forced-subtitle detection for {item.Name} after {consecutiveFailures} consecutive language-detection failures (worker/endpoint likely down)."));
+                                $"Aborted forced-subtitle detection for {item.Name} after {consecutiveFailures} consecutive language-detection failures (worker/endpoint likely down).",
+                                lastDetectionFailure));
                         }
                     }
                 }
