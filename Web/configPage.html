@@ -975,6 +975,15 @@
                         icon.style.color = '#CC7B19';
                         text.textContent = 'Not installed';
                     }
+
+                    // A binary that is present but cannot START outranks everything above: the file is
+                    // there, so every check before this one reads "ready" while every job fails instantly
+                    // (issue #185 — a CUDA build in a container recreated without the NVIDIA runtime).
+                    if (status.BinaryLaunchError) {
+                        icon.innerHTML = '&#10007;';
+                        icon.style.color = '#CC3333';
+                        text.textContent = status.BinaryLaunchError;
+                    }
                 },
 
                 // ── In-page button/menu injection status (issue #94) ──────

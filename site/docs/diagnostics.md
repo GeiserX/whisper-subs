@@ -109,8 +109,9 @@ A healthy server, formatted for readability:
 
 | Field | Meaning |
 |---|---|
-| `SetupComplete` | `true` only when both the binary and a model are present. This is the one field that says whether local transcription can run at all. |
+| `SetupComplete` | `true` only when a binary and a model are present **and** the binary actually starts. This is the one field that says whether local transcription can run at all. |
 | `BinaryFound` | The `whisper-cli` binary exists, either auto-downloaded by the plugin, or at the path you configured, or on the system `PATH`. |
+| `BinaryLaunchError` | Absent when the binary starts. Present when the installed binary exists but cannot run — it names the missing library and what to do. See below. |
 | `BinaryFoundInPath` | `true` only when the binary was found on `PATH` and there is no auto-downloaded or configured copy. |
 | `BinaryPath` | The path in use, or the literal `whisper-cli (PATH)`. |
 | `ModelFound` | A model was located: the configured path if you set one, otherwise the largest `.bin` in the plugin's models directory. |
@@ -166,6 +167,38 @@ Three things to read out of that:
 - `BinaryPath` and `ModelPath` are **missing entirely**, not `null`. Jellyfin drops null fields from its JSON, so an absent field means "not found". Nothing is wrong with your copy of the response.
 - `SetupComplete: false` with both `BinaryFound` and `ModelFound` false means the engine was never installed. Install it from the plugin's settings page, described in the [setup guide](/docs/setup).
 - `HasNvidia: true` with `HasCudaLibrary: false` is the classic container case: the GPU device was passed through, but the CUDA runtime libraries are not in the image. The plugin therefore recommends `cpu`, because a `cuda12` binary would fail to start.
+
+### A binary that is installed but cannot start
+
+The harder case is a binary that is present and used to work. A `cuda12` build downloaded inside a
+container with the NVIDIA runtime keeps working until that container is recreated without it; the file is
+still on disk, but `libcuda.so.1` is gone and `whisper-cli` now exits immediately with exit code 127. The
+same happens to a `vulkan` build when `libvulkan1` is dropped from an image.
+
+The plugin probes the installed binary — at first use, and when you load this endpoint — and reports it:
+
+```json
+{
+  "BinaryFound": true,
+  "BinaryPath": "/config/data/WhisperSubs/whisper/whisper-cli",
+  "ModelFound": true,
+  "SetupComplete": false,
+  "InstalledVariant": "cuda12",
+  "BinaryLaunchError": "The installed whisper-cli cannot start: missing libcuda.so.1. Every local transcription will fail until this is fixed — start the container with the NVIDIA runtime, or re-download the CPU variant on this page."
+}
+```
+
+`SetupComplete` is `false` even though `BinaryFound` is `true`: a binary on disk is not a binary that runs.
+The settings page shows the same message next to the engine status.
+
+While this is the case, the local worker is taken out of rotation. Queued items stay queued and keep their
+retry budgets instead of failing one after another against a process that never starts, and any remote
+workers you have configured carry on as normal.
+
+Fix the container, or download the CPU variant from the settings page, and the queue picks itself back up:
+a parked queue re-checks the engine every five minutes and starts dispatching again as soon as the binary
+runs, with no restart and nothing to click. A new subtitle request or a run of the **Generate Subtitles**
+task re-checks it immediately, if you would rather not wait.
 
 ## Other endpoints worth capturing
 

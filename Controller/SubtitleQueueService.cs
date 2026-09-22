@@ -10,6 +10,7 @@ using System.Threading.Tasks;
 using WhisperSubs.Configuration;
 using WhisperSubs.Providers;
 using WhisperSubs.Controller.Workers;
+using WhisperSubs.Setup;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 using Microsoft.Extensions.Logging;
@@ -115,6 +116,10 @@ namespace WhisperSubs.Controller
         // concurrent enqueue in the dequeue→reserve window could re-add an identity that is about to run,
         // letting the pool dispatch the SAME (item,language) twice — two workers writing one .srt (v4.0).
         private readonly object _dispatchGate = new();
+
+        // Added to the launch-probe wait before a paused drain retries, so the retry lands just PAST the
+        // probe window. Landing exactly on it would race the cache and be served the stale verdict. (#185.)
+        private static readonly System.TimeSpan ResumeProbeMargin = System.TimeSpan.FromSeconds(1);
 
         private int _isDraining;
         private string? _currentItemName;
@@ -474,6 +479,63 @@ namespace WhisperSubs.Controller
         }
 
         /// <summary>
+        /// Re-queue an in-flight item WITHOUT spending a retry, for a failure that is the WORKER's and not
+        /// the item's. Issue #185: a local whisper-cli that cannot launch exits instantly for every item, so
+        /// charging each one an attempt empties a 315-item queue against a binary that never ran — and the
+        /// items are gone once the container is fixed. Same lanes⇄in-flight transition as
+        /// <see cref="RetryOrRelease"/>, at the same tier, with <see cref="SubtitleWorkItem.RetryCount"/>
+        /// unchanged, and it always re-queues (there is no budget to exhaust). The worker is taken out of
+        /// rotation by the caller, so the item cannot immediately land on the same broken worker again.
+        /// </summary>
+        internal void RequeueWithoutRetry(SubtitleWorkItem wi)
+        {
+            var key = IdentityKey(wi.Item.Id, wi.Language);
+            lock (_dispatchGate)
+            {
+                Release(key);
+                _lanes.Enqueue(key, (int)wi.Tier, new SubtitleWorkItem
+                {
+                    Item = wi.Item,
+                    Language = wi.Language,
+                    Completion = null,   // any awaited completion was already signalled by the caller
+                    Force = wi.Force,
+                    Tier = wi.Tier,
+                    RetryCount = wi.RetryCount
+                }, MergeWork);
+                PersistQueue();
+            }
+        }
+
+        /// <summary>What the background dispatch loop does once a drain returns.</summary>
+        public enum DrainFollowUp
+        {
+            /// <summary>Nothing left to do: the queue is empty, we are shutting down, or the pool never built.</summary>
+            Stop,
+
+            /// <summary>Items arrived while the drain was finishing — go straight round again.</summary>
+            ReDispatchNow,
+
+            /// <summary>
+            /// The drain paused because no worker could run the items. Wait for the launch probe to go stale,
+            /// then try again: the binary may be fixed by then, and re-firing at once would spin at full speed.
+            /// </summary>
+            ReDispatchAfterProbeWindow
+        }
+
+        /// <summary>
+        /// What to do after a drain. Pure so the paused case is pinned by a test rather than by watching a
+        /// live dispatcher: it must re-fire on a delay (never immediately — that is a busy loop against a
+        /// binary that cannot start), and must not re-fire at all on an empty queue or a cancelled token.
+        /// Without the delayed re-fire a local-only install would stay parked until the next request or the
+        /// daily task, which is up to a day for what may be a one-off failure. (Issue #185.)
+        /// </summary>
+        internal static DrainFollowUp DecideFollowUp(bool started, bool paused, bool queueEmpty, bool cancelled)
+        {
+            if (!started || queueEmpty || cancelled) return DrainFollowUp.Stop;
+            return paused ? DrainFollowUp.ReDispatchAfterProbeWindow : DrainFollowUp.ReDispatchNow;
+        }
+
+        /// <summary>
         /// Terminally drop an in-flight identity that reached a final state (completed successfully, or
         /// given up on after exhausting retries, or unservable by any worker) and persist so queue.json no
         /// longer lists it as in-flight — otherwise a crash would restore a finished item as pending. Under
@@ -780,6 +842,7 @@ namespace WhisperSubs.Controller
                 _ = Task.Run(async () =>
                 {
                     var started = false;
+                    var paused = false;
                     try
                     {
                         // Build the pool + requirements INSIDE the try (v4.0.1): GetPool → WorkerRegistry →
@@ -791,7 +854,7 @@ namespace WhisperSubs.Controller
                         var pool = GetPool(config, loggerFactory, forTask: false);
                         var requirements = WorkerJob.Requirements(config.SubtitleMode, config.EnableTranslation);
                         started = true;
-                        await DispatchDrainAsync(manager, pool, requirements, countProcessed: true, config.JobMaxRetries, logger, cancellationToken);
+                        paused = await DispatchDrainAsync(manager, pool, requirements, countProcessed: true, config.JobMaxRetries, logger, cancellationToken);
                     }
                     catch (System.Exception ex)
                     {
@@ -805,9 +868,17 @@ namespace WhisperSubs.Controller
                         // Re-check: if items were enqueued during the finally block, restart the loop to avoid
                         // stuck items — but never on an already-cancelled token, and never if the pool build
                         // itself failed (a persistent bad-config throw must not busy-loop). (#112, v4.0.1)
-                        if (started && !_lanes.IsEmpty && !cancellationToken.IsCancellationRequested)
+                        // A PAUSED drain adds a third case: re-firing at once would spin against a binary
+                        // that cannot start, and never re-firing would strand the queue until the next
+                        // request or the daily task. Retry when the launch probe goes stale. (Issue #185.)
+                        switch (DecideFollowUp(started, paused, _lanes.IsEmpty, cancellationToken.IsCancellationRequested))
                         {
-                            EnsureDispatching(manager, config, loggerFactory, logger, cancellationToken);
+                            case DrainFollowUp.ReDispatchNow:
+                                EnsureDispatching(manager, config, loggerFactory, logger, cancellationToken);
+                                break;
+                            case DrainFollowUp.ReDispatchAfterProbeWindow:
+                                ScheduleResumeAfterProbeWindow(manager, config, loggerFactory, logger, cancellationToken);
+                                break;
                         }
                     }
                     // Task.Run is deliberately NOT given the cancellation token: if it were and the token were
@@ -820,6 +891,40 @@ namespace WhisperSubs.Controller
         }
 
         /// <summary>
+        /// Re-fires the dispatch loop once the cached launch verdict goes stale, so a paused queue resumes
+        /// by itself the moment the binary works again. A delayed continuation rather than a background
+        /// service: it exists only while a queue is actually parked, it dies with the cancellation token,
+        /// and the <see cref="EnsureDispatching"/> re-entry guard collapses any overlap with a drain started
+        /// by an incoming request. The extra second past the window is what makes the next
+        /// <c>LocalBinaryHealth.Check</c> genuinely re-probe instead of being served the same cached verdict
+        /// and pausing again immediately. (Issue #185.)
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "A timed continuation over the unit-tested DecideFollowUp + LocalBinaryHealth.TimeUntilStale")]
+        private void ScheduleResumeAfterProbeWindow(
+            SubtitleManager manager,
+            PluginConfiguration config,
+            ILoggerFactory loggerFactory,
+            ILogger logger,
+            CancellationToken cancellationToken)
+        {
+            var delay = LocalBinaryHealth.Instance.TimeUntilStale() + ResumeProbeMargin;
+            logger.LogInformation("[Dispatch] Re-checking the local engine in {Seconds:F0}s; {Count} item(s) waiting",
+                delay.TotalSeconds, _lanes.Count);
+
+            _ = Task.Run(async () =>
+            {
+                try { await Task.Delay(delay, cancellationToken); }
+                catch (System.OperationCanceledException) { return; }
+
+                // Something may have drained the queue (an incoming request re-fired the loop) or the server
+                // may be going down — either way there is nothing to resume.
+                if (_lanes.IsEmpty || cancellationToken.IsCancellationRequested) return;
+
+                EnsureDispatching(manager, config, loggerFactory, logger, cancellationToken);
+            });
+        }
+
+        /// <summary>
         /// The core N-slot dispatcher: pulls the highest-priority item, waits for a free worker slot
         /// (backpressure at ΣMaxConcurrency), routes it to the cheapest capable worker, and runs it
         /// concurrently — up to the pool's capacity in flight at once. On completion or failure both the
@@ -827,9 +932,14 @@ namespace WhisperSubs.Controller
         /// loop (fire-and-forget via EnsureDispatching) and the scheduled task's priority drain (awaited via
         /// DrainPriorityAsync); both use the SAME pool so the global concurrency limit always holds. At one
         /// worker of MaxConcurrency 1 the slot serialises exactly like the old TranscriptionLock.
+        /// <para>
+        /// Returns true when the drain PAUSED: every worker that could run the queued items is out of
+        /// rotation (issue #185 — the host's whisper-cli cannot launch), so the items are still queued with
+        /// their retry budgets intact and the caller must not immediately re-fire.
+        /// </para>
         /// </summary>
         [ExcludeFromCodeCoverage(Justification = "Orchestrates concurrent async transcription with external processes")]
-        private async Task DispatchDrainAsync(
+        private async Task<bool> DispatchDrainAsync(
             SubtitleManager manager,
             WorkerPool pool,
             JobRequirements requirements,
@@ -860,10 +970,24 @@ namespace WhisperSubs.Controller
                     logger.LogError("[Dispatch] No capable worker for {ItemName} — skipping", unservable.Item.Name);
                 }
                 _currentItemName = null;
-                return;
+                return false;
+            }
+
+            // "The binary is on disk" is not "the binary runs": a CUDA build outlives the container it was
+            // downloaded in and then exits 127 on every chunk. Settle that ONCE per drain, before anything is
+            // dequeued, and park the local worker if it cannot start — otherwise the queue is fed item by
+            // item to a process that never launches. The probe is cached (LocalBinaryHealth), so a drain that
+            // starts seconds after a status poll costs nothing. (Issue #185.)
+            var localLaunchError = LocalBinaryHealth.Instance.Check(() => ProbeLocalBinaryLaunch(logger));
+            if (pool.SetLocalAvailability(localLaunchError) && localLaunchError != null)
+            {
+                // Once per state change, not once per item — hundreds of identical lines was half the report.
+                logger.LogError("[Dispatch] Local whisper-cli cannot start — local worker paused: {Error}", localLaunchError);
+                _lastError = localLaunchError;
             }
 
             var running = new List<Task>();
+            var paused = false;
             try
             {
                 while (!_lanes.IsEmpty)
@@ -874,7 +998,23 @@ namespace WhisperSubs.Controller
                     // highest-priority item — so an item leaves the persisted queue only when a worker is
                     // ready to run it now (same crash-durability as the old single-lock loop), and each pick
                     // sees the freshest priority state.
-                    var lease = await pool.AcquireAsync(requirements, cancellationToken);
+                    WorkerLease lease;
+                    try
+                    {
+                        lease = await pool.AcquireAsync(requirements, cancellationToken);
+                    }
+                    catch (NoAvailableWorkerException ex)
+                    {
+                        // Nothing was dequeued, so every queued item keeps its place, its tier and its full
+                        // retry budget. Stop here instead of failing them against a worker that cannot run.
+                        // (Issue #185.)
+                        _lastError = ex.Message;
+                        logger.LogError("[Dispatch] Paused with {Count} item(s) still queued — {Reason}",
+                            _lanes.Count, ex.Message);
+                        paused = true;
+                        break;
+                    }
+
                     if (!TryDequeuePriority(out var workItem) || workItem == null)
                     {
                         // Emptied by a concurrent consumer between the check and the dequeue — release, re-check.
@@ -918,6 +1058,28 @@ namespace WhisperSubs.Controller
                             else
                                 logger.LogWarning("[Dispatch] Giving up on {ItemName} after {Attempts} attempt(s) — cancelled and out of retries",
                                     wi.Item.Name, wi.RetryCount + 1);
+                        }
+                        catch (System.Exception ex) when (l.Worker.Capabilities.IsLocal
+                                                          && WhisperLaunchException.Find(ex) != null)
+                        {
+                            // whisper-cli never started (missing shared library / illegal instruction). That is
+                            // the WORKER's fault, identical for every item, so: park the worker, record it for
+                            // the setup page, say why exactly once, and put the item back WITHOUT charging it a
+                            // retry. Without this, the queue walks the whole library spending every item's
+                            // budget on a binary that cannot launch. (Issue #185.)
+                            var launch = WhisperLaunchException.Find(ex)!;
+                            _lastError = launch.Message;
+                            wi.Completion?.TrySetException(ex);
+                            LocalBinaryHealth.Instance.RecordLaunchFailure(launch.Message);
+
+                            if (pool.MarkUnavailable(l.Key, launch.Message))
+                            {
+                                logger.LogError(ex,
+                                    "[Dispatch] Local whisper-cli could not start (exit {ExitCode}) — pausing the local worker; {ItemName} and the rest of the queue keep their retries",
+                                    launch.ExitCode, wi.Item.Name);
+                            }
+
+                            RequeueWithoutRetry(wi);
                         }
                         catch (System.Exception ex)
                         {
@@ -965,6 +1127,20 @@ namespace WhisperSubs.Controller
 
             logger.LogInformation("[Dispatch] Drain complete. Processed {Count} items total ({Failed} failed).",
                 _processedCount, _failedCount);
+            return paused;
+        }
+
+        /// <summary>
+        /// Runs the cached "can the local whisper-cli launch?" probe against this server's data folder.
+        /// Null when it starts fine, when nothing is installed, or when there is no plugin instance to
+        /// resolve the binary from. (Issue #185.)
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Spawns the installed binary via WhisperSetupService; the caching rule and the message mapping are unit-tested")]
+        private static string? ProbeLocalBinaryLaunch(ILogger logger)
+        {
+            var dataPath = Plugin.Instance?.DataFolderPath;
+            if (string.IsNullOrEmpty(dataPath)) return null;
+            return new WhisperSetupService(logger, dataPath).ProbeInstalledBinaryLaunch();
         }
 
         /// <summary>
@@ -985,7 +1161,9 @@ namespace WhisperSubs.Controller
         {
             // countProcessed:false — the old priority drain did not add to _processedCount (only the
             // background loop did), so the /Queue `processed` stat stays byte-identical to pre-v4.
-            await DispatchDrainAsync(manager, pool, requirements, countProcessed: false, maxRetries, logger, cancellationToken);
+            // The pause flag is for the background loop's self-re-fire guard; the scheduled task simply
+            // returns and tries again on its next run. (Issue #185.)
+            _ = await DispatchDrainAsync(manager, pool, requirements, countProcessed: false, maxRetries, logger, cancellationToken);
             _currentItemName = null;
         }
     }
