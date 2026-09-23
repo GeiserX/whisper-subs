@@ -91,7 +91,7 @@ public class TranslationRouteTests
         Assert.Equal(TranslationEngine.Canary, TranslationRoute.Decide("en", "nl", true, LocalCanaryState.LocalWorkerOff).Engine);
     }
 
-    // The state comes from the same composition rule the registry builds the pool from.
+    // A pool built from these same settings: the state agrees with the rule the registry builds from.
     [Theory]
     [InlineData(false, 0, 0, false, true, LocalCanaryState.NotInstalled)]
     [InlineData(false, 2, 2, false, false, LocalCanaryState.NotInstalled)]   // missing files come first
@@ -105,7 +105,24 @@ public class TranslationRouteTests
     public void LocalCanary_MatchesThePoolComposition(
         bool installed, int rows, int usableRows, bool legacyUrl, bool enableLocal, LocalCanaryState expected)
     {
-        Assert.Equal(expected, TranslationRoute.LocalCanary(installed, rows, usableRows, legacyUrl, enableLocal));
+        var builtWithLocal = Controller.Workers.WorkerPlan.HostsLocal(rows, usableRows, legacyUrl, enableLocal);
+        Assert.Equal(expected, TranslationRoute.LocalCanary(installed, builtWithLocal, rows, usableRows, legacyUrl, enableLocal));
+    }
+
+    // The pool is fixed when built; the settings may have changed since. The running pool wins.
+    [Fact]
+    public void LocalCanary_RunningPoolWinsOverChangedSettings()
+    {
+        // Built with this server, the local-worker option since turned off: still in the pool.
+        Assert.Equal(LocalCanaryState.InPool, TranslationRoute.LocalCanary(true, true, 2, 2, false, enableLocalWorker: false));
+
+        // Built without it, the option since turned on: the pool predates the change. Not "is off".
+        var pending = TranslationRoute.LocalCanary(true, false, 2, 2, false, enableLocalWorker: true);
+        Assert.Equal(LocalCanaryState.PendingPoolRebuild, pending);
+        var reason = TranslationRoute.Decide("en", "nl", false, pending).Reason;
+        Assert.Contains("built before that change", reason);
+        Assert.DoesNotContain("is off", reason);
+        Assert.DoesNotContain("within a minute", reason);
     }
 
     // A non-English source to a non-English target is the pair the spike showed failing silently.

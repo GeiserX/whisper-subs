@@ -43,8 +43,14 @@ namespace WhisperSubs.Controller
         /// <summary>The crispasr binary or the Canary model file is missing.</summary>
         NotInstalled,
 
-        /// <summary>Installed, and this server is a worker in the pool.</summary>
+        /// <summary>Installed, and the running pool holds this server's worker.</summary>
         InPool,
+
+        /// <summary>
+        /// Installed, and the current settings include this server, but the running pool was built before
+        /// that change and does not hold it yet.
+        /// </summary>
+        PendingPoolRebuild,
 
         /// <summary>Installed, but "Also use this server as a worker" is off with remote rows configured.</summary>
         LocalWorkerOff,
@@ -114,6 +120,8 @@ namespace WhisperSubs.Controller
                         $"A '{target}' subtitle needs the Canary engine. It is installed on this server, but \"Also use this server as a worker\" is off under Worker Pool and no CrispASR server row lists '{target}'. Turn that option on, or add a CrispASR server row that lists '{target}'.",
                     LocalCanaryState.LegacyRemoteOnly =>
                         $"A '{target}' subtitle needs the Canary engine. It is installed on this server, but while a single Remote API URL is set, only that remote server transcribes. Add it as a row under Worker Pool instead, so this server can work too, or add a CrispASR server row that lists '{target}'.",
+                    LocalCanaryState.PendingPoolRebuild =>
+                        $"A '{target}' subtitle needs the Canary engine. It is installed on this server, and the worker settings now include this server, but the running pool was built before that change. It picks the change up when it is rebuilt, at the next start of work with nothing transcribing; generate again then.",
                     LocalCanaryState.InPool =>
                         $"A '{target}' subtitle needs the Canary engine. It is installed on this server, which is a worker in the pool, but the pool does not offer '{target}' yet. The pool re-checks the install within a minute; generate again then.",
                     _ =>
@@ -126,14 +134,18 @@ namespace WhisperSubs.Controller
 
         /// <summary>
         /// The state that picks the <see cref="TranslationEngine.EngineMissing"/> wording: missing files
-        /// first, then whether the pool holds this server (<see cref="WorkerPlan.HostsLocal"/>, the rule the
-        /// registry builds from), and if not, why. Pure.
+        /// first, then whether the running pool holds this server (<paramref name="localWorkerInPool"/>,
+        /// its real composition). Only when it does not do the current settings explain why, through
+        /// <see cref="WorkerPlan.HostsLocal"/>, the rule the registry builds from: settings that would now
+        /// include it mean the pool predates the change. Pure.
         /// </summary>
         public static LocalCanaryState LocalCanary(
-            bool installed, int explicitWorkerCount, int usableExplicitRows, bool hasLegacyRemoteUrl, bool enableLocalWorker)
+            bool installed, bool localWorkerInPool,
+            int explicitWorkerCount, int usableExplicitRows, bool hasLegacyRemoteUrl, bool enableLocalWorker)
         {
             if (!installed) return LocalCanaryState.NotInstalled;
-            if (WorkerPlan.HostsLocal(explicitWorkerCount, usableExplicitRows, hasLegacyRemoteUrl, enableLocalWorker)) return LocalCanaryState.InPool;
+            if (localWorkerInPool) return LocalCanaryState.InPool;
+            if (WorkerPlan.HostsLocal(explicitWorkerCount, usableExplicitRows, hasLegacyRemoteUrl, enableLocalWorker)) return LocalCanaryState.PendingPoolRebuild;
             return WorkerPlan.Decide(explicitWorkerCount, hasLegacyRemoteUrl, enableLocalWorker).Source == WorkerSource.LegacyRemote
                 ? LocalCanaryState.LegacyRemoteOnly
                 : LocalCanaryState.LocalWorkerOff;

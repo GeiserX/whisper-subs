@@ -44,6 +44,12 @@ namespace WhisperSubs.Controller
         /// </summary>
         bool SkipUnservedTargets { get; }
 
+        /// <summary>
+        /// Whether the engines in use include this server's own worker, as actually built. Only picks the
+        /// wording of a missing-engine error, which must describe the running pool, not the settings.
+        /// </summary>
+        bool LocalWorkerInPool { get; }
+
         /// <summary>An engine for <paramref name="target"/>. Throws when none can be had for this item.</summary>
         Task<TargetEngineLease> AcquireAsync(string target, string itemName, CancellationToken cancellationToken);
     }
@@ -67,6 +73,8 @@ namespace WhisperSubs.Controller
         }
 
         public bool SkipUnservedTargets { get; }
+
+        public bool LocalWorkerInPool => _pool.HasLocalWorker;
 
         public bool CanServe(string target) => _pool.HasCapableWorker(WorkerJob.ForTarget(target));
 
@@ -112,6 +120,9 @@ namespace WhisperSubs.Controller
         public bool CanServe(string target) => _canary != null && CanaryCatalog.IsTarget(target);
 
         public bool SkipUnservedTargets => false;
+
+        /// <summary>Without a pool only this server's install serves targets.</summary>
+        public bool LocalWorkerInPool => true;
 
         public Task<TargetEngineLease> AcquireAsync(string target, string itemName, CancellationToken cancellationToken)
             => _canary != null

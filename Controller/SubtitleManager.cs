@@ -947,6 +947,7 @@ namespace WhisperSubs.Controller
                 force,
                 localCanary: TranslationRoute.LocalCanary(
                     SubtitleProviderFactory.IsCanaryInstalled(config.CrispAsrBinaryPath, config.CanaryModelPath, File.Exists),
+                    engines.LocalWorkerInPool,
                     config.Workers?.Count ?? 0,
                     config.Workers?.Count(w => w.Enabled && !string.IsNullOrWhiteSpace(w.ApiUrl)) ?? 0,
                     !string.IsNullOrWhiteSpace(config.RemoteWhisperApiUrl),

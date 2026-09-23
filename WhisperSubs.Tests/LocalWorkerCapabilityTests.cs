@@ -67,6 +67,33 @@ public class LocalWorkerCapabilityTests
         Assert.Contains("en", worker.Capabilities.TranslateTargets);
     }
 
+    // A pool built with this server keeps it until the next rebuild. Turning the local-worker option
+    // off afterwards must not make the error claim the option is off while the pool still serves the target.
+    [Fact]
+    public void LocalWorkerOptionTurnedOffAfterBuild_MessageFollowsTheRunningPool()
+    {
+        var files = new HashSet<string> { Binary, Model };
+        var config = new PluginConfiguration
+        {
+            CrispAsrBinaryPath = Binary,
+            CanaryModelPath = Model,
+            TranslationTargetLanguages = new List<string> { "es" },
+            EnableLocalWorker = true,
+            Workers = new List<WhisperWorker> { new() { ApiUrl = "http://worker-a:8000" } },
+        };
+        var check = new CanaryInstallCheck(files.Contains);
+        var pool = new WorkerPool(new ITranscriptionWorker[] { new LocalTranscriptionWorker(new FakeProvider(), () => config, check, _ => null) });
+
+        config.EnableLocalWorker = false;
+
+        Assert.True(pool.HasCapableWorker(WorkerJob.ForTarget("es")));   // the running pool still serves it
+        Assert.True(pool.HasLocalWorker);
+        var state = Controller.TranslationRoute.LocalCanary(
+            installed: true, pool.HasLocalWorker, config.Workers.Count, config.Workers.Count,
+            hasLegacyRemoteUrl: false, config.EnableLocalWorker);
+        Assert.Equal(Controller.LocalCanaryState.InPool, state);
+    }
+
     [Fact]
     public void InstallCheck_CachesWithinTheInterval_AndRechecksANewPathAtOnce()
     {

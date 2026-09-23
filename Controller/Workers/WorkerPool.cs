@@ -189,6 +189,25 @@ namespace WhisperSubs.Controller.Workers
         /// <see cref="HasAvailableWorker"/>. (Issue #185.)
         /// </para>
         /// </summary>
+        /// <summary>
+        /// Whether the running pool holds the host's own worker. The composition is fixed when the pool is
+        /// built, so this can differ from what the current settings would build until the next rebuild.
+        /// </summary>
+        public bool HasLocalWorker
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    foreach (var key in _keys)
+                    {
+                        if (_byKey[key].Capabilities.IsLocal) return true;
+                    }
+                    return false;
+                }
+            }
+        }
+
         public bool HasCapableWorker(JobRequirements job)
         {
             lock (_gate)
