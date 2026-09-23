@@ -21,6 +21,13 @@ namespace WhisperSubs.Controller.Workers
         /// </summary>
         public IReadOnlySet<string> TranslateTargets { get; init; } = WorkerTargets.EnglishOnly;
 
+        /// <summary>
+        /// Whether the worker takes whole-item jobs (transcription, forced and English passes). False for a
+        /// CrispASR server row that does not list "en": it serves only the Canary targets it lists, so a server
+        /// started with Canary never transcribes a title (Canary has 25 languages and no language detection).
+        /// </summary>
+        public bool TranscribesItems { get; init; } = true;
+
         /// <summary>Models the worker can serve; empty = "any" (the common homelab case, and the local worker).</summary>
         public IReadOnlySet<string> Models { get; init; } = new HashSet<string>();
 
@@ -50,7 +57,9 @@ namespace WhisperSubs.Controller.Workers
     /// <summary>
     /// What a specific job needs from a worker (drives the hard capability filter). <c>TranslateTarget</c> is
     /// the language the job translates into ("en" for Whisper's translate task, a Canary code otherwise), or
-    /// null when it only transcribes.
+    /// null when it only transcribes. <c>TargetOnly</c> marks a single Canary-target job inside an item
+    /// (<see cref="WorkerJob.ForTarget"/>); every other job is a whole item and needs
+    /// <see cref="WorkerCapabilities.TranscribesItems"/>.
     /// </summary>
-    public readonly record struct JobRequirements(string? TranslateTarget, string? RequiredModel);
+    public readonly record struct JobRequirements(string? TranslateTarget, string? RequiredModel, bool TargetOnly = false);
 }

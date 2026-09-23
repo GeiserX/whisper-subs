@@ -245,6 +245,11 @@ As shipped:
 - An OpenAI-dialect row never advertises a Canary target, even if a hand-edited config lists one.
 - The local worker advertises `{"en"}` plus the configured targets when crispasr and the Canary
   model are installed, and carries a `CanaryProvider` next to its whisper provider for them.
+- A CrispASR row whose targets do not list `en` never takes a whole-item job, with translation on
+  or off, in any mode. It serves only the Canary-target jobs it lists. The first version filtered
+  on `en` only when translation was possible, so with translation off such a row took ordinary
+  transcription jobs, and a server started with Canary then transcribed titles with Canary, which
+  has 25 languages and no language detection. A row that lists `en` takes whole items as before.
 - An item is still one job that requires English translation when translation is on. Each Canary
   target asks the pool for its own worker through `WorkerJob.ForTarget`. The item's own worker is used
   when it lists the target. Otherwise the pass waits for a capable worker only when its own worker

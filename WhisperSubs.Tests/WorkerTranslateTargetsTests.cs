@@ -208,6 +208,64 @@ public class WorkerTranslateTargetsTests
         Assert.Equal("crisp", WorkerScheduling.Pick(slots, WorkerJob.ForTarget("nl"))!.Value.Id);
     }
 
+    // A slot built from a configured row the way WorkerRegistry.BuildRemote builds it.
+    private static WorkerSlot RowSlot(string dialect, params string[] targets)
+    {
+        var row = new WhisperWorker { Dialect = dialect, TranslateTargets = targets.ToList(), CanTranslate = targets.Contains("en") };
+        var set = WorkerTargets.ForRow(row);
+        return new(dialect, true, 0, new WorkerCapabilities
+        {
+            TranslateTargets = set,
+            TranscribesItems = WorkerTargets.TranscribesItems(row.Dialect, set),
+        });
+    }
+
+    private static readonly JobRequirements[] WholeItemJobs =
+    {
+        WorkerJob.Requirements(SubtitleMode.Full, enableTranslation: true),
+        WorkerJob.Requirements(SubtitleMode.Full, enableTranslation: false),
+        WorkerJob.Requirements(SubtitleMode.ForcedOnly, enableTranslation: true),
+        WorkerJob.Requirements(SubtitleMode.TranslationOnly, enableTranslation: false),
+    };
+
+    // A CrispASR row without 'en' is there for the extra languages only. It must never take a whole
+    // title, or a server started with Canary would transcribe it with Canary, translation on or off.
+    [Fact]
+    public void CrispAsrRowWithoutEnglish_ServesOnlyItsTargets()
+    {
+        var crispNl = RowSlot(WorkerDialect.CrispAsr, "nl");
+        Assert.All(WholeItemJobs, job => Assert.False(WorkerScheduling.CanServe(crispNl, job)));
+        Assert.True(WorkerScheduling.CanServe(crispNl, WorkerJob.ForTarget("nl")));
+        Assert.False(WorkerScheduling.CanServe(crispNl, WorkerJob.ForTarget("de")));
+
+        var pool = new WorkerPool(new[] { new TranscriptionWorker("crisp", "crisp", new FakeProvider(), crispNl.Capabilities) });
+        Assert.False(pool.HasCapableWorker(WorkerJob.Requirements(SubtitleMode.Full, enableTranslation: false)));
+        Assert.True(pool.HasCapableWorker(WorkerJob.ForTarget("nl")));
+    }
+
+    [Fact]
+    public void CrispAsrRowWithEnglish_ServesWholeItemsAndItsTargets()
+    {
+        var crispEnNl = RowSlot(WorkerDialect.CrispAsr, "en", "nl");
+        Assert.All(WholeItemJobs, job => Assert.True(WorkerScheduling.CanServe(crispEnNl, job)));
+        Assert.True(WorkerScheduling.CanServe(crispEnNl, WorkerJob.ForTarget("nl")));
+    }
+
+    // The OpenAI dialect is unchanged: whole items always, English translation only when listed, and
+    // never a Canary target.
+    [Fact]
+    public void OpenAiRow_IsUnchanged()
+    {
+        var openAiEn = RowSlot(WorkerDialect.OpenAi, "en");
+        Assert.All(WholeItemJobs, job => Assert.True(WorkerScheduling.CanServe(openAiEn, job)));
+        Assert.False(WorkerScheduling.CanServe(openAiEn, WorkerJob.ForTarget("nl")));
+
+        var openAiTranscribeOnly = RowSlot(WorkerDialect.OpenAi);
+        Assert.True(openAiTranscribeOnly.Capabilities.TranscribesItems);
+        Assert.True(WorkerScheduling.CanServe(openAiTranscribeOnly, WorkerJob.Requirements(SubtitleMode.Full, enableTranslation: false)));
+        Assert.False(WorkerScheduling.CanServe(openAiTranscribeOnly, WorkerJob.Requirements(SubtitleMode.Full, enableTranslation: true)));
+    }
+
     private sealed class FakeProvider : ISubtitleProvider
     {
         public string Name => "Fake";

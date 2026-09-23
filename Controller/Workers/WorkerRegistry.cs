@@ -111,7 +111,8 @@ namespace WhisperSubs.Controller.Workers
                 IsLocal = false,
                 CostWeight = costWeight,
                 MaxConcurrency = maxConcurrency < 1 ? 1 : maxConcurrency,
-                TranslateTargets = translateTargets
+                TranslateTargets = translateTargets,
+                TranscribesItems = WorkerTargets.TranscribesItems(dialect, translateTargets),
             });
         }
 

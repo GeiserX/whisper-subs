@@ -90,6 +90,15 @@ namespace WhisperSubs.Controller.Workers
         }
 
         /// <summary>
+        /// Whether a remote row takes whole-item jobs. An OpenAI-dialect row always does. A CrispASR row does
+        /// only when its targets list "en": without it the row is there for the extra languages alone, and a
+        /// server started with Canary would otherwise transcribe titles with Canary, whatever the translation
+        /// setting.
+        /// </summary>
+        public static bool TranscribesItems(string? dialect, IReadOnlySet<string> targets)
+            => WorkerDialect.Normalize(dialect) != WorkerDialect.CrispAsr || targets.Contains("en");
+
+        /// <summary>
         /// The host's own worker: English through whisper-cli, plus every configured Canary target when the
         /// crispasr binary and the Canary model are installed.
         /// </summary>

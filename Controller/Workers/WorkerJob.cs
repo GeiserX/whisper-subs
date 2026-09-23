@@ -24,7 +24,8 @@ namespace WhisperSubs.Controller.Workers
         /// translation is possible for the config every job requires a worker that translates into English,
         /// guaranteeing a translate pass never lands on a transcribe-only worker. Canary targets are not part
         /// of the item's requirement (most titles skip them); each one asks the pool for its own worker via
-        /// <see cref="ForTarget"/>. A worker that cannot translate is simply
+        /// <see cref="ForTarget"/>. Whatever the translation setting, a whole-item job never lands on a worker
+        /// whose <see cref="WorkerCapabilities.TranscribesItems"/> is false. A worker that cannot translate is simply
         /// not chosen while translation is enabled — the common case (all workers translate) is unaffected.
         /// <c>RequiredModel</c> is null: the manager does not pin a per-job model, so any model serves.
         /// </summary>
@@ -36,6 +37,6 @@ namespace WhisperSubs.Controller.Workers
         /// <see cref="WorkerCapabilities.TranslateTargets"/> contains <paramref name="target"/>.
         /// </summary>
         public static JobRequirements ForTarget(string target)
-            => new JobRequirements((target ?? "").Trim().ToLowerInvariant(), null);
+            => new JobRequirements((target ?? "").Trim().ToLowerInvariant(), null, TargetOnly: true);
     }
 }
