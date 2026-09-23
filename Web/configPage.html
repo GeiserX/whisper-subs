@@ -1879,6 +1879,14 @@
                     var selected = WhisperSubsConfig._translationTargetsSelected;
                     var container = document.querySelector('#translationTargetCheckboxes');
                     if (!container || targets === null || selected === null) return;
+                    // A second render in the same visit (the status reload after a crispasr or Canary
+                    // download) keeps the admin's unsaved ticks. pageshow clears data-rendered, so the
+                    // first render of each visit still starts from the saved config.
+                    if (container.getAttribute('data-rendered') === '1') {
+                        selected = Array.prototype.map.call(
+                            container.querySelectorAll('.chkTranslationTarget:checked'),
+                            function (cb) { return cb.value; });
+                    }
                     container.innerHTML = '';
                     targets.forEach(function (t) {
                         var div = document.createElement('div');
