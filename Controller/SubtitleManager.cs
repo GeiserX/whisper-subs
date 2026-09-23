@@ -940,6 +940,12 @@ namespace WhisperSubs.Controller
                         _logger.LogInformation("Generating {Target} translation for {ItemName} with Canary on {Worker}", plan.Target, item.Name, engine.WorkerName);
                         SubtitleQueueService.Instance.ReportPhase($"Translating to {plan.Target}");
                         var srtContent = await engine.Provider.TranscribeAsync(englishAudioPath, "en", cancellationToken, translate: true, targetLanguage: plan.Target);
+                        // The shared process runner returns a partial SRT on cancel, because whisper-cli's
+                        // resume path wants it. Canary has no resume: a partial file saved here would count
+                        // as an owned translation forever (PlanTranslationTargets skips owned files even
+                        // under force). So a cancel must never reach the write. No unit test: the runner and
+                        // the write are process and filesystem orchestration with no pure seam.
+                        cancellationToken.ThrowIfCancellationRequested();
                         if (WhisperProvider.CountSrtEntries(srtContent) == 0)
                         {
                             throw new InvalidOperationException($"Canary produced no subtitle cues for '{plan.Target}'.");
@@ -954,6 +960,7 @@ namespace WhisperSubs.Controller
                             ct: cancellationToken);
 
                         var srtPath = ResolveSubtitleSavePath(item, SubtitleNaming.BuildMediaAdjacentPath(mediaPath, template, plan.Target, label, type: "translated", ".srt"));
+                        cancellationToken.ThrowIfCancellationRequested();
                         await WriteTextAtomicAsync(srtPath, srtContent, CancellationToken.None);
                         _logger.LogInformation("Saved {Target} translated subtitle to {SrtPath}", plan.Target, srtPath);
                         results.Add((GenerationOutcome.Succeeded, null));
