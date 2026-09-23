@@ -437,6 +437,33 @@ namespace WhisperSubs.Configuration
         /// </summary>
         public int VocalSeparationChunkSize { get; set; } = -1;
 
+        // ── Non-English translation targets (CrispASR + NVIDIA Canary) ───────────────────────
+        // Whisper translates only into English. Canary translates English audio into 24 European
+        // languages; it runs through a plugin-managed crispasr binary. Empty target list = the
+        // translation pass behaves exactly as before this feature.
+
+        /// <summary>
+        /// Extra translation targets besides English (ISO 639-1 codes from
+        /// <see cref="Setup.CanaryCatalog.Targets"/>). Only titles with English audio can be
+        /// translated into them. Empty (default) keeps today's English-only behaviour.
+        /// </summary>
+        public List<string> TranslationTargetLanguages { get; set; } = new List<string>();
+
+        /// <summary>Filesystem path to the crispasr binary. Set by the setup service after a validated install; manual override allowed.</summary>
+        public string CrispAsrBinaryPath { get; set; } = "";
+
+        /// <summary>The CrispASR variant that was installed (e.g. "cpu", "vulkan"), re-offered on the setup page.</summary>
+        public string CrispAsrBinaryVariant { get; set; } = "";
+
+        /// <summary>The pinned upstream CrispASR tag the installed binary came from.</summary>
+        public string CrispAsrBinaryVersion { get; set; } = "";
+
+        /// <summary>Filesystem path to the active Canary GGUF model. Set after download.</summary>
+        public string CanaryModelPath { get; set; } = "";
+
+        /// <summary>crispasr <c>-t N</c>. 0 = the engine's own default.</summary>
+        public int CrispAsrThreadCount { get; set; } = 0;
+
         public PluginConfiguration()
         {
         }

@@ -136,6 +136,45 @@ public class ConfigurationTests
         Assert.False(config.CountImageSubtitlesAsPresent);
     }
 
+    // An existing install's saved config has none of the Canary fields; it must deserialize to the
+    // empty-list default, which keeps the translation pass English-only.
+    [Fact]
+    public void TranslationTargets_AbsentFromJson_KeepEnglishOnlyDefaults()
+    {
+        var config = JsonSerializer.Deserialize<PluginConfiguration>("{}");
+
+        Assert.NotNull(config);
+        Assert.Empty(config!.TranslationTargetLanguages);
+        Assert.Equal("", config.CrispAsrBinaryPath);
+        Assert.Equal("", config.CrispAsrBinaryVariant);
+        Assert.Equal("", config.CrispAsrBinaryVersion);
+        Assert.Equal("", config.CanaryModelPath);
+        Assert.Equal(0, config.CrispAsrThreadCount);
+    }
+
+    [Fact]
+    public void TranslationTargets_RoundTripThroughJson()
+    {
+        var original = new PluginConfiguration
+        {
+            TranslationTargetLanguages = new() { "nl", "de" },
+            CrispAsrBinaryPath = "/custom/crispasr",
+            CrispAsrBinaryVariant = "vulkan",
+            CrispAsrBinaryVersion = "v0.8.35",
+            CanaryModelPath = "/custom/canary.gguf",
+            CrispAsrThreadCount = 8,
+        };
+
+        var copy = JsonSerializer.Deserialize<PluginConfiguration>(JsonSerializer.Serialize(original))!;
+
+        Assert.Equal(new[] { "nl", "de" }, copy.TranslationTargetLanguages);
+        Assert.Equal("/custom/crispasr", copy.CrispAsrBinaryPath);
+        Assert.Equal("vulkan", copy.CrispAsrBinaryVariant);
+        Assert.Equal("v0.8.35", copy.CrispAsrBinaryVersion);
+        Assert.Equal("/custom/canary.gguf", copy.CanaryModelPath);
+        Assert.Equal(8, copy.CrispAsrThreadCount);
+    }
+
     [Fact]
     public void VocalSeparation_AbsentFromJson_RemainsDisabledWithSentinels()
     {
