@@ -196,32 +196,98 @@ public class TranslationTargetsTests
         Assert.Null(Plan(new[] { "nl" }, usable: t => t == "nl", force: true)[0].SkipReason);
     }
 
-    // Unsupported routes are carried, not skipped: the pass fails them with the reason, writing nothing.
+    // Non-English audio is the normal case for most of a library: the target skips, it never fails.
     [Fact]
-    public void Plan_NonEnglishAudio_IsUnsupportedNotSkipped()
+    public void Plan_NonEnglishAudio_IsSkippedNotFailed()
     {
         var plan = Assert.Single(Plan(new[] { "nl" }, source: "fr", audio: new[] { "fr" }));
-        Assert.Null(plan.SkipReason);
-        Assert.Equal(TranslationEngine.Unsupported, plan.Route.Engine);
-        Assert.Contains("'fr'", plan.Route.Reason);
+        Assert.Equal(TranslationEngine.SkipSourceNotEnglish, plan.Route.Engine);
+        Assert.Contains("'fr'", plan.SkipReason);
+        Assert.Equal(SubtitleManager.GenerationOutcome.Skipped, SubtitleManager.PlannedOutcome(plan));
     }
 
     [Fact]
-    public void Plan_CanaryMissing_IsUnsupported()
+    public void Plan_UnknownAudio_IsSkipped()
+    {
+        var plan = Assert.Single(Plan(new[] { "nl" }, source: "auto", audio: Array.Empty<string>()));
+        Assert.Equal(SubtitleManager.GenerationOutcome.Skipped, SubtitleManager.PlannedOutcome(plan));
+    }
+
+    [Fact]
+    public void Plan_CanaryMissing_IsEngineMissingAndFails()
     {
         var plan = Assert.Single(Plan(new[] { "de" }, canary: false));
+        Assert.Null(plan.SkipReason);
+        Assert.Equal(TranslationEngine.EngineMissing, plan.Route.Engine);
+        Assert.Equal(SubtitleManager.GenerationOutcome.Failed, SubtitleManager.PlannedOutcome(plan));
+        Assert.Contains("not installed", SubtitleManager.TargetFailureMessage(plan, "A Title"));
+    }
+
+    // A target outside the catalog is config corruption: it fails even for English audio.
+    [Fact]
+    public void Plan_TargetOutsideTheCatalog_Fails()
+    {
+        var plan = Assert.Single(Plan(new[] { "xx" }));
         Assert.Equal(TranslationEngine.Unsupported, plan.Route.Engine);
-        Assert.Contains("not installed", plan.Route.Reason);
+        Assert.Equal(SubtitleManager.GenerationOutcome.Failed, SubtitleManager.PlannedOutcome(plan));
+    }
+
+    [Fact]
+    public void Plan_CanaryRoute_LeavesTheOutcomeToTheRun()
+    {
+        Assert.Null(SubtitleManager.PlannedOutcome(Assert.Single(Plan(new[] { "nl" }))));
     }
 
     // A satisfied target is skipped before its route matters, so a title that already has the
-    // subtitle never fails just because Canary cannot serve it.
+    // subtitle never fails just because no engine can serve it.
     [Fact]
-    public void Plan_SkipWinsOverAnUnsupportedRoute()
+    public void Plan_SkipWinsOverAFailingRoute()
     {
-        var plan = Assert.Single(Plan(new[] { "nl" }, source: "fr", audio: new[] { "fr" }, usable: _ => true));
-        Assert.NotNull(plan.SkipReason);
-        Assert.Equal(TranslationEngine.Unsupported, plan.Route.Engine);
+        var plan = Assert.Single(Plan(new[] { "nl" }, canary: false, usable: _ => true));
+        Assert.Contains("usable 'nl' subtitle", plan.SkipReason);
+        Assert.Equal(TranslationEngine.EngineMissing, plan.Route.Engine);
+        Assert.Equal(SubtitleManager.GenerationOutcome.Skipped, SubtitleManager.PlannedOutcome(plan));
+    }
+
+    // ── Item outcome ───────────────────────────────────────────────────────
+
+    // Spanish audio, targets [nl], and the English pass skipped because the title already ships an
+    // English subtitle: every pass skips, so the item succeeds and nothing is generated.
+    [Fact]
+    public void Item_SpanishAudioWithEnglishSubtitle_SucceedsWithNothingGenerated()
+    {
+        var plans = Plan(new[] { "nl" }, source: "es", audio: new[] { "es" }, canary: false);
+        var outcomes = new List<SubtitleManager.GenerationOutcome> { SubtitleManager.GenerationOutcome.Skipped };
+        outcomes.AddRange(plans.Select(p => SubtitleManager.PlannedOutcome(p)!.Value));
+
+        Assert.All(outcomes, o => Assert.Equal(SubtitleManager.GenerationOutcome.Skipped, o));
+        Assert.False(SubtitleManager.AllAttemptsFailed(outcomes));
+    }
+
+    // English audio, targets [nl], no engine: the English pass skips (English audio), the nl target
+    // fails, so the item fails and the error names the missing engine.
+    [Fact]
+    public void Item_EnglishAudioWithoutEngine_FailsNamingTheEngine()
+    {
+        var plan = Assert.Single(Plan(new[] { "nl" }, canary: false));
+        var outcomes = new[] { SubtitleManager.GenerationOutcome.Skipped, SubtitleManager.PlannedOutcome(plan)!.Value };
+
+        Assert.True(SubtitleManager.AllAttemptsFailed(outcomes));
+        var message = SubtitleManager.TargetFailureMessage(plan, "A Title");
+        Assert.Contains("'nl'", message);
+        Assert.Contains("Canary engine", message);
+    }
+
+    [Fact]
+    public void AllAttemptsFailed_NeedsAtLeastOneAttemptAndNoSuccess()
+    {
+        var skip = SubtitleManager.GenerationOutcome.Skipped;
+        var ok = SubtitleManager.GenerationOutcome.Succeeded;
+        var fail = SubtitleManager.GenerationOutcome.Failed;
+        Assert.False(SubtitleManager.AllAttemptsFailed(Array.Empty<SubtitleManager.GenerationOutcome>()));
+        Assert.False(SubtitleManager.AllAttemptsFailed(new[] { skip, skip }));
+        Assert.False(SubtitleManager.AllAttemptsFailed(new[] { ok, fail }));
+        Assert.True(SubtitleManager.AllAttemptsFailed(new[] { skip, fail }));
     }
 
     // ── "Already translated" per language ─────────────────────────────────

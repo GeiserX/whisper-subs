@@ -243,20 +243,8 @@ namespace WhisperSubs.Controller
             var passLanguages = SelectAudioLanguages(
                 languages, config?.AudioLanguageSelection ?? AudioLanguageSelection.All);
 
-            int attempted = 0;
-            int failed = 0;
-            Exception? firstError = null;
-
-            void Record(GenerationOutcome outcome, Exception? error)
-            {
-                if (outcome == GenerationOutcome.Skipped) return;
-                attempted++;
-                if (outcome == GenerationOutcome.Failed)
-                {
-                    failed++;
-                    firstError ??= error;
-                }
-            }
+            var outcomes = new List<(GenerationOutcome Outcome, Exception? Error)>();
+            void Record(GenerationOutcome outcome, Exception? error) => outcomes.Add((outcome, error));
 
             // Log the original-language skip once per item (not once per audio language).
             if (plan.FullPassApplies && !plan.OriginalPassApplies)
@@ -304,18 +292,38 @@ namespace WhisperSubs.Controller
 
             // If we attempted real work and every attempt failed, surface the failure
             // so the queue/scheduled task report it instead of a false success.
-            if (attempted > 0 && failed == attempted)
+            if (AllAttemptsFailed(outcomes.Select(o => o.Outcome)))
             {
+                var attempted = outcomes.Count(o => o.Outcome != GenerationOutcome.Skipped);
                 throw new InvalidOperationException(
                     $"Subtitle generation failed for \"{item.Name}\" — all {attempted} attempt(s) failed.",
-                    firstError);
+                    outcomes.FirstOrDefault(o => o.Outcome == GenerationOutcome.Failed).Error);
             }
 
             await item.RefreshMetadata(cancellationToken);
         }
 
+        /// <summary>
+        /// Whether an item failed as a whole: at least one pass did real work and every one of those
+        /// failed. Skipped passes do not count, so an item whose passes all skipped (for example a Spanish
+        /// title that already has an English subtitle, with a Dutch target that skips non-English audio)
+        /// succeeds with nothing generated. Pure.
+        /// </summary>
+        internal static bool AllAttemptsFailed(IEnumerable<GenerationOutcome> outcomes)
+        {
+            var attempted = 0;
+            var failed = 0;
+            foreach (var outcome in outcomes)
+            {
+                if (outcome == GenerationOutcome.Skipped) continue;
+                attempted++;
+                if (outcome == GenerationOutcome.Failed) failed++;
+            }
+            return attempted > 0 && failed == attempted;
+        }
+
         /// <summary>Outcome of a single subtitle generation attempt.</summary>
-        private enum GenerationOutcome
+        internal enum GenerationOutcome
         {
             /// <summary>Produced output (or partial output) successfully.</summary>
             Succeeded,
@@ -852,19 +860,27 @@ namespace WhisperSubs.Controller
             {
                 foreach (var plan in plans)
                 {
-                    if (plan.SkipReason != null)
+                    switch (PlannedOutcome(plan))
                     {
-                        _logger.LogInformation("Skipping {Target} translation for {ItemName}: {Reason}", plan.Target, item.Name, plan.SkipReason);
-                        results.Add((GenerationOutcome.Skipped, null));
-                        continue;
+                        case GenerationOutcome.Skipped:
+                            _logger.LogInformation("Skipping {Target} translation for {ItemName}: {Reason}", plan.Target, item.Name, plan.SkipReason);
+                            results.Add((GenerationOutcome.Skipped, null));
+                            continue;
+                        case GenerationOutcome.Failed:
+                            // A mislabelled subtitle is worse than none: fail the target, write nothing.
+                            var cannot = new InvalidOperationException(TargetFailureMessage(plan, item.Name));
+                            _logger.LogError("{Message}", cannot.Message);
+                            results.Add((GenerationOutcome.Failed, cannot));
+                            continue;
                     }
 
-                    if (plan.Route.Engine != TranslationEngine.Canary || canary == null)
+                    if (canary == null)
                     {
-                        // A mislabelled subtitle is worse than none: fail the target, write nothing.
-                        var unsupported = new InvalidOperationException($"Cannot create a '{plan.Target}' subtitle for \"{item.Name}\": {plan.Route.Reason}");
-                        _logger.LogError("{Message}", unsupported.Message);
-                        results.Add((GenerationOutcome.Failed, unsupported));
+                        // The route said Canary but the provider could not be built (files removed since).
+                        var missing = new InvalidOperationException(TargetFailureMessage(
+                            plan with { Route = TranslationRoute.Decide("en", plan.Target, canaryAvailable: false) }, item.Name));
+                        _logger.LogError("{Message}", missing.Message);
+                        results.Add((GenerationOutcome.Failed, missing));
                         continue;
                     }
 
@@ -985,8 +1001,9 @@ namespace WhisperSubs.Controller
         /// Plans the extra translation targets in order. For each target the first matching rule wins:
         /// skip when the audio is already in the target, when the plugin already made a translated
         /// subtitle in it (kept even under <paramref name="force"/>, like the English pass), or when a
-        /// usable subtitle in it exists (bypassed by <paramref name="force"/>); otherwise the target
-        /// carries its <see cref="TranslationRoute"/> decision, and an Unsupported route fails.
+        /// usable subtitle in it exists (bypassed by <paramref name="force"/>), or when the audio is not
+        /// English (<see cref="TranslationEngine.SkipSourceNotEnglish"/>); otherwise the target carries its
+        /// <see cref="TranslationRoute"/> decision, and an EngineMissing or Unsupported route fails.
         /// Pure: the filesystem and stream checks come in as predicates.
         /// </summary>
         internal static IReadOnlyList<TranslationTargetPlan> PlanTranslationTargets(
@@ -1015,10 +1032,30 @@ namespace WhisperSubs.Controller
                 {
                     skip = $"a usable '{target}' subtitle is already present";
                 }
+                else if (route.Engine == TranslationEngine.SkipSourceNotEnglish)
+                {
+                    // Most of a library is not English audio. That is not a fault: skip, never fail.
+                    skip = route.Reason;
+                }
                 plans.Add(new TranslationTargetPlan(target, route, skip));
             }
             return plans;
         }
+
+        /// <summary>
+        /// What a planned target does before any process runs: Skipped when it has a skip reason, Failed
+        /// when no engine can honour it (EngineMissing, Unsupported), null when it runs through Canary and
+        /// the run decides the outcome. Pure.
+        /// </summary>
+        internal static GenerationOutcome? PlannedOutcome(TranslationTargetPlan plan)
+        {
+            if (plan.SkipReason != null) return GenerationOutcome.Skipped;
+            return plan.Route.Engine == TranslationEngine.Canary ? null : GenerationOutcome.Failed;
+        }
+
+        /// <summary>The per-item error for a target that cannot be produced. Pure.</summary>
+        internal static string TargetFailureMessage(TranslationTargetPlan plan, string? itemName)
+            => $"Cannot create a '{plan.Target}' subtitle for \"{itemName}\": {plan.Route.Reason}";
 
         /// <summary>
         /// Whether a plugin-owned translated subtitle already exists for <paramref name="language"/>.
