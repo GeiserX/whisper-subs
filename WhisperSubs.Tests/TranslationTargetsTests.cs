@@ -202,21 +202,42 @@ public class TranslationTargetsTests
     }
 
     // The pass and the sweep must agree on whether a title's audio is English, or a title could be
-    // incomplete to the sweep and skipped by the pass on every run.
+    // incomplete to the sweep and skipped by the pass on every run. The probe is the pass's whisper
+    // probe, which the sweep reads back from the probe cache for untagged audio.
     [Theory]
-    [InlineData(new[] { "eng" }, true)]
-    [InlineData(new[] { "en" }, true)]
-    [InlineData(new[] { "en-US" }, true)]
-    [InlineData(new[] { "spa", "eng" }, true)]
-    [InlineData(new[] { "spa" }, false)]
-    [InlineData(new[] { "und" }, false)]
-    [InlineData(new string[0], false)]
-    public void EnglishAudio_PassAndSweepAgree(string[] tags, bool english)
+    [InlineData(new[] { "eng" }, null, 0f, true)]
+    [InlineData(new[] { "en" }, null, 0f, true)]
+    [InlineData(new[] { "en-US" }, null, 0f, true)]
+    [InlineData(new[] { "spa", "eng" }, null, 0f, true)]
+    [InlineData(new[] { "spa" }, null, 0f, false)]
+    [InlineData(new[] { "spa" }, "en", 0.9f, false)]   // tags win over the probe
+    [InlineData(new string[0], "en", 0.9f, true)]      // untagged, cached English
+    [InlineData(new[] { "und" }, "en", 0.9f, true)]
+    [InlineData(new string[0], "es", 0.9f, false)]     // untagged, cached Spanish
+    [InlineData(new[] { "und" }, "en", 0.1f, false)]   // an unsure probe is not English
+    public void EnglishAudio_PassAndSweepAgree(string[] tags, string? probeLanguage, float probability, bool english)
     {
-        Assert.Equal(english, SubtitleManager.HasEnglishAudioTag(tags));
-        Assert.Equal(english, SubtitleManager.ResolveTranslationSource(tags, null) == "en");
-        var sweepComplete = SubtitleManager.IsTranslationComplete(true, new[] { "nl" }, tags, _ => false, _ => false, _ => true);
+        (string, float)? probe = probeLanguage == null ? null : (probeLanguage, probability);
+        var evidence = SubtitleManager.TargetAudioEvidence("auto", tags, null);
+
+        Assert.Equal(english ? SubtitleManager.TargetAudioVerdict.English : SubtitleManager.TargetAudioVerdict.NotEnglish,
+            SubtitleManager.ClassifyTargetAudio(tags, probe));
+        Assert.Equal(english, SubtitleManager.ResolveTranslationSource(evidence, probe) == "en");
+        var sweepComplete = SubtitleManager.IsTranslationComplete(true, new[] { "nl" }, tags, _ => false, _ => false, _ => true, probe);
         Assert.Equal(!english, sweepComplete);
+    }
+
+    // Untagged with nothing cached: the pass must probe (its evidence is "auto") and the sweep must send
+    // the title to it (incomplete), or the missing target would never be made.
+    [Fact]
+    public void UntaggedWithoutProbe_PassProbesAndSweepDispatches()
+    {
+        foreach (var tags in new[] { Array.Empty<string>(), new[] { "und" } })
+        {
+            Assert.Equal(SubtitleManager.TargetAudioVerdict.Unknown, SubtitleManager.ClassifyTargetAudio(tags, null));
+            Assert.Equal(new[] { "auto" }, SubtitleManager.TargetAudioEvidence("auto", tags, null));
+            Assert.False(SubtitleManager.IsTranslationComplete(true, new[] { "nl" }, tags, _ => false, _ => false, _ => true, null));
+        }
     }
 
     // ── Plan ───────────────────────────────────────────────────────────────

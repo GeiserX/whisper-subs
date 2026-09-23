@@ -415,9 +415,12 @@ namespace WhisperSubs.Controller
         /// English rule (an owned translated file or a usable English subtitle). With extra targets
         /// configured, a title whose audio is English also needs, for every target, an owned translated
         /// subtitle in that language or a usable subtitle in it (a target its audio is already in counts as
-        /// done). A title whose audio is not English, or is untagged, is complete with respect to the
-        /// targets by definition: the translation pass skips them for such audio, and treating untagged
-        /// audio as incomplete would re-run the language probe on it every sweep. A target no engine can
+        /// done). Whether the audio is English is <see cref="ClassifyTargetAudio"/>, the rule the pass uses:
+        /// the tags first, then <paramref name="cachedProbe"/> (the pass's whisper probe, remembered in
+        /// <see cref="AudioProbeCache"/>) for untagged audio. Audio that is not English is complete for the
+        /// targets, because the pass skips them. English audio, and untagged audio no probe has classified
+        /// yet, is complete only when every servable target is present; for the untagged case that sends the
+        /// title to the pass once, which probes it and caches the result. A target no engine can
         /// serve (<paramref name="engineAvailable"/> false) does not count either: the sweep could not
         /// produce it, so holding titles back for it would only re-run them every sweep. The sweep warns
         /// about such targets once per run (<see cref="WarnUnservedTargets"/>).
@@ -428,7 +431,8 @@ namespace WhisperSubs.Controller
             IEnumerable<string?> audioLanguages,
             Func<string, bool> hasOwnedTranslation,
             Func<string, bool> hasUsableSubtitle,
-            Func<string, bool> engineAvailable)
+            Func<string, bool> engineAvailable,
+            (string Language, float Probability)? cachedProbe)
         {
             if (!englishDone) return false;
             if (targets.Count == 0) return true;
@@ -440,7 +444,7 @@ namespace WhisperSubs.Controller
                 var code = SubtitleInventory.NormalizeLang(language);
                 if (code != null) audio.Add(code);
             }
-            if (!HasEnglishAudioTag(tags)) return true;
+            if (ClassifyTargetAudio(tags, cachedProbe) == TargetAudioVerdict.NotEnglish) return true;
 
             foreach (var target in targets)
             {
@@ -905,14 +909,31 @@ namespace WhisperSubs.Controller
             bool HasOwned(string lang) => HasOwnedTranslation(ownedTranslated, mediaBaseName, lang, perLanguage: true);
             bool HasUsable(string lang) => ShouldSkipForExistingSubtitle(item, lang);
 
-            // Untagged audio needs the whisper probe to know whether it is English. Reuse the English
-            // pass's probe; run it here only if that pass skipped before probing and a target still
-            // has work to do.
+            // Untagged audio needs the whisper probe to know whether it is English. A result remembered
+            // for this file comes first; otherwise reuse the English pass's probe, or run it here if that
+            // pass skipped before probing and a target still has work to do. A fresh result is remembered
+            // so the sweep can classify this title without probing it again (see IsTranslationComplete).
             var untagged = audioTags.Count == 1
                 && string.Equals(audioTags[0], "auto", StringComparison.OrdinalIgnoreCase);
-            if (untagged && !probe.Ran && targets.Any(t => !HasOwned(t) && (force || !HasUsable(t))))
+            if (untagged)
             {
-                await ProbeAudioLanguageOnceAsync(probe, item, provider, mediaPath, cancellationToken);
+                var fileIdentity = AudioProbeCache.IdentityOf(item.Path);
+                if (!probe.Ran && AudioProbeCache.Shared.TryGet(item.Id, fileIdentity) is { } remembered)
+                {
+                    probe.Ran = true;
+                    probe.Result = remembered;
+                }
+                else
+                {
+                    if (!probe.Ran && targets.Any(t => !HasOwned(t) && (force || !HasUsable(t))))
+                    {
+                        await ProbeAudioLanguageOnceAsync(probe, item, provider, mediaPath, cancellationToken);
+                    }
+                    if (probe.Result is { } measured)
+                    {
+                        AudioProbeCache.Shared.Record(item.Id, fileIdentity, measured.Language, measured.Probability, _logger);
+                    }
+                }
             }
 
             engines ??= new LocalTargetEngines(config, _logger);
@@ -1035,14 +1056,14 @@ namespace WhisperSubs.Controller
         /// language. With "auto" (or blank) the manager already read the FFprobe tags into
         /// <paramref name="resolvedLanguages"/>. With a specific language it did not: resolvedLanguages is
         /// just that setting, so a title with Spanish audio and the setting on "en" would reach Canary as
-        /// English and get a mislabelled file. Then <paramref name="ffprobeTags"/> is the evidence. No tags
-        /// means ["auto"], which makes the pass ask the whisper probe. Pure.
+        /// English and get a mislabelled file. Then <paramref name="ffprobeTags"/> is the evidence. No
+        /// known tag ("und" is not one) means ["auto"], which makes the pass ask the whisper probe. Pure.
         /// </summary>
         internal static List<string> TargetAudioEvidence(
             string? requestedLanguage, IReadOnlyList<string> resolvedLanguages, IReadOnlyList<string>? ffprobeTags)
         {
             var tags = IsAutoLanguage(requestedLanguage) ? resolvedLanguages : (ffprobeTags ?? Array.Empty<string>());
-            var known = tags.Where(t => !IsAutoLanguage(t)).ToList();
+            var known = tags.Where(t => SubtitleInventory.NormalizeLang(t) != null).ToList();
             return known.Count > 0 ? known : new List<string> { "auto" };
         }
 
@@ -1052,6 +1073,33 @@ namespace WhisperSubs.Controller
         /// </summary>
         internal static bool HasEnglishAudioTag(IEnumerable<string?> audioTags)
             => audioTags.Any(t => SubtitleInventory.NormalizeLang(t) == "en");
+
+        /// <summary>What the extra targets know about a title's audio language.</summary>
+        internal enum TargetAudioVerdict
+        {
+            English,
+            NotEnglish,
+
+            /// <summary>No known tag and no probe result: the pass must probe before it can decide.</summary>
+            Unknown,
+        }
+
+        /// <summary>
+        /// The one rule for whether a title's audio is English for the extra targets, shared by the pass
+        /// and the sweep. Known tags decide first (anything <see cref="SubtitleInventory.NormalizeLang"/>
+        /// maps, so not "und", "auto" or blank): English when any is English. With no known tag the whisper
+        /// probe decides: English only when it is confident (p ≥ 0.3, the English pass's bar) and says
+        /// English, not English otherwise. No tag and no probe is <see cref="TargetAudioVerdict.Unknown"/>. Pure.
+        /// </summary>
+        internal static TargetAudioVerdict ClassifyTargetAudio(IEnumerable<string?> audioTags, (string Language, float Probability)? probe)
+        {
+            var known = audioTags.Where(t => SubtitleInventory.NormalizeLang(t) != null).ToList();
+            if (known.Count > 0) return HasEnglishAudioTag(known) ? TargetAudioVerdict.English : TargetAudioVerdict.NotEnglish;
+            if (probe is not { } p) return TargetAudioVerdict.Unknown;
+            return p.Probability >= 0.3f && SubtitleInventory.NormalizeLang(p.Language) == "en"
+                ? TargetAudioVerdict.English
+                : TargetAudioVerdict.NotEnglish;
+        }
 
         private static bool IsAutoLanguage(string? language)
             => string.IsNullOrWhiteSpace(language) || string.Equals(language.Trim(), "auto", StringComparison.OrdinalIgnoreCase);
@@ -1081,9 +1129,9 @@ namespace WhisperSubs.Controller
         /// </summary>
         internal static string ResolveTranslationSource(IReadOnlyList<string> resolvedLanguages, (string Language, float Probability)? probe)
         {
-            if (HasEnglishAudioTag(resolvedLanguages)) return "en";
+            if (ClassifyTargetAudio(resolvedLanguages, probe) == TargetAudioVerdict.English) return "en";
 
-            var tagged = resolvedLanguages.FirstOrDefault(l => !string.Equals(l, "auto", StringComparison.OrdinalIgnoreCase));
+            var tagged = resolvedLanguages.FirstOrDefault(l => SubtitleInventory.NormalizeLang(l) != null);
             if (tagged != null) return tagged.ToLowerInvariant();
 
             return probe is { } p && p.Probability >= 0.3f && !string.IsNullOrWhiteSpace(p.Language)

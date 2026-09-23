@@ -421,16 +421,23 @@ namespace WhisperSubs.ScheduledTasks
                             if (hasTranslatedSrt && translationTargets.Count > 0)
                             {
                                 var streams = SubtitleStreamReader.GetSubtitleStreams(item);
+                                var audioTags = SubtitleStreamReader.GetAudioLanguages(item);
+                                // Untagged audio: the pass's remembered whisper probe is the evidence, read
+                                // only when the tags cannot answer, so tagged titles cost no file stat.
+                                var cachedProbe = SubtitleManager.ClassifyTargetAudio(audioTags, null) == SubtitleManager.TargetAudioVerdict.Unknown
+                                    ? AudioProbeCache.Shared.TryGet(item.Id, AudioProbeCache.IdentityOf(mediaPath))
+                                    : null;
                                 hasTranslatedSrt = SubtitleManager.IsTranslationComplete(
                                     englishDone: true,
                                     translationTargets,
-                                    SubtitleStreamReader.GetAudioLanguages(item),
+                                    audioTags,
                                     target => SubtitleManager.HasOwnedTranslation(ownedTranslated, baseName, target, perLanguage: true),
                                     target => config.SkipIfSubtitleExists && SubtitleInventory.HasUsableSubtitle(
                                         streams, target,
                                         ignoreForced: config.IgnoreForcedSubtitles,
                                         requireText: !config.CountImageSubtitlesAsPresent),
-                                    target => !unservedTargets.Contains(target));
+                                    target => !unservedTargets.Contains(target),
+                                    cachedProbe);
                             }
                         }
 
@@ -580,6 +587,10 @@ namespace WhisperSubs.ScheduledTasks
                 {
                     skipCache.PruneTo(candidateIds);
                     skipCache.Save(cachePath, cacheSignature, _logger);
+                }
+                if (needsTranslation && translationTargets.Count > 0)
+                {
+                    AudioProbeCache.Shared.PruneTo(candidateIds, _logger);
                 }
             }
 

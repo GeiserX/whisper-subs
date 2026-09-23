@@ -163,8 +163,8 @@ public class SubtitleSkipCacheTests
 
     private static bool TranslationDone(
         bool englishDone, string[] targets, string?[] audio, Func<string, bool>? owned = null, Func<string, bool>? usable = null,
-        Func<string, bool>? engine = null)
-        => SubtitleManager.IsTranslationComplete(englishDone, targets, audio, owned ?? (_ => false), usable ?? (_ => false), engine ?? (_ => true));
+        Func<string, bool>? engine = null, (string, float)? probe = null)
+        => SubtitleManager.IsTranslationComplete(englishDone, targets, audio, owned ?? (_ => false), usable ?? (_ => false), engine ?? (_ => true), probe);
 
     [Fact]
     public void TranslationComplete_NoTargets_IsTheEnglishRuleAlone()
@@ -264,12 +264,41 @@ public class SubtitleSkipCacheTests
     [Theory]
     [InlineData("spa")]
     [InlineData("fr")]
-    [InlineData(null)]
-    [InlineData("und")]
-    public void TranslationComplete_AudioNotKnownEnglish_IsCompleteForTargets(string? audio)
+    public void TranslationComplete_TaggedNonEnglishAudio_IsCompleteForTargets(string? audio)
     {
         Assert.True(TranslationDone(true, new[] { "nl", "de" }, new[] { audio }));
-        Assert.True(TranslationDone(true, new[] { "nl" }, Array.Empty<string?>()));
+    }
+
+    // Untagged audio ("und", blank or no track tags) is decided by the pass's remembered probe.
+    public static TheoryData<string?[]> UntaggedAudio => new() { new string?[] { null }, new string?[] { "und" }, Array.Empty<string?>() };
+
+    [Theory]
+    [MemberData(nameof(UntaggedAudio))]
+    public void TranslationComplete_Untagged_CachedProbeNotEnglish_IsComplete(string?[] audio)
+    {
+        Assert.True(TranslationDone(true, new[] { "nl", "de" }, audio, probe: ("es", 0.9f)));
+        // An unsure probe is not English either: the pass would skip the targets.
+        Assert.True(TranslationDone(true, new[] { "nl" }, audio, probe: ("en", 0.1f)));
+    }
+
+    [Theory]
+    [MemberData(nameof(UntaggedAudio))]
+    public void TranslationComplete_Untagged_CachedProbeEnglish_NeedsEveryServableTarget(string?[] audio)
+    {
+        Assert.False(TranslationDone(true, new[] { "nl" }, audio, probe: ("en", 0.9f)));
+        Assert.True(TranslationDone(true, new[] { "nl" }, audio, owned: t => t == "nl", probe: ("en", 0.9f)));
+        Assert.True(TranslationDone(true, new[] { "nl" }, audio, engine: _ => false, probe: ("en", 0.9f)));
+    }
+
+    // Nothing cached yet: the title goes to the pass once, which probes it and caches the result. With no
+    // servable target there is nothing to make, so it stays complete (the unserved-target rule).
+    [Theory]
+    [MemberData(nameof(UntaggedAudio))]
+    public void TranslationComplete_Untagged_NoCachedProbe_IncompleteOnlyWhileAServableTargetIsMissing(string?[] audio)
+    {
+        Assert.False(TranslationDone(true, new[] { "nl" }, audio));
+        Assert.True(TranslationDone(true, new[] { "nl" }, audio, engine: _ => false));
+        Assert.True(TranslationDone(true, new[] { "nl" }, audio, owned: _ => true));
     }
 
     // The English condition still gates everything: targets never make an incomplete title complete.

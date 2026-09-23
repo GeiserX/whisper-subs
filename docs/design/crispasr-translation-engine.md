@@ -227,9 +227,17 @@ The scheduled sweep has its own completeness gate
 as any owned translated file or a usable English subtitle existed, so an English title never came
 back for a new target. With targets configured, a title whose audio is English (from Jellyfin's
 stream tags, no FFprobe) is done only when every target has an owned translated file in that
-language, a usable subtitle in it, or audio already in it. A title whose audio is not English, or
-is untagged, is complete for the targets: the pass skips it anyway, and treating untagged audio as
-incomplete would re-run the language probe on it every sweep. A target no engine can serve does
+language, a usable subtitle in it, or audio already in it. A title whose audio is not English is
+complete for the targets, because the pass skips it anyway. The first version also counted untagged
+audio as complete, to avoid re-running the language probe every sweep, so an untagged English
+title never got a missing target from the scheduled run. Now the pass remembers each whisper probe
+result in `audio-probe-cache.json`, and the sweep reads it back for untagged audio through the same
+rule the pass uses (`ClassifyTargetAudio`: tags first, then a probe at p ≥ 0.3). A remembered
+non-English result is complete. A remembered English result needs every servable target. With
+nothing remembered the title is incomplete while a servable target is missing, so the pass probes
+it once. The entry is keyed by the media file's size and last-write time, not the item change
+token: the pass ends with `RefreshMetadata`, which re-saves the item, so a token-keyed entry would
+be stale on the next run and every untagged title would be probed again. A target no engine can serve does
 not count toward incompleteness either: the sweep asks the pool once per run which targets some
 worker lists, logs one warning naming the rest, and leaves them out of both the gate and the pass.
 The ordered target list is part of the skip-cache signature, appended only when non-empty so an
