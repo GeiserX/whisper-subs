@@ -1865,6 +1865,8 @@
                         .catch(function (err) {
                             if (!WhisperSubsConfig.isRoformerPageActive(generation)) return;
                             console.error('WhisperSubs: CrispASR status check failed', err);
+                            // No catalog, so no checkboxes this visit: saving keeps the loaded selection.
+                            WhisperSubsConfig.clearTranslationTargets();
                             var text = document.querySelector('#crispasrBinaryText');
                             if (text) { text.textContent = 'Status unavailable'; }
                         });
@@ -1898,6 +1900,15 @@
                         container.appendChild(div);
                     });
                     container.setAttribute('data-rendered', '1');
+                },
+
+                // Drops the checkboxes a previous visit painted. Save reads them only while
+                // data-rendered is set, so until this visit renders again it keeps the saved list.
+                clearTranslationTargets: function () {
+                    var container = document.querySelector('#translationTargetCheckboxes');
+                    if (!container) return;
+                    container.innerHTML = '';
+                    container.removeAttribute('data-rendered');
                 },
 
                 renderCrispAsrBinaryStatus: function (status) {
@@ -2445,8 +2456,13 @@
                         config.CompensateAudioOffset = page.querySelector('#chkCompensateAudioOffset').checked;
                         config.EnableVocalSeparation = page.querySelector('#chkEnableVocalSeparation').checked;
                         config.VocalSeparationBinaryPath = (page.querySelector('#txtVocalSeparationBinaryPath').value || '').trim();
-                        config.CrispAsrBinaryPath = (page.querySelector('#txtCrispAsrBinaryPath').value || '').trim();
-                        config.CanaryModelPath = (page.querySelector('#txtCanaryModelPath').value || '').trim();
+                        // A crispasr or Canary download that finishes while this page is open persists its
+                        // path on the server, and the textbox may still be empty. An empty box keeps the
+                        // saved path instead of wiping the install the service just recorded.
+                        var crispAsrBinaryPath = (page.querySelector('#txtCrispAsrBinaryPath').value || '').trim();
+                        if (crispAsrBinaryPath) config.CrispAsrBinaryPath = crispAsrBinaryPath;
+                        var canaryModelPath = (page.querySelector('#txtCanaryModelPath').value || '').trim();
+                        if (canaryModelPath) config.CanaryModelPath = canaryModelPath;
                         config.CrispAsrThreadCount = Math.max(0, parseInt(page.querySelector('#numCrispAsrThreadCount').value, 10) || 0);
                         // Only overwrite the saved targets when the checkboxes actually rendered; if the
                         // status call failed, saving must not silently clear the admin's selection.
@@ -3446,6 +3462,7 @@
                 WhisperSubsConfig.loadRoformer();
                 WhisperSubsConfig._crispasrTargets = null;
                 WhisperSubsConfig._translationTargetsSelected = null;
+                WhisperSubsConfig.clearTranslationTargets();
                 WhisperSubsConfig.loadCrispAsr();
                 WhisperSubsConfig.loadInjectionStatus();
                 WhisperSubsConfig.loadRequests();
