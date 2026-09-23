@@ -137,6 +137,7 @@ namespace WhisperSubs.ScheduledTasks
             // subtitles must still be considered. Only filter by HasSubtitles in Full mode.
             var needsForced = config.SubtitleMode == Configuration.SubtitleMode.ForcedOnly
                 || config.SubtitleMode == Configuration.SubtitleMode.FullAndForced;
+            var translationTargets = SubtitleManager.NormalizeTranslationTargets(config.TranslationTargetLanguages);
             var needsTranslation = config.SubtitleMode == Configuration.SubtitleMode.TranslationOnly
                 || (config.EnableTranslation
                     && (config.SubtitleMode == Configuration.SubtitleMode.Full
@@ -387,10 +388,12 @@ namespace WhisperSubs.ScheduledTasks
                         {
                             // Configurable naming: any owned translated sidecar counts (legacy
                             // .en.translated.srt OR a new label-anchored .translated. name).
-                            hasTranslatedSrt = SubtitleManager.FindGeneratedFiles(item, dir, baseName + ".*.srt")
+                            var ownedTranslated = SubtitleManager.FindGeneratedFiles(item, dir, baseName + ".*.srt")
                                 .Select(f => System.IO.Path.GetFileName(f))
-                                .Any(name => SubtitleNaming.IsPluginOwnedSubtitle(name, label)
-                                    && SubtitleNaming.Classify(name, label) == SubtitleNaming.OwnedKind.Translated);
+                                .Where(name => SubtitleNaming.IsPluginOwnedSubtitle(name, label)
+                                    && SubtitleNaming.Classify(name, label) == SubtitleNaming.OwnedKind.Translated)
+                                .ToList();
+                            hasTranslatedSrt = ownedTranslated.Count > 0;
 
                             // Issue #82: an existing usable English subtitle stream (embedded OR
                             // external) satisfies the translation need just as a .en.translated.srt
@@ -402,6 +405,24 @@ namespace WhisperSubs.ScheduledTasks
                                     SubtitleStreamReader.GetSubtitleStreams(item), "en",
                                     ignoreForced: config.IgnoreForcedSubtitles,
                                     requireText: !config.CountImageSubtitlesAsPresent);
+                            }
+
+                            // Extra translation targets: an English title is not done until every target
+                            // has its subtitle, or the sweep would never give it the new languages. Same
+                            // per-target rules as the translation pass (owned file per language, or a
+                            // usable subtitle when SkipIfSubtitleExists is on).
+                            if (hasTranslatedSrt && translationTargets.Count > 0)
+                            {
+                                var streams = SubtitleStreamReader.GetSubtitleStreams(item);
+                                hasTranslatedSrt = SubtitleManager.IsTranslationComplete(
+                                    englishDone: true,
+                                    translationTargets,
+                                    SubtitleStreamReader.GetAudioLanguages(item),
+                                    target => SubtitleManager.HasOwnedTranslation(ownedTranslated, baseName, target, perLanguage: true),
+                                    target => config.SkipIfSubtitleExists && SubtitleInventory.HasUsableSubtitle(
+                                        streams, target,
+                                        ignoreForced: config.IgnoreForcedSubtitles,
+                                        requireText: !config.CountImageSubtitlesAsPresent));
                             }
                         }
 

@@ -157,6 +157,95 @@ public class SubtitleSkipCacheTests
         Assert.Equal(expected, SubtitleManager.IsSubtitleSetComplete(mode, needsTranslation, full, forced, translated));
     }
 
+    // ── Translation targets in the completeness gate ──────────────────────────
+
+    private static bool TranslationDone(
+        bool englishDone, string[] targets, string?[] audio, Func<string, bool>? owned = null, Func<string, bool>? usable = null)
+        => SubtitleManager.IsTranslationComplete(englishDone, targets, audio, owned ?? (_ => false), usable ?? (_ => false));
+
+    [Fact]
+    public void TranslationComplete_NoTargets_IsTheEnglishRuleAlone()
+    {
+        Assert.True(TranslationDone(true, Array.Empty<string>(), new string?[] { "eng" }));
+        Assert.False(TranslationDone(false, Array.Empty<string>(), new string?[] { "eng" }));
+    }
+
+    // Negative control first: an English title with every target present is complete. Adding a
+    // target it does not have yet must flip the same title to incomplete, both directly and through
+    // the mode switch the task uses.
+    [Fact]
+    public void TranslationComplete_EnglishTitle_AddingATargetFlipsItToIncomplete()
+    {
+        var owned = new[] { "Movie.nl.WhisperSubs.translated.srt", "Movie.de.WhisperSubs.translated.srt" };
+        bool Owned(string t) => SubtitleManager.HasOwnedTranslation(owned, "Movie", t, perLanguage: true);
+
+        var before = TranslationDone(true, new[] { "nl", "de" }, new string?[] { "eng" }, Owned);
+        var after = TranslationDone(true, new[] { "nl", "de", "fr" }, new string?[] { "eng" }, Owned);
+
+        Assert.True(before);
+        Assert.False(after);
+        Assert.True(SubtitleManager.IsSubtitleSetComplete(SubtitleMode.Full, true, true, false, before));
+        Assert.False(SubtitleManager.IsSubtitleSetComplete(SubtitleMode.Full, true, true, false, after));
+    }
+
+    [Fact]
+    public void TranslationComplete_EnglishTitle_AUsableSubtitleSatisfiesATarget()
+    {
+        Assert.True(TranslationDone(true, new[] { "nl" }, new string?[] { "en" }, usable: t => t == "nl"));
+        Assert.False(TranslationDone(true, new[] { "nl" }, new string?[] { "en" }, usable: t => t == "de"));
+    }
+
+    // A target the audio is already in needs no translation (the pass skips it the same way).
+    [Fact]
+    public void TranslationComplete_TargetAlreadyInTheAudio_IsDone()
+    {
+        Assert.True(TranslationDone(true, new[] { "es" }, new string?[] { "eng", "spa" }));
+    }
+
+    // Non-English or untagged audio skips every target, so the targets never hold such a title back.
+    [Theory]
+    [InlineData("spa")]
+    [InlineData("fr")]
+    [InlineData(null)]
+    [InlineData("und")]
+    public void TranslationComplete_AudioNotKnownEnglish_IsCompleteForTargets(string? audio)
+    {
+        Assert.True(TranslationDone(true, new[] { "nl", "de" }, new[] { audio }));
+        Assert.True(TranslationDone(true, new[] { "nl" }, Array.Empty<string?>()));
+    }
+
+    // The English condition still gates everything: targets never make an incomplete title complete.
+    [Fact]
+    public void TranslationComplete_EnglishRuleUnmet_IsIncompleteWhateverTheTargets()
+    {
+        Assert.False(TranslationDone(false, new[] { "nl" }, new string?[] { "spa" }));
+    }
+
+    [Fact]
+    public void Signature_WithoutTargets_IsUnchangedFromBeforeTheFeature()
+    {
+        var c = BaseConfig();
+        Assert.DoesNotContain("targets=", SubtitleSkipCache.ComputeSignature(c));
+        c.TranslationTargetLanguages = new List<string> { "", "EN" };   // normalizes to nothing
+        Assert.Equal(SubtitleSkipCache.ComputeSignature(BaseConfig()), SubtitleSkipCache.ComputeSignature(c));
+    }
+
+    [Fact]
+    public void Signature_Changes_WhenTargetsAreAddedOrReordered()
+    {
+        var none = SubtitleSkipCache.ComputeSignature(BaseConfig());
+        var nlDe = BaseConfig();
+        nlDe.TranslationTargetLanguages = new List<string> { "nl", "de" };
+        var deNl = BaseConfig();
+        deNl.TranslationTargetLanguages = new List<string> { "de", "nl" };
+        var nlDeSpaced = BaseConfig();
+        nlDeSpaced.TranslationTargetLanguages = new List<string> { " NL", "de" };
+
+        Assert.NotEqual(none, SubtitleSkipCache.ComputeSignature(nlDe));
+        Assert.NotEqual(SubtitleSkipCache.ComputeSignature(nlDe), SubtitleSkipCache.ComputeSignature(deNl));
+        Assert.Equal(SubtitleSkipCache.ComputeSignature(nlDe), SubtitleSkipCache.ComputeSignature(nlDeSpaced));
+    }
+
     // ── Mutation + prune ────────────────────────────────────────────────────
 
     [Fact]

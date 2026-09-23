@@ -408,6 +408,41 @@ namespace WhisperSubs.Controller
             };
 
         /// <summary>
+        /// Pure: is the translation side of an item done? <paramref name="englishDone"/> is the existing
+        /// English rule (an owned translated file or a usable English subtitle). With extra targets
+        /// configured, a title whose audio is English also needs, for every target, an owned translated
+        /// subtitle in that language or a usable subtitle in it (a target its audio is already in counts as
+        /// done). A title whose audio is not English, or is untagged, is complete with respect to the
+        /// targets by definition: the translation pass skips them for such audio, and treating untagged
+        /// audio as incomplete would re-run the language probe on it every sweep.
+        /// </summary>
+        internal static bool IsTranslationComplete(
+            bool englishDone,
+            IReadOnlyList<string> targets,
+            IEnumerable<string?> audioLanguages,
+            Func<string, bool> hasOwnedTranslation,
+            Func<string, bool> hasUsableSubtitle)
+        {
+            if (!englishDone) return false;
+            if (targets.Count == 0) return true;
+
+            var audio = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var language in audioLanguages)
+            {
+                var code = SubtitleInventory.NormalizeLang(language);
+                if (code != null) audio.Add(code);
+            }
+            if (!audio.Contains("en")) return true;
+
+            foreach (var target in targets)
+            {
+                if (audio.Contains(target) || hasOwnedTranslation(target) || hasUsableSubtitle(target)) continue;
+                return false;
+            }
+            return true;
+        }
+
+        /// <summary>
         /// Single source of truth for the issue #82 "skip because a usable subtitle in this
         /// language already exists" decision. Reads the item's embedded+external subtitle streams
         /// and applies the SkipIfSubtitleExists / IgnoreForcedSubtitles config. The plugin's own

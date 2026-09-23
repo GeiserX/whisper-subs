@@ -42,5 +42,25 @@ namespace WhisperSubs.Controller
                 return new List<SubtitleStreamInfo>();
             }
         }
+
+        /// <summary>
+        /// The language tags of the item's audio streams as Jellyfin's library scan recorded them (for
+        /// example "eng"), untagged streams included as null. Cheap: no FFprobe. On a metadata-read failure
+        /// it returns an empty list, which callers treat as "not known to be English".
+        /// </summary>
+        public static IReadOnlyList<string?> GetAudioLanguages(BaseItem item)
+        {
+            try
+            {
+                return item.GetMediaStreams()
+                    .Where(s => s.Type == MediaStreamType.Audio)
+                    .Select(s => (string?)s.Language)
+                    .ToList();
+            }
+            catch (System.Exception ex) when (ex is not System.OperationCanceledException)
+            {
+                return new List<string?>();
+            }
+        }
     }
 }
