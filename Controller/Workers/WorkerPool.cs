@@ -333,6 +333,25 @@ namespace WhisperSubs.Controller.Workers
             }
         }
 
+        /// <summary>
+        /// Non-blocking <see cref="AcquireAsync"/>: a lease on the cheapest capable worker that is free right
+        /// now, or null (no free slot, or only incapable workers free). Never waits, so a caller that already
+        /// holds a slot can use it without risking a wait cycle. Pair a returned lease with one Release.
+        /// </summary>
+        public WorkerLease? TryAcquire(JobRequirements job)
+        {
+            if (!_slots.Wait(0)) return null;
+
+            WorkerLease? lease;
+            lock (_gate)
+            {
+                lease = PickLocked(job);
+            }
+
+            if (lease is null) ReleaseSlots();
+            return lease;
+        }
+
         // Raises NoAvailableWorkerException, carrying one out-of-rotation reason so the dispatcher can log
         // and surface something actionable, when every worker that could serve the job is out of rotation.
         private void ThrowIfNoneAvailable(JobRequirements job)

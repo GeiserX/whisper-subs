@@ -79,6 +79,38 @@ namespace WhisperSubs.Providers
         }
 
         /// <summary>
+        /// Builds the Canary provider for the non-English translation targets, or null when the
+        /// crispasr binary or the Canary model is not on disk. Not a pool worker: the translation pass
+        /// uses it directly for Canary routes. The Silero VAD model is resolved even when
+        /// <see cref="PluginConfiguration.EnableVad"/> is off, because Canary without VAD returns the
+        /// whole file as one cue; the provider reports a missing model as a clear error.
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Orchestration: depends on Plugin.Instance and File.Exists; the argument vector and route are unit-tested")]
+        public static CanaryProvider? CreateCanary(PluginConfiguration config, ILogger logger)
+        {
+            if (!IsCanaryInstalled(config.CrispAsrBinaryPath, config.CanaryModelPath, System.IO.File.Exists)) return null;
+
+            var dataPath = Plugin.Instance?.DataFolderPath ?? "";
+            var vadModelPath = new WhisperSetupService(logger, dataPath)
+                .ResolveVadModelPath(config.VadModelPath, config.VadModelVersion) ?? "";
+
+            return new CanaryProvider(
+                logger,
+                config.CrispAsrBinaryPath,
+                config.CanaryModelPath,
+                config.CrispAsrThreadCount,
+                vadModelPath,
+                BuildVadTuning(config),
+                config.SubtitleMaxLineLength,
+                new CrispAsrSetupService(logger, dataPath).CacheDirectory);
+        }
+
+        /// <summary>Canary is available when both the configured binary and model files exist. Pure.</summary>
+        internal static bool IsCanaryInstalled(string? binaryPath, string? modelPath, System.Func<string, bool> fileExists)
+            => !string.IsNullOrWhiteSpace(binaryPath) && !string.IsNullOrWhiteSpace(modelPath)
+               && fileExists(binaryPath) && fileExists(modelPath);
+
+        /// <summary>
         /// Maps the plugin's VAD tuning config fields onto a <see cref="VadTuning"/>. Extracted from
         /// <see cref="CreateLocal"/> (excluded from coverage as untestable orchestration) so the field-by-field
         /// mapping stays pure and unit-testable — a guard against a silent field transposition. (Issue #105.)

@@ -14,7 +14,13 @@ namespace WhisperSubs.Providers
         /// </summary>
         bool RequiresSpeechAlignmentOptIn { get; }
 
-        Task<string> TranscribeAsync(string audioPath, string language, CancellationToken cancellationToken, bool translate = false);
+        /// <summary>
+        /// Transcribes <paramref name="audioPath"/>, or translates it when <paramref name="translate"/>
+        /// is set. <paramref name="targetLanguage"/> null or "en" is the English translation every
+        /// Whisper provider supports; any other target is only honoured by the Canary provider, and
+        /// Whisper providers throw <see cref="System.NotSupportedException"/> for it.
+        /// </summary>
+        Task<string> TranscribeAsync(string audioPath, string language, CancellationToken cancellationToken, bool translate = false, string? targetLanguage = null);
 
         /// <summary>
         /// Detects the language spoken in an audio file.

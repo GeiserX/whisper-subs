@@ -69,21 +69,39 @@ namespace WhisperSubs.Controller
         /// persisted one, the whole cache is discarded on load, so a mode/translation/forced/image,
         /// language, or subtitle-naming (template/label) change never reuses a stale "complete" verdict.
         /// The template/label are included because they change which filenames count as plugin-owned,
-        /// hence which items read as already-satisfied. (Issue #110; guards #82/#83.)
+        /// hence which items read as already-satisfied. The ordered extra translation targets are included
+        /// too, so adding, removing or reordering one invalidates cached skips. (Issue #110; guards #82/#83.)
         /// </summary>
-        public static string ComputeSignature(PluginConfiguration c) => string.Join(
-            "|",
-            "v" + CurrentVersion,
-            (int)c.SubtitleMode,
-            c.EnableTranslation ? 1 : 0,
-            c.GenerateOriginalLanguageSubtitles ? 1 : 0,
-            c.SkipIfSubtitleExists ? 1 : 0,
-            c.IgnoreForcedSubtitles ? 1 : 0,
-            c.CountImageSubtitlesAsPresent ? 1 : 0,
-            c.EnableLyricsGeneration ? 1 : 0,
-            c.DefaultLanguage ?? string.Empty,
-            c.SubtitleFilenameTemplate ?? string.Empty,
-            c.SubtitleLabel ?? string.Empty);
+        public static string ComputeSignature(PluginConfiguration c, IReadOnlyCollection<string>? unservedTargets = null)
+        {
+            var signature = string.Join(
+                "|",
+                "v" + CurrentVersion,
+                (int)c.SubtitleMode,
+                c.EnableTranslation ? 1 : 0,
+                c.GenerateOriginalLanguageSubtitles ? 1 : 0,
+                c.SkipIfSubtitleExists ? 1 : 0,
+                c.IgnoreForcedSubtitles ? 1 : 0,
+                c.CountImageSubtitlesAsPresent ? 1 : 0,
+                c.EnableLyricsGeneration ? 1 : 0,
+                c.DefaultLanguage ?? string.Empty,
+                c.SubtitleFilenameTemplate ?? string.Empty,
+                c.SubtitleLabel ?? string.Empty);
+
+            // The extra translation targets change which English titles count as complete, so a changed
+            // list must drop cached skips. Appended only when non-empty: with no targets the signature is
+            // byte-identical to the one an existing install persisted, so upgrading keeps its cache.
+            var targets = SubtitleManager.NormalizeTranslationTargets(c.TranslationTargetLanguages);
+            if (targets.Count == 0) return signature;
+            signature += "|targets=" + string.Join(",", targets);
+
+            // A target no engine serves does not hold titles back, so titles get cached as complete without
+            // it. Installing the engine later must drop those entries, or the cache would hide the titles
+            // from the new target until the backstop expires. Appended only when some target is unserved.
+            return unservedTargets == null || unservedTargets.Count == 0
+                ? signature
+                : signature + "|unserved=" + string.Join(",", unservedTargets);
+        }
 
         /// <summary>
         /// True when a cached entry lets us skip the probe for this item now: the entry exists, its

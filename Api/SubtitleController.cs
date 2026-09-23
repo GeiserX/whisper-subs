@@ -353,7 +353,9 @@ namespace WhisperSubs.Api
                 ApiKey = request.ApiKey ?? "",
                 Model = request.Model ?? "",
                 MaxConcurrency = 1,
-                CostWeight = 0
+                CostWeight = 0,
+                Dialect = request.Dialect ?? "openai",
+                TranslateTargets = request.TranslateTargets ?? new List<string>()
             };
             var (valid, error) = Controller.Workers.WorkerConfigValidation.Validate(worker);
             if (!valid)
@@ -1393,6 +1395,135 @@ namespace WhisperSubs.Api
             return Ok(p);
         }
 
+        // ── CrispASR + Canary (non-English translation targets) setup endpoints ─────
+        // Mirror the VocalSeparation endpoints above with their own lock and progress state
+        // (CrispAsrSetupService), so these downloads never block or mix with the other two.
+
+        private CrispAsrSetupService GetCrispAsrSetupService()
+        {
+            return new CrispAsrSetupService(
+                _loggerFactory.CreateLogger<CrispAsrSetupService>(),
+                Plugin.Instance.DataFolderPath);
+        }
+
+        /// <summary>Returns whether the crispasr binary and the Canary model are configured and reachable.</summary>
+        [HttpGet("Setup/CrispAsr/Status")]
+        [Authorize(Policy = "RequiresElevation")]
+        public ActionResult GetCrispAsrStatus()
+        {
+            try
+            {
+                return Ok(GetCrispAsrSetupService().GetStatus());
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error checking CrispASR setup status");
+                return StatusCode(500, new { error = ex.Message });
+            }
+        }
+
+        /// <summary>Lists the CrispASR binary variants published for this platform.</summary>
+        [HttpGet("Setup/CrispAsr/BinaryVariants")]
+        [Authorize(Policy = "RequiresElevation")]
+        public ActionResult GetCrispAsrBinaryVariants()
+        {
+            var platform = CrispAsrSetupService.GetPlatformIdentifier();
+            return Ok(CrispAsrCatalog.GetAvailableVariants(platform).Select(v => new
+            {
+                v.Id,
+                v.DisplayName,
+                v.Description,
+                v.IsDefault,
+                Platform = platform
+            }));
+        }
+
+        /// <summary>
+        /// Downloads the crispasr archive for this platform from the pinned upstream release,
+        /// extracts and validates it. Returns 202 immediately; poll GET Setup/CrispAsr/Progress.
+        /// </summary>
+        [HttpPost("Setup/CrispAsr/DownloadBinary")]
+        [Authorize(Policy = "RequiresElevation")]
+        public ActionResult DownloadCrispAsrBinary([FromQuery] string variant = "cpu")
+        {
+            var platform = CrispAsrSetupService.GetPlatformIdentifier();
+            var matchedVariant = CrispAsrCatalog.GetAvailableVariants(platform)
+                .FirstOrDefault(v => string.Equals(v.Id, variant, StringComparison.OrdinalIgnoreCase));
+            if (matchedVariant == null)
+                return BadRequest(new { error = $"No prebuilt crispasr binary for variant '{variant}' on {platform}." });
+
+            var canonicalVariant = matchedVariant.Id;
+
+            if (!CrispAsrSetupService.TryAcquire("crispasr-binary", $"Starting crispasr ({canonicalVariant}) download..."))
+                return Conflict(new { error = "A download is already in progress." });
+
+            var service = GetCrispAsrSetupService();
+
+            _ = Task.Run(async () =>
+            {
+                try { await service.DownloadBinaryAsync(canonicalVariant, CancellationToken.None); }
+                catch (Exception ex) { _logger.LogError(ex, "Background crispasr binary download failed"); }
+            });
+
+            return Accepted(new { message = $"crispasr download started (variant: {canonicalVariant})." });
+        }
+
+        /// <summary>Lists the Canary GGUF model quantizations available for download.</summary>
+        [HttpGet("Setup/CrispAsr/AvailableModels")]
+        [Authorize(Policy = "RequiresElevation")]
+        public ActionResult GetCrispAsrAvailableModels()
+        {
+            return Ok(CanaryCatalog.Models.Select(m => new
+            {
+                m.Key,
+                m.FileName,
+                m.DisplayName,
+                m.SizeMB,
+                m.IsRecommended,
+                m.Description
+            }));
+        }
+
+        /// <summary>
+        /// Downloads a Canary GGUF model from Hugging Face. Returns 202 immediately; poll
+        /// GET Setup/CrispAsr/Progress.
+        /// </summary>
+        [HttpPost("Setup/CrispAsr/DownloadModel")]
+        [Authorize(Policy = "RequiresElevation")]
+        public ActionResult DownloadCrispAsrModel([FromQuery] string quant)
+        {
+            if (string.IsNullOrEmpty(quant))
+                return BadRequest(new { error = "Model quantization key is required." });
+
+            var catalogEntry = CanaryCatalog.Models.FirstOrDefault(m =>
+                string.Equals(m.Key, quant, StringComparison.OrdinalIgnoreCase));
+            if (catalogEntry == null)
+                return BadRequest(new { error = $"Unknown Canary model: {quant}" });
+
+            var canonicalKey = catalogEntry.Key;
+
+            if (!CrispAsrSetupService.TryAcquire("canary-model", $"Starting download of {catalogEntry.FileName}..."))
+                return Conflict(new { error = "A download is already in progress." });
+
+            var service = GetCrispAsrSetupService();
+
+            _ = Task.Run(async () =>
+            {
+                try { await service.DownloadModelAsync(canonicalKey, CancellationToken.None); }
+                catch (Exception ex) { _logger.LogError(ex, "Background Canary model download failed"); }
+            });
+
+            return Accepted(new { message = $"Download of {catalogEntry.FileName} started." });
+        }
+
+        /// <summary>Returns the current CrispASR/Canary download progress (binary or model).</summary>
+        [HttpGet("Setup/CrispAsr/Progress")]
+        [Authorize(Policy = "RequiresElevation")]
+        public ActionResult GetCrispAsrProgress()
+        {
+            return Ok(CrispAsrSetupService.CurrentProgress);
+        }
+
         private BaseItemKind[] GetBaseItemKinds(string input)
         {
             if (string.IsNullOrWhiteSpace(input))
@@ -1478,5 +1609,11 @@ namespace WhisperSubs.Api
         public string? ApiUrl { get; set; }
         public string? ApiKey { get; set; }
         public string? Model { get; set; }
+
+        /// <summary>Row dialect (openai or crispasr), validated with the targets before the probe runs.</summary>
+        public string? Dialect { get; set; }
+
+        /// <summary>Row translation targets, validated before the probe runs.</summary>
+        public List<string>? TranslateTargets { get; set; }
     }
 }

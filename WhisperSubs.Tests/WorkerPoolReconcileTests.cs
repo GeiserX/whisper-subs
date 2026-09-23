@@ -20,7 +20,7 @@ public class WorkerPoolReconcileTests
     {
         public string Name => "fake";
         public bool RequiresSpeechAlignmentOptIn => false;
-        public Task<string> TranscribeAsync(string audioPath, string language, CancellationToken ct, bool translate = false)
+        public Task<string> TranscribeAsync(string audioPath, string language, CancellationToken ct, bool translate = false, string? targetLanguage = null)
             => Task.FromResult(string.Empty);
         public Task<(string Language, float Probability)> DetectLanguageAsync(string audioPath, CancellationToken ct)
             => Task.FromResult(("en", 1f));
@@ -31,11 +31,11 @@ public class WorkerPoolReconcileTests
         {
             MaxConcurrency = maxConcurrency,
             CostWeight = cost,
-            CanTranslate = canTranslate,
+            TranslateTargets = canTranslate ? WorkerTargets.EnglishOnly : WorkerTargets.None,
             IsLocal = cost == 0
         });
 
-    private static readonly JobRequirements AnyJob = new(Translate: false, RequiredModel: null);
+    private static readonly JobRequirements AnyJob = new(TranslateTarget: null, RequiredModel: null);
 
     [Fact]
     public void Reconcile_AddsNewWorker_GrowsCapacityAndAppearsInSnapshot()

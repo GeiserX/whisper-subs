@@ -137,6 +137,7 @@ namespace WhisperSubs.ScheduledTasks
             // subtitles must still be considered. Only filter by HasSubtitles in Full mode.
             var needsForced = config.SubtitleMode == Configuration.SubtitleMode.ForcedOnly
                 || config.SubtitleMode == Configuration.SubtitleMode.FullAndForced;
+            var translationTargets = SubtitleManager.NormalizeTranslationTargets(config.TranslationTargetLanguages);
             var needsTranslation = config.SubtitleMode == Configuration.SubtitleMode.TranslationOnly
                 || (config.EnableTranslation
                     && (config.SubtitleMode == Configuration.SubtitleMode.Full
@@ -202,8 +203,15 @@ namespace WhisperSubs.ScheduledTasks
             // unchanged, already-satisfied items. Keyed on the item change token (DateLastSaved) + a
             // settings signature; persisted in the finally below so an interrupted run keeps the
             // progress it made (each entry is independently valid — no global high-water mark).
+            // Targets no engine can serve (nothing installed, or this server is not a pool worker) are
+            // named once here and left out of the completeness gate and the pass, so they never fail
+            // every English title on every run. The pool was built at the start of this run.
+            var unservedTargets = needsTranslation && translationTargets.Count > 0
+                ? SubtitleManager.WarnUnservedTargets(translationTargets, t => pool.HasCapableWorker(WorkerJob.ForTarget(t)), _logger)
+                : Array.Empty<string>();
+
             var cachePath = SubtitleSkipCache.DefaultPath();
-            var cacheSignature = SubtitleSkipCache.ComputeSignature(config);
+            var cacheSignature = SubtitleSkipCache.ComputeSignature(config, unservedTargets);
             var skipCache = (config.CacheSkippedItems && !string.IsNullOrEmpty(cachePath))
                 ? SubtitleSkipCache.Load(cachePath, cacheSignature, _logger)
                 : null;
@@ -387,10 +395,12 @@ namespace WhisperSubs.ScheduledTasks
                         {
                             // Configurable naming: any owned translated sidecar counts (legacy
                             // .en.translated.srt OR a new label-anchored .translated. name).
-                            hasTranslatedSrt = SubtitleManager.FindGeneratedFiles(item, dir, baseName + ".*.srt")
+                            var ownedTranslated = SubtitleManager.FindGeneratedFiles(item, dir, baseName + ".*.srt")
                                 .Select(f => System.IO.Path.GetFileName(f))
-                                .Any(name => SubtitleNaming.IsPluginOwnedSubtitle(name, label)
-                                    && SubtitleNaming.Classify(name, label) == SubtitleNaming.OwnedKind.Translated);
+                                .Where(name => SubtitleNaming.IsPluginOwnedSubtitle(name, label)
+                                    && SubtitleNaming.Classify(name, label) == SubtitleNaming.OwnedKind.Translated)
+                                .ToList();
+                            hasTranslatedSrt = ownedTranslated.Count > 0;
 
                             // Issue #82: an existing usable English subtitle stream (embedded OR
                             // external) satisfies the translation need just as a .en.translated.srt
@@ -402,6 +412,32 @@ namespace WhisperSubs.ScheduledTasks
                                     SubtitleStreamReader.GetSubtitleStreams(item), "en",
                                     ignoreForced: config.IgnoreForcedSubtitles,
                                     requireText: !config.CountImageSubtitlesAsPresent);
+                            }
+
+                            // Extra translation targets: an English title is not done until every target
+                            // has its subtitle, or the sweep would never give it the new languages. Same
+                            // per-target rules as the translation pass (owned file per language, or a
+                            // usable subtitle when SkipIfSubtitleExists is on).
+                            if (hasTranslatedSrt && translationTargets.Count > 0)
+                            {
+                                var streams = SubtitleStreamReader.GetSubtitleStreams(item);
+                                var audioTags = SubtitleStreamReader.GetAudioLanguages(item);
+                                // Untagged audio: the pass's remembered whisper probe is the evidence, read
+                                // only when the tags cannot answer, so tagged titles cost no file stat.
+                                var cachedProbe = SubtitleManager.ClassifyTargetAudio(audioTags, null) == SubtitleManager.TargetAudioVerdict.Unknown
+                                    ? AudioProbeCache.Shared.TryGet(item.Id, AudioProbeCache.IdentityOf(mediaPath))
+                                    : null;
+                                hasTranslatedSrt = SubtitleManager.IsTranslationComplete(
+                                    englishDone: true,
+                                    translationTargets,
+                                    audioTags,
+                                    target => SubtitleManager.HasOwnedTranslation(ownedTranslated, baseName, target, perLanguage: true),
+                                    target => config.SkipIfSubtitleExists && SubtitleInventory.HasUsableSubtitle(
+                                        streams, target,
+                                        ignoreForced: config.IgnoreForcedSubtitles,
+                                        requireText: !config.CountImageSubtitlesAsPresent),
+                                    target => !unservedTargets.Contains(target),
+                                    cachedProbe);
                             }
                         }
 
@@ -552,6 +588,10 @@ namespace WhisperSubs.ScheduledTasks
                     skipCache.PruneTo(candidateIds);
                     skipCache.Save(cachePath, cacheSignature, _logger);
                 }
+                if (needsTranslation && translationTargets.Count > 0)
+                {
+                    AudioProbeCache.Shared.PruneTo(candidateIds, _logger);
+                }
             }
 
             // The per-item transcription task the producer dispatches after leasing a worker slot. Mirrors
@@ -565,11 +605,12 @@ namespace WhisperSubs.ScheduledTasks
                 {
                     if (config.PauseOnPlayback)
                     {
-                        await TranscribeWithPlaybackMonitorAsync(manager, item, lease.Worker.Provider, language, cancellationToken);
+                        await TranscribeWithPlaybackMonitorAsync(manager, item, lease.Worker.Provider, new PoolTargetEngines(pool, lease, skipUnservedTargets: true), language, cancellationToken);
                     }
                     else
                     {
-                        await manager.GenerateSubtitleAsync(item, lease.Worker.Provider, language, cancellationToken);
+                        await manager.GenerateSubtitleAsync(item, lease.Worker.Provider, language, cancellationToken,
+                            targetEngines: new PoolTargetEngines(pool, lease, skipUnservedTargets: true));
                     }
                     CountSweptItem();
                 }
@@ -656,7 +697,7 @@ namespace WhisperSubs.ScheduledTasks
         /// Resume logic in SubtitleManager picks up from where the partial SRT left off.
         /// </summary>
         private async Task TranscribeWithPlaybackMonitorAsync(
-            SubtitleManager manager, BaseItem item, ISubtitleProvider provider,
+            SubtitleManager manager, BaseItem item, ISubtitleProvider provider, ITranslationTargetEngines targetEngines,
             string language, CancellationToken cancellationToken)
         {
             while (true)
@@ -665,7 +706,8 @@ namespace WhisperSubs.ScheduledTasks
 
                 using var playbackCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 var monitorTask = MonitorPlaybackAsync(playbackCts.Token);
-                var transcribeTask = manager.GenerateSubtitleAsync(item, provider, language, playbackCts.Token);
+                var transcribeTask = manager.GenerateSubtitleAsync(item, provider, language, playbackCts.Token,
+                    targetEngines: targetEngines);
 
                 var finished = await Task.WhenAny(transcribeTask, monitorTask);
 

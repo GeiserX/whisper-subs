@@ -853,7 +853,7 @@ namespace WhisperSubs.Setup
             }
             catch (Exception ex)
             {
-                throw new InvalidOperationException("Failed to restore the previous vocal-separation model.", ex);
+                throw new InvalidOperationException("Failed to restore the previous model.", ex);
             }
         }
     }

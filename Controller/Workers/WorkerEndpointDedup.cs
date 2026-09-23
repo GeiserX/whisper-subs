@@ -139,6 +139,8 @@ namespace WhisperSubs.Controller.Workers
             MaxConcurrency = w.MaxConcurrency,
             CostWeight = w.CostWeight,
             CanTranslate = w.CanTranslate,
+            TranslateTargets = new System.Collections.Generic.List<string>(w.TranslateTargets ?? new System.Collections.Generic.List<string>()),
+            Dialect = w.Dialect,
             MaxUploadBytes = w.MaxUploadBytes,
             UploadCodec = w.UploadCodec,
         };

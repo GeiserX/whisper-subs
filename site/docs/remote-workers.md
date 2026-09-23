@@ -10,7 +10,7 @@ By default WhisperSubs transcribes on the Jellyfin server itself, one job at a t
 
 ## What the worker pool is
 
-WhisperSubs always extracts the audio locally with FFmpeg. A worker is any endpoint that implements the OpenAI audio API — `POST /v1/audio/transcriptions` and `POST /v1/audio/translations` — that the plugin can send that audio to over HTTP.
+WhisperSubs always extracts the audio locally with FFmpeg. A worker is any endpoint that implements the OpenAI audio API, `POST /v1/audio/transcriptions` and `POST /v1/audio/translations`, and that the plugin can send the audio to over HTTP. A [CrispASR server](#crispasr-server-workers) also works, with its own dialect.
 
 The pool is off by default. With no workers configured, the plugin behaves exactly as it always has: the host's own whisper, one job at a time. Adding workers is additive.
 
@@ -107,9 +107,31 @@ Each row has these fields:
 | **Cost weight** | `0` = free, preferred. Above `0` = paid, used only to burst |
 | **Max upload size (MB)** | What this endpoint accepts. `0` (default) = unlimited |
 | **Upload format** | `WAV` (default), `FLAC` (lossless, ~half) or `Opus 24k` (~a tenth) |
-| **Can translate to English** | Untick for any provider with no `/v1/audio/translations` endpoint |
+| **Dialect** | `OpenAI-compatible` (default) for whisper-server, OpenAI, Groq and OpenRouter. `CrispASR server` for a [CrispASR server](#crispasr-server-workers) |
+| **Translation targets** | Comma-separated languages this worker translates into. `en` is Whisper translation and needs `/v1/audio/translations` on an OpenAI-compatible worker. Canary codes such as `nl` or `de` need the CrispASR dialect. Leave it blank for a transcribe-only worker |
 
 Three timeout settings bound a remote call, so a slow-but-working pass is never cut off and a dead endpoint still fails: **Job timeout — real-time factor** (default `6`, multiplied by the audio length), **minimum seconds** (default `60`) and **maximum hours** (default `12`).
+
+## CrispASR server workers
+
+A [CrispASR](https://github.com/CrispStrobe/CrispASR) server running [NVIDIA Canary](https://huggingface.co/nvidia/canary-1b-v2) can make the [extra target languages](./configuration.md#more-target-languages-experimental) for English audio on another machine. Start it with the model and the Silero VAD model:
+
+```bash
+crispasr --server --backend canary -m <gguf> -vm <silero> --cache-dir <dir>
+```
+
+`<gguf>` is a Canary GGUF file such as `canary-1b-v2-q8_0.gguf`, `<silero>` is a Silero VAD ggml file such as the plugin's own `ggml-silero-*.bin`, and `<dir>` is where the server keeps anything it fetches for itself.
+
+Then add a worker row with **Dialect** set to `CrispASR server` and list the languages it should serve in **Translation targets**, for example `nl, de`. The plugin sends a target only to a worker that lists it, and prefers the item's own worker when that worker lists it.
+
+Leave `en` out to use the server only for the extra languages. With `en` listed, it also takes whole titles, including their English translation, and Canary's translation into English was weaker than Whisper's in testing.
+
+Two traps:
+
+- **There is no translations route.** A CrispASR server answers `404` on `/v1/audio/translations`. That is why the row needs the CrispASR dialect: the plugin then sends every request to `/v1/audio/transcriptions`, with `translate=true` for English, and with `source_lang=en` and `target_lang` for a Canary target.
+- **Give the VAD model at startup with `-vm`.** A server started without it downloads the Silero model on the spot when a request asks for VAD, which fails on a worker without internet access. With `-vm` it runs VAD on every request, and without VAD Canary returns the whole file as one cue.
+
+A target the server cannot serve comes back as HTTP 200 with an empty body. The plugin fails that language with an error that names it, and writes no file.
 
 ## Hosted providers
 
@@ -147,7 +169,7 @@ The plugin deliberately does **not** send `timestamp_granularities[]`. The field
 Provider-specific limits:
 
 - **OpenAI**: on `/v1/audio/transcriptions`, SRT and timestamps exist on `whisper-1` only. `gpt-4o-transcribe` and `gpt-4o-mini-transcribe` accept `json` and `text` only, so they carry no timings and cannot be used for subtitles; asking either for `verbose_json` fails with `response_format 'verbose_json' is not compatible with model 'gpt-4o-transcribe'`. The separate `gpt-4o-transcribe-diarize` model answers with `diarized_json`, which WhisperSubs neither requests nor parses.
-- **OpenRouter**: has **no `/v1/audio/translations` endpoint**, so untick **Can translate to English** for it. Timestamps are only available on its OpenAI-compatible models; models that return text without timings (Chirp, Deepgram, Nova) cannot produce synchronized subtitles at all.
+- **OpenRouter**: has **no `/v1/audio/translations` endpoint**, so leave **Translation targets** blank for it. Timestamps are only available on its OpenAI-compatible models; models that return text without timings (Chirp, Deepgram, Nova) cannot produce synchronized subtitles at all.
 
 ### Upload size, in minutes of audio
 

@@ -442,6 +442,82 @@
                                 Applies only when Subtitle Mode includes Full subtitles (not Forced Only), and is implicit in "Translation Only" mode. Uses whisper's built-in <code>--translate</code> — no external services.
                             </div>
                         </div>
+
+                        <!-- More target languages: NVIDIA Canary through CrispASR -->
+                        <div id="crispasrSection" style="margin:0.5em 0 1em 0;">
+                            <h4 style="margin-bottom:0.25em;">More target languages (experimental)</h4>
+                            <div class="fieldDescription" style="margin-bottom:0.5em;">
+                                Only for titles with English audio. Other source languages still translate to English only.
+                                <br />
+                                Uses <a href="https://huggingface.co/nvidia/canary-1b-v2" target="_blank" rel="noopener noreferrer">NVIDIA Canary</a>
+                                through <a href="https://github.com/CrispStrobe/CrispASR" target="_blank" rel="noopener noreferrer">CrispASR</a>, running on this server or on a CrispASR worker in the Worker Pool.
+                                Needs the translation option above to be on, plus the binary and model below or a worker that lists the language. Each checked language gets its own
+                                <code>.translated</code> subtitle. A title whose audio is already in a language, or that already has a subtitle in it, is skipped for that language.
+                            </div>
+                            <div id="translationTargetCheckboxes" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(11em, 1fr)); gap:0 1em; margin-bottom:1em;"></div>
+
+                            <div id="crispasrBinaryPanel" style="background:rgba(0,0,0,0.15); border-radius:6px; padding:1em; margin-bottom:1em;">
+                                <div style="display:flex; align-items:center; gap:0.5em; margin-bottom:0.5em;">
+                                    <span id="crispasrBinaryIcon" style="font-size:1.2em;">&#9744;</span>
+                                    <strong>crispasr Binary</strong>
+                                    <span id="crispasrBinaryText" style="opacity:0.8; margin-left:0.3em; font-size:0.9em;"></span>
+                                </div>
+                                <div style="display:flex; gap:0.5em; align-items:flex-end; flex-wrap:wrap;">
+                                    <select is="emby-select" id="crispasrBinaryVariant" aria-label="CrispASR binary variant" style="flex:1; min-width:220px; margin:0;">
+                                        <option value="cpu">CPU Only</option>
+                                    </select>
+                                    <button is="emby-button" type="button" id="btnCrispAsrDownloadBinary" class="raised" aria-label="Download CrispASR binary">
+                                        <span>Download</span>
+                                    </button>
+                                </div>
+                                <div id="crispasrVariantDescription" class="fieldDescription" style="margin-top:0.4em;"></div>
+                            </div>
+
+                            <div id="crispasrModelPanel" style="background:rgba(0,0,0,0.15); border-radius:6px; padding:1em; margin-bottom:1em;">
+                                <div style="display:flex; align-items:center; gap:0.5em; margin-bottom:0.5em;">
+                                    <span id="crispasrModelIcon" style="font-size:1.2em;">&#9744;</span>
+                                    <strong>Canary Model</strong>
+                                    <span id="crispasrModelText" style="opacity:0.8; margin-left:0.3em; font-size:0.9em;"></span>
+                                </div>
+                                <div style="display:flex; gap:0.5em; align-items:flex-end; flex-wrap:wrap;">
+                                    <select is="emby-select" id="crispasrModelSelect" aria-label="Canary model" style="flex:1; min-width:250px; margin:0;">
+                                    </select>
+                                    <button is="emby-button" type="button" id="btnCrispAsrDownloadModel" class="raised" aria-label="Download Canary model">
+                                        <span>Download</span>
+                                    </button>
+                                </div>
+                                <div id="crispasrModelHint" class="fieldDescription" style="margin-top:0.4em;"></div>
+                                <div id="crispasrModelCatalogDescription" class="fieldDescription" style="margin-top:0.4em;"></div>
+                            </div>
+
+                            <div id="crispasrProgressContainer" style="display:none; margin-bottom:1em;">
+                                <div style="background:rgba(0,0,0,0.3); border-radius:4px; overflow:hidden; height:24px;">
+                                    <div id="crispasrProgressBar" role="progressbar" aria-label="Canary download progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" style="background:#52B54B; height:100%; width:0%; transition:width 0.3s ease;"></div>
+                                </div>
+                                <div id="crispasrProgressText" class="fieldDescription" role="status" aria-live="polite" style="margin-top:0.5em;"></div>
+                            </div>
+
+                            <details style="margin-bottom:1em;">
+                                <summary style="cursor:pointer; font-weight:600; padding:0.4em 0;">Canary engine (advanced)</summary>
+                                <div style="margin-top:0.75em;">
+                                    <div class="inputContainer">
+                                        <label class="inputLabel inputLabelUnfocused" for="txtCrispAsrBinaryPath">crispasr binary path</label>
+                                        <input type="text" id="txtCrispAsrBinaryPath" name="CrispAsrBinaryPath" class="emby-input" />
+                                        <div class="fieldDescription">Absolute path visible to Jellyfin. The Download button fills this automatically; set it only for a custom installation.</div>
+                                    </div>
+                                    <div class="inputContainer">
+                                        <label class="inputLabel inputLabelUnfocused" for="txtCanaryModelPath">Canary model path</label>
+                                        <input type="text" id="txtCanaryModelPath" name="CanaryModelPath" class="emby-input" />
+                                        <div class="fieldDescription">Absolute path to a Canary GGUF file. Filled automatically by the model Download button.</div>
+                                    </div>
+                                    <div class="inputContainer">
+                                        <label class="inputLabel inputLabelUnfocused" for="numCrispAsrThreadCount">Canary thread count</label>
+                                        <input type="number" id="numCrispAsrThreadCount" name="CrispAsrThreadCount" class="emby-input" min="0" max="256" step="1" />
+                                        <div class="fieldDescription">crispasr <code>-t</code>. 0 = the engine's own default.</div>
+                                    </div>
+                                </div>
+                            </details>
+                        </div>
                     </div>
 
                     <!-- ── Subtitle Timing ────────────────────────────── -->
@@ -1755,6 +1831,332 @@
                     WhisperSubsConfig.updateRoformerModelDownloadState();
                 },
 
+                // ── More translation targets (CrispASR + Canary) setup ───────
+                // Shares the page-generation guard with the vocal-separation panel: both are
+                // bumped on pageshow/pagehide, so a stale async response never paints a new page.
+                _crispasrTargets: null,
+                _translationTargetsSelected: null,
+
+                loadCrispAsr: function () {
+                    var generation = WhisperSubsConfig._roformerPageGeneration;
+                    WhisperSubsConfig.ajaxGet(ApiClient.getUrl('Plugins/WhisperSubs/Setup/CrispAsr/Status'))
+                        .then(function (s) {
+                            if (!WhisperSubsConfig.isRoformerPageActive(generation)) return;
+                            WhisperSubsConfig._crispasrStatus = s;
+                            WhisperSubsConfig._crispasrTargets = s.Targets || [];
+                            WhisperSubsConfig.renderTranslationTargets();
+                            if (s.BinaryPath) document.querySelector('#txtCrispAsrBinaryPath').value = s.BinaryPath;
+                            if (s.ModelPath) document.querySelector('#txtCanaryModelPath').value = s.ModelPath;
+                            WhisperSubsConfig.renderCrispAsrBinaryStatus(s);
+                            WhisperSubsConfig.loadCrispAsrVariants(s.InstalledVariant, generation);
+                            WhisperSubsConfig.ajaxGet(ApiClient.getUrl('Plugins/WhisperSubs/Setup/CrispAsr/AvailableModels'))
+                                .then(function (models) {
+                                    if (!WhisperSubsConfig.isRoformerPageActive(generation)) return;
+                                    WhisperSubsConfig._crispasrCatalogModels = models || [];
+                                    WhisperSubsConfig.renderCrispAsrModelStatus(s);
+                                })
+                                .catch(function () {
+                                    if (WhisperSubsConfig.isRoformerPageActive(generation)) {
+                                        WhisperSubsConfig._crispasrCatalogModels = [];
+                                    }
+                                });
+                            WhisperSubsConfig.resumeCrispAsrProgressPolling(generation);
+                        })
+                        .catch(function (err) {
+                            if (!WhisperSubsConfig.isRoformerPageActive(generation)) return;
+                            console.error('WhisperSubs: CrispASR status check failed', err);
+                            // No catalog, so no checkboxes this visit: saving keeps the loaded selection.
+                            WhisperSubsConfig.clearTranslationTargets();
+                            var text = document.querySelector('#crispasrBinaryText');
+                            if (text) { text.textContent = 'Status unavailable'; }
+                        });
+                },
+
+                // Paints one checkbox per Canary target once BOTH the catalog (Status response) and
+                // the saved selection (plugin config) have arrived; the two requests race.
+                renderTranslationTargets: function () {
+                    var targets = WhisperSubsConfig._crispasrTargets;
+                    var selected = WhisperSubsConfig._translationTargetsSelected;
+                    var container = document.querySelector('#translationTargetCheckboxes');
+                    if (!container || targets === null || selected === null) return;
+                    // A second render in the same visit (the status reload after a crispasr or Canary
+                    // download) keeps the admin's unsaved ticks. pageshow clears data-rendered, so the
+                    // first render of each visit still starts from the saved config.
+                    if (container.getAttribute('data-rendered') === '1') {
+                        selected = Array.prototype.map.call(
+                            container.querySelectorAll('.chkTranslationTarget:checked'),
+                            function (cb) { return cb.value; });
+                    }
+                    container.innerHTML = '';
+                    targets.forEach(function (t) {
+                        var div = document.createElement('div');
+                        div.className = 'checkboxContainer';
+                        div.style.padding = '0.2em 0';
+                        div.style.marginBottom = '0';
+                        var label = document.createElement('label');
+                        var checkbox = document.createElement('input');
+                        checkbox.setAttribute('is', 'emby-checkbox');
+                        checkbox.type = 'checkbox';
+                        checkbox.value = t.Code;
+                        checkbox.className = 'chkTranslationTarget';
+                        checkbox.checked = selected.indexOf(t.Code) >= 0;
+                        label.appendChild(checkbox);
+                        var span = document.createElement('span');
+                        span.textContent = t.DisplayName + ' (' + t.Code + ')';
+                        label.appendChild(span);
+                        div.appendChild(label);
+                        container.appendChild(div);
+                    });
+                    container.setAttribute('data-rendered', '1');
+                },
+
+                // Drops the checkboxes a previous visit painted. Save reads them only while
+                // data-rendered is set, so until this visit renders again it keeps the saved list.
+                clearTranslationTargets: function () {
+                    var container = document.querySelector('#translationTargetCheckboxes');
+                    if (!container) return;
+                    container.innerHTML = '';
+                    container.removeAttribute('data-rendered');
+                },
+
+                renderCrispAsrBinaryStatus: function (status) {
+                    var icon = document.querySelector('#crispasrBinaryIcon');
+                    var text = document.querySelector('#crispasrBinaryText');
+                    if (status.BinaryFound) {
+                        icon.innerHTML = '&#9745;';
+                        icon.style.color = '#52B54B';
+                        var name = status.BinaryPath ? status.BinaryPath.split(/[\\/]/).pop() : 'Installed';
+                        text.textContent = name + (status.InstalledVersion ? ' ' + status.InstalledVersion : '')
+                            + (status.InstalledVariant ? ' (' + status.InstalledVariant + ')' : '');
+                    } else {
+                        icon.innerHTML = '&#9744;';
+                        icon.style.color = '#CC7B19';
+                        text.textContent = 'Not installed';
+                    }
+                },
+
+                loadCrispAsrVariants: function (installedVariant, generation) {
+                    WhisperSubsConfig.ajaxGet(ApiClient.getUrl('Plugins/WhisperSubs/Setup/CrispAsr/BinaryVariants'))
+                        .then(function (variants) {
+                            if (!WhisperSubsConfig.isRoformerPageActive(generation)) return;
+                            var select = document.querySelector('#crispasrBinaryVariant');
+                            var btn = document.querySelector('#btnCrispAsrDownloadBinary');
+                            select.innerHTML = '';
+                            WhisperSubsConfig._crispasrVariants = variants || [];
+                            if (!variants || !Array.isArray(variants) || variants.length === 0) {
+                                var opt = document.createElement('option');
+                                opt.value = '';
+                                opt.textContent = 'No prebuilt binaries for this platform';
+                                select.appendChild(opt);
+                                select.disabled = true;
+                                btn.disabled = true;
+                                WhisperSubsConfig.updateCrispAsrVariantDescription();
+                                return;
+                            }
+                            select.disabled = false;
+                            btn.disabled = WhisperSubsConfig._crispasrDownloadRunning === true;
+                            variants.forEach(function (v) {
+                                var opt = document.createElement('option');
+                                opt.value = v.Id;
+                                opt.textContent = v.DisplayName;
+                                select.appendChild(opt);
+                            });
+                            var variantIds = variants.map(function (v) { return v.Id; });
+                            // CPU is the default on purpose (no GPU recommendation here): Canary gains
+                            // nothing from an integrated GPU, and the CPU build has no driver dependency.
+                            var fallback = variants.find(function (v) { return v.IsDefault; });
+                            if (installedVariant && variantIds.indexOf(installedVariant) !== -1) {
+                                select.value = installedVariant;
+                            } else if (fallback) {
+                                select.value = fallback.Id;
+                            }
+                            WhisperSubsConfig.updateCrispAsrVariantDescription();
+                        })
+                        .catch(function (err) {
+                            if (!WhisperSubsConfig.isRoformerPageActive(generation)) return;
+                            console.error('WhisperSubs: error loading CrispASR binary variants', err);
+                        });
+                },
+
+                updateCrispAsrVariantDescription: function () {
+                    var select = document.querySelector('#crispasrBinaryVariant');
+                    var desc = document.querySelector('#crispasrVariantDescription');
+                    if (!select || !desc) return;
+                    var match = (WhisperSubsConfig._crispasrVariants || []).find(function (v) { return v.Id === select.value; });
+                    desc.textContent = (match && match.Description) ? match.Description : '';
+                },
+
+                renderCrispAsrModelStatus: function (status) {
+                    var icon = document.querySelector('#crispasrModelIcon');
+                    var text = document.querySelector('#crispasrModelText');
+                    if (status.ModelFound) {
+                        icon.innerHTML = '&#9745;';
+                        icon.style.color = '#52B54B';
+                        text.textContent = status.ModelPath ? status.ModelPath.split(/[\\/]/).pop() : 'Installed';
+                    } else {
+                        icon.innerHTML = '&#9744;';
+                        icon.style.color = '#CC7B19';
+                        text.textContent = 'Not installed';
+                    }
+
+                    var select = document.querySelector('#crispasrModelSelect');
+                    select.innerHTML = '';
+                    var catalog = WhisperSubsConfig._crispasrCatalogModels || [];
+                    catalog.forEach(function (m) {
+                        var opt = document.createElement('option');
+                        opt.value = m.Key;
+                        var sizeLabel = m.SizeMB >= 1000 ? (m.SizeMB / 1000).toFixed(2) + ' GB' : m.SizeMB + ' MB';
+                        opt.textContent = m.DisplayName + ' (' + sizeLabel + ')';
+                        if (m.IsRecommended) opt.textContent += ' ★';
+                        select.appendChild(opt);
+                    });
+                    var currentQuant = status.InstalledModelQuant;
+                    if (currentQuant && catalog.some(function (m) { return m.Key === currentQuant; })) {
+                        select.value = currentQuant;
+                    } else {
+                        var rec = catalog.find(function (m) { return m.IsRecommended; });
+                        if (rec) select.value = rec.Key;
+                    }
+                    WhisperSubsConfig.updateCrispAsrModelDescription();
+                    WhisperSubsConfig.updateCrispAsrModelDownloadState();
+                },
+
+                updateCrispAsrModelDescription: function () {
+                    var select = document.querySelector('#crispasrModelSelect');
+                    var desc = document.querySelector('#crispasrModelCatalogDescription');
+                    if (!select || !desc) return;
+                    var catalog = WhisperSubsConfig._crispasrCatalogModels || [];
+                    var match = catalog.find(function (m) { return m.Key === select.value; });
+                    desc.textContent = (match && match.Description) ? match.Description : '';
+                },
+
+                updateCrispAsrModelDownloadState: function () {
+                    var btn = document.querySelector('#btnCrispAsrDownloadModel');
+                    var hint = document.querySelector('#crispasrModelHint');
+                    var status = WhisperSubsConfig._crispasrStatus;
+                    if (WhisperSubsConfig._crispasrDownloadRunning === true) {
+                        btn.disabled = true;
+                        hint.textContent = 'A Canary download is in progress.';
+                        hint.style.color = '';
+                    } else if (!status || !status.BinaryFound) {
+                        btn.disabled = true;
+                        hint.textContent = 'Download the crispasr binary first.';
+                        hint.style.color = '#CC7B19';
+                    } else {
+                        btn.disabled = false;
+                        hint.textContent = '';
+                        hint.style.color = '';
+                    }
+                },
+
+                startCrispAsrDownload: function (type) {
+                    var generation = WhisperSubsConfig._roformerPageGeneration;
+                    var binBtn = document.querySelector('#btnCrispAsrDownloadBinary');
+                    var modBtn = document.querySelector('#btnCrispAsrDownloadModel');
+                    WhisperSubsConfig._crispasrDownloadRunning = true;
+                    binBtn.disabled = true;
+                    modBtn.disabled = true;
+
+                    var url;
+                    if (type === 'binary') {
+                        var variant = document.querySelector('#crispasrBinaryVariant').value || 'cpu';
+                        binBtn.innerHTML = '<span>Downloading…</span>';
+                        url = ApiClient.getUrl('Plugins/WhisperSubs/Setup/CrispAsr/DownloadBinary', { variant: variant });
+                    } else {
+                        var quant = document.querySelector('#crispasrModelSelect').value;
+                        if (!quant) {
+                            WhisperSubsConfig.resetCrispAsrButtons();
+                            Dashboard.alert('Select a model first.');
+                            return;
+                        }
+                        modBtn.innerHTML = '<span>Downloading…</span>';
+                        url = ApiClient.getUrl('Plugins/WhisperSubs/Setup/CrispAsr/DownloadModel', { quant: quant });
+                    }
+                    ApiClient.ajax({ type: 'POST', url: url }).then(function () {
+                        if (!WhisperSubsConfig.isRoformerPageActive(generation)) return;
+                        WhisperSubsConfig.startCrispAsrProgressPolling(generation);
+                    }).catch(function (err) {
+                        if (!WhisperSubsConfig.isRoformerPageActive(generation)) return;
+                        WhisperSubsConfig.resetCrispAsrButtons();
+                        Dashboard.alert('Download failed: ' + (err.message || err));
+                    });
+                },
+
+                showCrispAsrProgress: function (p) {
+                    var bar = document.querySelector('#crispasrProgressBar');
+                    var text = document.querySelector('#crispasrProgressText');
+                    document.querySelector('#crispasrProgressContainer').style.display = '';
+                    bar.style.width = Math.min(p.Percent, 100) + '%';
+                    bar.setAttribute('aria-valuenow', Math.min(p.Percent, 100));
+                    text.textContent = p.Message || '';
+                    text.style.color = p.Error ? '#CC7B19' : '';
+                },
+
+                startCrispAsrProgressPolling: function (generation) {
+                    generation = generation === undefined ? WhisperSubsConfig._roformerPageGeneration : generation;
+                    if (!WhisperSubsConfig.isRoformerPageActive(generation)) return;
+                    document.querySelector('#crispasrProgressContainer').style.display = '';
+                    WhisperSubsConfig._crispasrDownloadRunning = true;
+                    document.querySelector('#btnCrispAsrDownloadBinary').disabled = true;
+                    document.querySelector('#btnCrispAsrDownloadModel').disabled = true;
+                    WhisperSubsConfig.stopCrispAsrProgressPolling();
+
+                    WhisperSubsConfig._crispasrProgressPollTimer = setInterval(function () {
+                        if (!WhisperSubsConfig.isRoformerPageActive(generation)) {
+                            WhisperSubsConfig.stopCrispAsrProgressPolling();
+                            return;
+                        }
+                        WhisperSubsConfig.ajaxGet(ApiClient.getUrl('Plugins/WhisperSubs/Setup/CrispAsr/Progress'))
+                            .then(function (p) {
+                                if (!WhisperSubsConfig.isRoformerPageActive(generation)) return;
+                                WhisperSubsConfig.showCrispAsrProgress(p);
+                                if (p.Error || (!p.IsRunning && p.Percent >= 100)) {
+                                    WhisperSubsConfig.stopCrispAsrProgressPolling();
+                                    WhisperSubsConfig.resetCrispAsrButtons();
+                                    WhisperSubsConfig._crispasrReloadTimer = setTimeout(function () {
+                                        WhisperSubsConfig._crispasrReloadTimer = null;
+                                        if (WhisperSubsConfig.isRoformerPageActive(generation)) {
+                                            WhisperSubsConfig.loadCrispAsr();
+                                        }
+                                    }, 500);
+                                }
+                            })
+                            .catch(function () { /* ignore transient fetch errors */ });
+                    }, 1000);
+                },
+
+                stopCrispAsrProgressPolling: function () {
+                    if (WhisperSubsConfig._crispasrProgressPollTimer) {
+                        clearInterval(WhisperSubsConfig._crispasrProgressPollTimer);
+                        WhisperSubsConfig._crispasrProgressPollTimer = null;
+                    }
+                },
+
+                resumeCrispAsrProgressPolling: function (generation) {
+                    WhisperSubsConfig.ajaxGet(ApiClient.getUrl('Plugins/WhisperSubs/Setup/CrispAsr/Progress'))
+                        .then(function (p) {
+                            if (!WhisperSubsConfig.isRoformerPageActive(generation)) return;
+                            if (!p || !p.IsRunning) {
+                                if (WhisperSubsConfig._crispasrDownloadRunning === true) {
+                                    WhisperSubsConfig.resetCrispAsrButtons();
+                                }
+                                return;
+                            }
+                            WhisperSubsConfig.showCrispAsrProgress(p);
+                            WhisperSubsConfig.startCrispAsrProgressPolling(generation);
+                        })
+                        .catch(function () { /* status panel remains usable if progress is unavailable */ });
+                },
+
+                resetCrispAsrButtons: function () {
+                    var binBtn = document.querySelector('#btnCrispAsrDownloadBinary');
+                    var modBtn = document.querySelector('#btnCrispAsrDownloadModel');
+                    WhisperSubsConfig._crispasrDownloadRunning = false;
+                    if (binBtn) { binBtn.disabled = false; binBtn.innerHTML = '<span>Download</span>'; }
+                    if (modBtn) { modBtn.disabled = false; modBtn.innerHTML = '<span>Download</span>'; }
+                    WhisperSubsConfig.updateCrispAsrModelDownloadState();
+                },
+
                 _gpuInfo: null,
 
                 updateVariantHint: function () {
@@ -1988,6 +2390,11 @@
                             page.querySelector('#txtVocalSeparationModelPath').value = config.VocalSeparationModelPath || '';
                             page.querySelector('#numVocalSeparationOverlap').value = (config.VocalSeparationOverlap > 0) ? config.VocalSeparationOverlap : '';
                             page.querySelector('#numVocalSeparationChunkSize').value = (config.VocalSeparationChunkSize > 0) ? config.VocalSeparationChunkSize : '';
+                            page.querySelector('#txtCrispAsrBinaryPath').value = config.CrispAsrBinaryPath || '';
+                            page.querySelector('#txtCanaryModelPath').value = config.CanaryModelPath || '';
+                            page.querySelector('#numCrispAsrThreadCount').value = (config.CrispAsrThreadCount > 0) ? config.CrispAsrThreadCount : '';
+                            WhisperSubsConfig._translationTargetsSelected = config.TranslationTargetLanguages || [];
+                            WhisperSubsConfig.renderTranslationTargets();
                             // ── Requests & priority (#112) ──
                             page.querySelector('#chkAllowUserRequests').checked = config.AllowUserRequests === true;
                             page.querySelector('#chkAutoApproveUserRequests').checked = config.AutoApproveUserRequests === true;
@@ -2057,6 +2464,22 @@
                         config.CompensateAudioOffset = page.querySelector('#chkCompensateAudioOffset').checked;
                         config.EnableVocalSeparation = page.querySelector('#chkEnableVocalSeparation').checked;
                         config.VocalSeparationBinaryPath = (page.querySelector('#txtVocalSeparationBinaryPath').value || '').trim();
+                        // A crispasr or Canary download that finishes while this page is open persists its
+                        // path on the server, and the textbox may still be empty. An empty box keeps the
+                        // saved path instead of wiping the install the service just recorded.
+                        var crispAsrBinaryPath = (page.querySelector('#txtCrispAsrBinaryPath').value || '').trim();
+                        if (crispAsrBinaryPath) config.CrispAsrBinaryPath = crispAsrBinaryPath;
+                        var canaryModelPath = (page.querySelector('#txtCanaryModelPath').value || '').trim();
+                        if (canaryModelPath) config.CanaryModelPath = canaryModelPath;
+                        config.CrispAsrThreadCount = Math.max(0, parseInt(page.querySelector('#numCrispAsrThreadCount').value, 10) || 0);
+                        // Only overwrite the saved targets when the checkboxes actually rendered; if the
+                        // status call failed, saving must not silently clear the admin's selection.
+                        if (page.querySelector('#translationTargetCheckboxes').getAttribute('data-rendered') === '1') {
+                            config.TranslationTargetLanguages = [];
+                            page.querySelectorAll('.chkTranslationTarget').forEach(function (cb) {
+                                if (cb.checked) config.TranslationTargetLanguages.push(cb.value);
+                            });
+                        }
                         config.VocalSeparationModelPath = (page.querySelector('#txtVocalSeparationModelPath').value || '').trim();
                         var roformerOverlapRaw = (page.querySelector('#numVocalSeparationOverlap').value || '').trim();
                         var roformerOverlap = parseInt(roformerOverlapRaw, 10);
@@ -2085,6 +2508,11 @@
                         // Worker pool (v4.0). Fully-blank rows are dropped; numbers are coerced.
                         config.EnableLocalWorker = page.querySelector('#chkEnableLocalWorker').checked;
                         config.Workers = WhisperSubsConfig.collectWorkers(page);
+                        var workerTargetError = WhisperSubsConfig.validateWorkerTargets(config.Workers);
+                        if (workerTargetError) {
+                            Dashboard.alert(workerTargetError);
+                            return;
+                        }
 
                         // Collect enabled libraries from checkboxes
                         var libraryCheckboxes = page.querySelectorAll('.chkLibrary');
@@ -2342,7 +2770,19 @@
                         (w.UploadCodec || 'wav'),
                         'Audio sent to THIS worker. WAV is 1.92 MB per minute, so a 40-minute title is 76.8 MB and exceeds hosted caps. Keep WAV for self-hosted workers (whisper.cpp decodes WAV only); use FLAC or Opus only on a hosted endpoint documented to accept it.'));
 
-                    row.appendChild(WhisperSubsConfig._workerCheckbox('wkTranslate', 'Can translate to English', w.CanTranslate !== false));
+                    row.appendChild(WhisperSubsConfig._workerSelect(
+                        'Dialect', 'wkDialect',
+                        [['openai', 'OpenAI-compatible'], ['crispasr', 'CrispASR server']],
+                        (w.Dialect === 'crispasr' ? 'crispasr' : 'openai'),
+                        'OpenAI-compatible covers whisper-server, OpenAI and Groq. Pick CrispASR server for crispasr --server running the Canary model: it has no translations route, so the plugin sends the target language as form fields.'));
+                    // Rows saved before this field existed carry only CanTranslate: migrate it to "en" or nothing.
+                    var targetsValue = (w.TranslateTargets && w.TranslateTargets.length)
+                        ? w.TranslateTargets.join(', ')
+                        : (w.CanTranslate !== false ? 'en' : '');
+                    row.appendChild(WhisperSubsConfig._workerField(
+                        'Translation targets', 'text', 'wkTargets', { placeholder: 'en', maxlength: '256', spellcheck: 'false' },
+                        targetsValue,
+                        'Comma-separated language codes this worker translates into. en is Whisper translation. Canary codes (nl, de, fr, ...) need the CrispASR dialect. Leave blank for a transcribe-only worker.'));
                     row.appendChild(WhisperSubsConfig._workerCheckbox('wkEnabled', 'Enabled', w.Enabled !== false));
 
                     // Re-check for duplicate endpoints whenever this row's URL or Enabled state changes.
@@ -2473,6 +2913,39 @@
                     return container;
                 },
 
+                // Splits a worker's "Translation targets" field: trimmed, lower-case, no duplicates, input order.
+                // Mirrors WorkerTargets.Parse on the server.
+                parseWorkerTargets: function (raw) {
+                    var out = [];
+                    (raw || '').split(/[,; ]+/).forEach(function (part) {
+                        var code = part.trim().toLowerCase();
+                        if (code && out.indexOf(code) < 0) out.push(code);
+                    });
+                    return out;
+                },
+
+                // Mirrors WorkerConfigValidation's target rules so a bad row is caught before saving: every
+                // code must be en or a Canary target, and only a CrispASR row may list a Canary target. The
+                // catalog comes from the CrispASR status call; when it has not loaded, only the dialect rule
+                // is checked and the server drops unknown codes when it builds the pool.
+                validateWorkerTargets: function (workers) {
+                    var known = WhisperSubsConfig._crispasrTargets
+                        ? ['en'].concat(WhisperSubsConfig._crispasrTargets.map(function (t) { return t.Code; }))
+                        : null;
+                    for (var i = 0; i < workers.length; i++) {
+                        var w = workers[i];
+                        var label = w.Name || w.ApiUrl || ('worker ' + (i + 1));
+                        var unknown = known ? w.TranslateTargets.filter(function (c) { return known.indexOf(c) < 0; }) : [];
+                        if (unknown.length) {
+                            return label + ': unknown translation target(s) ' + unknown.join(', ') + '. Use en and the Canary codes listed under Translation.';
+                        }
+                        if (w.Dialect !== 'crispasr' && w.TranslateTargets.some(function (c) { return c !== 'en'; })) {
+                            return label + ': only a CrispASR server can translate into languages other than en. Set the dialect to CrispASR server or keep only en.';
+                        }
+                    }
+                    return null;
+                },
+
                 // Reads every row into config.Workers, skipping rows the user never filled in and
                 // coercing MaxConcurrency/CostWeight to numbers.
                 collectWorkers: function (page) {
@@ -2487,7 +2960,8 @@
                         var costRaw = (row.querySelector('.wkCost').value || '').trim();
                         var maxUploadRaw = (row.querySelector('.wkMaxUpload').value || '').trim();
                         var uploadCodec = (row.querySelector('.wkUploadCodec').value || 'wav').trim();
-                        var canTranslate = row.querySelector('.wkTranslate').checked;
+                        var dialect = row.querySelector('.wkDialect').value === 'crispasr' ? 'crispasr' : 'openai';
+                        var targets = WhisperSubsConfig.parseWorkerTargets(row.querySelector('.wkTargets').value);
                         var enabled = row.querySelector('.wkEnabled').checked;
 
                         // Skip a row the user never filled in (all text/number fields blank).
@@ -2516,7 +2990,11 @@
                             CostWeight: cost,
                             MaxUploadBytes: maxUploadBytes,
                             UploadCodec: uploadCodec,
-                            CanTranslate: canTranslate
+                            Dialect: dialect,
+                            TranslateTargets: targets,
+                            // Written alongside the list: an empty list reads as "use CanTranslate", so a
+                            // transcribe-only row must say false here, and a downgrade still sees a sane value.
+                            CanTranslate: targets.indexOf('en') >= 0
                         });
                     });
                     return workers;
@@ -2539,7 +3017,11 @@
                     ApiClient.ajax({
                         type: 'POST',
                         url: ApiClient.getUrl('Plugins/WhisperSubs/Workers/TestConnection'),
-                        data: JSON.stringify({ apiUrl: url, apiKey: key, model: model }),
+                        data: JSON.stringify({
+                            apiUrl: url, apiKey: key, model: model,
+                            dialect: row.querySelector('.wkDialect').value,
+                            translateTargets: WhisperSubsConfig.parseWorkerTargets(row.querySelector('.wkTargets').value)
+                        }),
                         contentType: 'application/json',
                         dataType: 'json'
                     }).then(function (response) {
@@ -2986,6 +3468,10 @@
                 WhisperSubsConfig.loadConfiguration(this);
                 WhisperSubsConfig.loadEngine();
                 WhisperSubsConfig.loadRoformer();
+                WhisperSubsConfig._crispasrTargets = null;
+                WhisperSubsConfig._translationTargetsSelected = null;
+                WhisperSubsConfig.clearTranslationTargets();
+                WhisperSubsConfig.loadCrispAsr();
                 WhisperSubsConfig.loadInjectionStatus();
                 WhisperSubsConfig.loadRequests();
                 // Check if transcription is already running and show banner
@@ -3007,6 +3493,11 @@
                     clearTimeout(WhisperSubsConfig._roformerReloadTimer);
                     WhisperSubsConfig._roformerReloadTimer = null;
                 }
+                WhisperSubsConfig.stopCrispAsrProgressPolling();
+                if (WhisperSubsConfig._crispasrReloadTimer) {
+                    clearTimeout(WhisperSubsConfig._crispasrReloadTimer);
+                    WhisperSubsConfig._crispasrReloadTimer = null;
+                }
             });
 
             document.querySelector('#btnEngineDownloadBinary').addEventListener('click', function () {
@@ -3023,6 +3514,22 @@
 
             document.querySelector('#roformerModelSelect').addEventListener('change', function () {
                 WhisperSubsConfig.updateRoformerModelDescription();
+            });
+
+            document.querySelector('#btnCrispAsrDownloadBinary').addEventListener('click', function () {
+                WhisperSubsConfig.startCrispAsrDownload('binary');
+            });
+
+            document.querySelector('#btnCrispAsrDownloadModel').addEventListener('click', function () {
+                WhisperSubsConfig.startCrispAsrDownload('model');
+            });
+
+            document.querySelector('#crispasrModelSelect').addEventListener('change', function () {
+                WhisperSubsConfig.updateCrispAsrModelDescription();
+            });
+
+            document.querySelector('#crispasrBinaryVariant').addEventListener('change', function () {
+                WhisperSubsConfig.updateCrispAsrVariantDescription();
             });
 
             document.querySelector('#btnReinjectScript').addEventListener('click', function () {

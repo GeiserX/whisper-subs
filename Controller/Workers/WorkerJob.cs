@@ -21,12 +21,22 @@ namespace WhisperSubs.Controller.Workers
         /// <summary>
         /// The capability a dispatched worker must advertise. Whole media items are dispatched and the
         /// manager decides per item whether to also run a translation pass, so this is conservative: when
-        /// translation is possible for the config every job requires a translate-capable worker, guaranteeing
-        /// a translate pass never lands on a transcribe-only worker. A worker that cannot translate is simply
+        /// translation is possible for the config every job requires a worker that translates into English,
+        /// guaranteeing a translate pass never lands on a transcribe-only worker. Canary targets are not part
+        /// of the item's requirement (most titles skip them); each one asks the pool for its own worker via
+        /// <see cref="ForTarget"/>. Whatever the translation setting, a whole-item job never lands on a worker
+        /// whose <see cref="WorkerCapabilities.TranscribesItems"/> is false. A worker that cannot translate is simply
         /// not chosen while translation is enabled — the common case (all workers translate) is unaffected.
         /// <c>RequiredModel</c> is null: the manager does not pin a per-job model, so any model serves.
         /// </summary>
         public static JobRequirements Requirements(SubtitleMode mode, bool enableTranslation)
-            => new JobRequirements(TranslationPossible(mode, enableTranslation), null);
+            => new JobRequirements(TranslationPossible(mode, enableTranslation) ? "en" : null, null);
+
+        /// <summary>
+        /// The requirement for one Canary translation target inside an item: a worker whose
+        /// <see cref="WorkerCapabilities.TranslateTargets"/> contains <paramref name="target"/>.
+        /// </summary>
+        public static JobRequirements ForTarget(string target)
+            => new JobRequirements((target ?? "").Trim().ToLowerInvariant(), null, TargetOnly: true);
     }
 }

@@ -63,14 +63,22 @@ This is a guard against the worst case, not a cure for missing punctuation. Whis
 
 Two separate limits apply, and the second one is easy to hit by accident.
 
-### English is the only target language
+### English is the only target for non-English audio
 
-Whisper's `--translate` is architecturally limited to English output. It was trained for X→English and nothing else, so there is no way to reach another target language from inside whisper.cpp. The relevant upstream requests are [whisper.cpp#1219](https://github.com/ggml-org/whisper.cpp/issues/1219) and [whisper.cpp#1956](https://github.com/ggml-org/whisper.cpp/issues/1956) (a forced-decoding workaround, unreliable); an OpenAI maintainer confirmed the limitation in [openai/whisper#1167](https://github.com/openai/whisper/discussions/1167).
+Whisper's `--translate` only produces English. It was trained for X to English and nothing else, so no other target can be reached from inside whisper.cpp. The upstream requests are [whisper.cpp#1219](https://github.com/ggml-org/whisper.cpp/issues/1219) and [whisper.cpp#1956](https://github.com/ggml-org/whisper.cpp/issues/1956) (a forced-decoding workaround, unreliable), and an OpenAI maintainer confirmed the limit in [openai/whisper#1167](https://github.com/openai/whisper/discussions/1167).
 
-WhisperSubs will not add a text-to-text translation step. Translating an existing `.srt` is a different pipeline stage with a different API contract, different failure modes and a separate dependency; coupling subtitle generation to a translation service's availability doubles the config surface for something orthogonal to speech-to-text.
+English audio is the exception. [More target languages](./configuration.md#more-target-languages-experimental) translates it into 24 European languages with [NVIDIA Canary](https://huggingface.co/nvidia/canary-1b-v2). Audio in any other language still translates to English only. Canary has no direct path between two non-English languages, and when we tried French to Spanish and Spanish to French or German anyway, it returned mixed-language cues, dropped cues or an empty file, with exit code 0 and no warning. The plugin therefore never asks it for such a pair.
+
+Canary output is experimental:
+
+- In testing, one speech segment in eight came out untranslated: English text inside a Spanish file, the same segment on every run.
+- Its translation into English was weaker than Whisper's, which is why the English subtitle always comes from Whisper.
+- Its quality on film audio with music, effects and overlapping speech has only been checked on short clips.
+
+WhisperSubs will not add a text-to-text translation step. Translating an existing `.srt` is a different pipeline stage with a different API contract, different failure modes and a separate dependency. Coupling subtitle generation to a translation service's availability doubles the config surface for something orthogonal to speech-to-text.
 
 :::tip Workaround
-Generate the subtitle here, then translate the file with a dedicated tool. [Lingarr](https://github.com/lingarr-translate/lingarr) mounts your media directories and translates subtitles in place, with LibreTranslate, DeepL, Google, OpenAI, Anthropic, Gemini, DeepSeek, Bing, Yandex, Azure and local Ollama backends. [Sublarr](https://github.com/Abrechen2/sublarr) is another option with Sonarr/Radarr webhook support.
+For a non-English title, generate the English subtitle here, then translate the file with a dedicated tool. [Lingarr](https://github.com/lingarr-translate/lingarr) mounts your media directories and translates subtitles in place, with LibreTranslate, DeepL, Google, OpenAI, Anthropic, Gemini, DeepSeek, Bing, Yandex, Azure and local Ollama backends. [Sublarr](https://github.com/Abrechen2/sublarr) is another option with Sonarr/Radarr webhook support.
 :::
 
 ### The recommended model cannot translate

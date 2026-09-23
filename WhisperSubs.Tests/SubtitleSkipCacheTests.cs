@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using Microsoft.Extensions.Logging;
+using Moq;
 using WhisperSubs.Configuration;
 using WhisperSubs.Controller;
 using Xunit;
@@ -155,6 +157,180 @@ public class SubtitleSkipCacheTests
     public void IsSubtitleSetComplete_Matrix(SubtitleMode mode, bool needsTranslation, bool full, bool forced, bool translated, bool expected)
     {
         Assert.Equal(expected, SubtitleManager.IsSubtitleSetComplete(mode, needsTranslation, full, forced, translated));
+    }
+
+    // ── Translation targets in the completeness gate ──────────────────────────
+
+    private static bool TranslationDone(
+        bool englishDone, string[] targets, string?[] audio, Func<string, bool>? owned = null, Func<string, bool>? usable = null,
+        Func<string, bool>? engine = null, (string, float)? probe = null)
+        => SubtitleManager.IsTranslationComplete(englishDone, targets, audio, owned ?? (_ => false), usable ?? (_ => false), engine ?? (_ => true), probe);
+
+    [Fact]
+    public void TranslationComplete_NoTargets_IsTheEnglishRuleAlone()
+    {
+        Assert.True(TranslationDone(true, Array.Empty<string>(), new string?[] { "eng" }));
+        Assert.False(TranslationDone(false, Array.Empty<string>(), new string?[] { "eng" }));
+    }
+
+    // Negative control first: an English title with every target present is complete. Adding a
+    // target it does not have yet must flip the same title to incomplete, both directly and through
+    // the mode switch the task uses.
+    [Fact]
+    public void TranslationComplete_EnglishTitle_AddingATargetFlipsItToIncomplete()
+    {
+        var owned = new[] { "Movie.nl.WhisperSubs.translated.srt", "Movie.de.WhisperSubs.translated.srt" };
+        bool Owned(string t) => SubtitleManager.HasOwnedTranslation(owned, "Movie", t, perLanguage: true);
+
+        var before = TranslationDone(true, new[] { "nl", "de" }, new string?[] { "eng" }, Owned);
+        var after = TranslationDone(true, new[] { "nl", "de", "fr" }, new string?[] { "eng" }, Owned);
+
+        Assert.True(before);
+        Assert.False(after);
+        Assert.True(SubtitleManager.IsSubtitleSetComplete(SubtitleMode.Full, true, true, false, before));
+        Assert.False(SubtitleManager.IsSubtitleSetComplete(SubtitleMode.Full, true, true, false, after));
+    }
+
+    [Fact]
+    public void TranslationComplete_EnglishTitle_AUsableSubtitleSatisfiesATarget()
+    {
+        Assert.True(TranslationDone(true, new[] { "nl" }, new string?[] { "en" }, usable: t => t == "nl"));
+        Assert.False(TranslationDone(true, new[] { "nl" }, new string?[] { "en" }, usable: t => t == "de"));
+    }
+
+    // A target the audio is already in needs no translation (the pass skips it the same way).
+    [Fact]
+    public void TranslationComplete_TargetAlreadyInTheAudio_IsDone()
+    {
+        Assert.True(TranslationDone(true, new[] { "es" }, new string?[] { "eng", "spa" }));
+    }
+
+    // A target nobody can serve must not hold an English title back: the sweep could never produce
+    // it, so the title would be re-run (and fail) on every scheduled run. With an engine it counts.
+    [Fact]
+    public void TranslationComplete_TargetNoEngineServes_DoesNotHoldTheTitleBack()
+    {
+        Assert.True(TranslationDone(true, new[] { "nl" }, new string?[] { "eng" }, engine: _ => false));
+        Assert.False(TranslationDone(true, new[] { "nl" }, new string?[] { "eng" }, engine: _ => true));
+        // Only the unserved target is left out; a served one still counts.
+        Assert.False(TranslationDone(true, new[] { "nl", "de" }, new string?[] { "eng" }, engine: t => t == "de"));
+    }
+
+    [Fact]
+    public void WarnUnservedTargets_LogsOneWarningNamingEveryUnservedTarget()
+    {
+        var logger = new Mock<ILogger>();
+        var unserved = SubtitleManager.WarnUnservedTargets(new[] { "nl", "fr", "de" }, t => t == "fr", logger.Object);
+
+        Assert.Equal(new[] { "nl", "de" }, unserved);
+        logger.Verify(l => l.Log(
+            LogLevel.Warning, It.IsAny<EventId>(),
+            It.Is<It.IsAnyType>((v, _) => v.ToString()!.Contains("nl, de")),
+            It.IsAny<Exception?>(), It.IsAny<Func<It.IsAnyType, Exception?, string>>()), Times.Once);
+        Assert.Single(logger.Invocations);
+    }
+
+    [Fact]
+    public void WarnUnservedTargets_EveryTargetServed_LogsNothing()
+    {
+        var logger = new Mock<ILogger>();
+        Assert.Empty(SubtitleManager.WarnUnservedTargets(new[] { "nl", "de" }, _ => true, logger.Object));
+        Assert.Empty(logger.Invocations);
+    }
+
+    // Titles get cached as complete while a target is unserved; installing the engine must drop them.
+    [Fact]
+    public void Signature_Changes_WhenATargetIsUnserved()
+    {
+        var c = BaseConfig();
+        c.TranslationTargetLanguages = new List<string> { "nl", "de" };
+        var served = SubtitleSkipCache.ComputeSignature(c);
+
+        Assert.Equal(served, SubtitleSkipCache.ComputeSignature(c, Array.Empty<string>()));
+        Assert.NotEqual(served, SubtitleSkipCache.ComputeSignature(c, new[] { "nl" }));
+        Assert.NotEqual(SubtitleSkipCache.ComputeSignature(c, new[] { "nl" }), SubtitleSkipCache.ComputeSignature(c, new[] { "nl", "de" }));
+        // No targets: the signature an existing install persisted, whatever is passed.
+        Assert.Equal(SubtitleSkipCache.ComputeSignature(BaseConfig()), SubtitleSkipCache.ComputeSignature(BaseConfig(), new[] { "nl" }));
+    }
+
+    // Jellyfin reports the raw tag; "bul" must count as the audio already being in the "bg" target.
+    [Fact]
+    public void TranslationComplete_BulgarianAudioTag_SatisfiesTheBgTarget()
+    {
+        Assert.True(TranslationDone(true, new[] { "bg" }, new string?[] { "eng", "bul" }));
+    }
+
+    // Non-English or untagged audio skips every target, so the targets never hold such a title back.
+    [Theory]
+    [InlineData("spa")]
+    [InlineData("fr")]
+    public void TranslationComplete_TaggedNonEnglishAudio_IsCompleteForTargets(string? audio)
+    {
+        Assert.True(TranslationDone(true, new[] { "nl", "de" }, new[] { audio }));
+    }
+
+    // Untagged audio ("und", blank or no track tags) is decided by the pass's remembered probe.
+    public static TheoryData<string?[]> UntaggedAudio => new() { new string?[] { null }, new string?[] { "und" }, Array.Empty<string?>() };
+
+    [Theory]
+    [MemberData(nameof(UntaggedAudio))]
+    public void TranslationComplete_Untagged_CachedProbeNotEnglish_IsComplete(string?[] audio)
+    {
+        Assert.True(TranslationDone(true, new[] { "nl", "de" }, audio, probe: ("es", 0.9f)));
+        // An unsure probe is not English either: the pass would skip the targets.
+        Assert.True(TranslationDone(true, new[] { "nl" }, audio, probe: ("en", 0.1f)));
+    }
+
+    [Theory]
+    [MemberData(nameof(UntaggedAudio))]
+    public void TranslationComplete_Untagged_CachedProbeEnglish_NeedsEveryServableTarget(string?[] audio)
+    {
+        Assert.False(TranslationDone(true, new[] { "nl" }, audio, probe: ("en", 0.9f)));
+        Assert.True(TranslationDone(true, new[] { "nl" }, audio, owned: t => t == "nl", probe: ("en", 0.9f)));
+        Assert.True(TranslationDone(true, new[] { "nl" }, audio, engine: _ => false, probe: ("en", 0.9f)));
+    }
+
+    // Nothing cached yet: the title goes to the pass once, which probes it and caches the result. With no
+    // servable target there is nothing to make, so it stays complete (the unserved-target rule).
+    [Theory]
+    [MemberData(nameof(UntaggedAudio))]
+    public void TranslationComplete_Untagged_NoCachedProbe_IncompleteOnlyWhileAServableTargetIsMissing(string?[] audio)
+    {
+        Assert.False(TranslationDone(true, new[] { "nl" }, audio));
+        Assert.True(TranslationDone(true, new[] { "nl" }, audio, engine: _ => false));
+        Assert.True(TranslationDone(true, new[] { "nl" }, audio, owned: _ => true));
+    }
+
+    // The English condition still gates everything: targets never make an incomplete title complete.
+    [Fact]
+    public void TranslationComplete_EnglishRuleUnmet_IsIncompleteWhateverTheTargets()
+    {
+        Assert.False(TranslationDone(false, new[] { "nl" }, new string?[] { "spa" }));
+    }
+
+    [Fact]
+    public void Signature_WithoutTargets_IsUnchangedFromBeforeTheFeature()
+    {
+        var c = BaseConfig();
+        Assert.DoesNotContain("targets=", SubtitleSkipCache.ComputeSignature(c));
+        c.TranslationTargetLanguages = new List<string> { "", "EN" };   // normalizes to nothing
+        Assert.Equal(SubtitleSkipCache.ComputeSignature(BaseConfig()), SubtitleSkipCache.ComputeSignature(c));
+    }
+
+    [Fact]
+    public void Signature_Changes_WhenTargetsAreAddedOrReordered()
+    {
+        var none = SubtitleSkipCache.ComputeSignature(BaseConfig());
+        var nlDe = BaseConfig();
+        nlDe.TranslationTargetLanguages = new List<string> { "nl", "de" };
+        var deNl = BaseConfig();
+        deNl.TranslationTargetLanguages = new List<string> { "de", "nl" };
+        var nlDeSpaced = BaseConfig();
+        nlDeSpaced.TranslationTargetLanguages = new List<string> { " NL", "de" };
+
+        Assert.NotEqual(none, SubtitleSkipCache.ComputeSignature(nlDe));
+        Assert.NotEqual(SubtitleSkipCache.ComputeSignature(nlDe), SubtitleSkipCache.ComputeSignature(deNl));
+        Assert.Equal(SubtitleSkipCache.ComputeSignature(nlDe), SubtitleSkipCache.ComputeSignature(nlDeSpaced));
     }
 
     // ── Mutation + prune ────────────────────────────────────────────────────

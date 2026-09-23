@@ -33,6 +33,7 @@ public class WorkerCloneCompletenessTests
         var t when t == typeof(int) => 7,
         var t when t == typeof(long) => 123_456_789L,
         var t when t == typeof(double) => 3.5,
+        var t when t == typeof(System.Collections.Generic.List<string>) => new System.Collections.Generic.List<string> { "distinct-" + p.Name },
         _ => throw new NotSupportedException(
             $"WhisperWorker.{p.Name} has unhandled type {p.PropertyType}; extend this test."),
     };
@@ -64,7 +65,7 @@ public class WorkerCloneCompletenessTests
         var result = Assert.Single(collapsed);
 
         var dropped = properties
-            .Where(p => !Equals(p.GetValue(result), p.GetValue(source)))
+            .Where(p => !SameValue(p.GetValue(result), p.GetValue(source)))
             .Select(p => $"{p.Name}: expected {p.GetValue(source)}, got {p.GetValue(result)}")
             .ToArray();
 
@@ -73,6 +74,12 @@ public class WorkerCloneCompletenessTests
             "CollapseByEndpoint dropped configured settings, which silently resets them for every worker:\n  "
             + string.Join("\n  ", dropped));
     }
+
+    // Lists are compared by content: a copy must carry the values, and a fresh list is fine.
+    private static bool SameValue(object? a, object? b)
+        => a is System.Collections.Generic.List<string> la && b is System.Collections.Generic.List<string> lb
+            ? la.SequenceEqual(lb)
+            : Equals(a, b);
 
     [Fact]
     public void ConfiguredOpusSurvivesTheCollapse()

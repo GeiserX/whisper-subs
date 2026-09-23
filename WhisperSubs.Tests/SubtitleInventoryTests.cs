@@ -217,6 +217,37 @@ public class SubtitleInventoryTests
         Assert.Equal(expected, SubtitleInventory.NormalizeLang(input));
     }
 
+    // The Canary targets whose three-letter tags the table used to leave unmapped. Each must reach
+    // its target code, or a subtitle tagged that way never satisfies the target.
+    [Theory]
+    [InlineData("bul", "bg")]
+    [InlineData("hrv", "hr")]
+    [InlineData("est", "et")]
+    [InlineData("lav", "lv")]
+    [InlineData("lit", "lt")]
+    [InlineData("mlt", "mt")]
+    [InlineData("slk", "sk")]
+    [InlineData("slo", "sk")]
+    [InlineData("slv", "sl")]
+    public void NormalizeLang_CanaryTargetThreeLetterCodes_MapToTheTarget(string code, string target)
+    {
+        Assert.Equal(target, SubtitleInventory.NormalizeLang(code));
+        Assert.Equal(target, SubtitleInventory.NormalizeLang(code.ToUpperInvariant() + "-XX"));
+        Assert.True(SubtitleInventory.HasUsableSubtitle(
+            new[] { new SubtitleStreamInfo { Language = code, IsExternal = true, IsTextSubtitle = true } },
+            target));
+    }
+
+    // The audio-tag table names output files, so it must keep these codes as they are.
+    [Theory]
+    [InlineData("bul")]
+    [InlineData("slo")]
+    [InlineData("slv")]
+    public void NormalizeAudioTag_LeavesTheComparisonOnlyCodesAlone(string code)
+    {
+        Assert.Equal(code, SubtitleInventory.NormalizeAudioTag(code));
+    }
+
     [Theory]
     // Case 10 (continued): empty / undetermined inputs normalize to null.
     [InlineData(null)]

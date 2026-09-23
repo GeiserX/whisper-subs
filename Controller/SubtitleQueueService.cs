@@ -216,7 +216,7 @@ namespace WhisperSubs.Controller
         /// <summary>
         /// A stable signature of the CONFIGURED transcription workers (whisper-subs-9gq): the backward-compat
         /// composition decision (<see cref="WorkerPlan.Decide"/>) plus, per contributing worker, its routing
-        /// key, URL, model, MaxConcurrency, cost and translate capability — everything that changes which
+        /// key, URL, model, MaxConcurrency, cost, translation targets and dialect — everything that changes which
         /// workers the pool would contain or their capacity. <see cref="ReconcileWorkers"/> compares it to
         /// detect whether the worker set actually changed, so an unrelated config save is a cheap no-op.
         /// Mirrors <see cref="WorkerRegistry.BuildWorkers"/>' enabled+non-blank filter and key derivation so
@@ -246,7 +246,8 @@ namespace WhisperSubs.Controller
                     segments.Add(
                         $"w[{id}|{w.ApiUrl.Trim()}|{(w.Model ?? string.Empty).Trim()}|" +
                         $"{(w.MaxConcurrency < 1 ? 1 : w.MaxConcurrency)}|" +
-                        $"{w.CostWeight.ToString(System.Globalization.CultureInfo.InvariantCulture)}|{w.CanTranslate}];");
+                        $"{w.CostWeight.ToString(System.Globalization.CultureInfo.InvariantCulture)}|" +
+                        $"{WorkerTargets.Signature(WorkerTargets.ForRow(w))}|{WorkerDialect.Normalize(w.Dialect)}];");
                 }
                 foreach (var seg in segments.OrderBy(s => s, System.StringComparer.Ordinal))
                     sb.Append(seg);
@@ -1038,7 +1039,8 @@ namespace WhisperSubs.Controller
                         try
                         {
                             await manager.GenerateSubtitleAsync(
-                                wi.Item, l.Worker.Provider, wi.Language, cancellationToken, wi.Force);
+                                wi.Item, l.Worker.Provider, wi.Language, cancellationToken, wi.Force,
+                                new PoolTargetEngines(pool, l));
                             if (countProcessed) Interlocked.Increment(ref _processedCount);
                             wi.Completion?.TrySetResult(true);
                             // Completed — release the in-flight lease and persist so a crash can't restore

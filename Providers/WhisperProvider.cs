@@ -105,8 +105,23 @@ namespace WhisperSubs.Providers
                 : "Language-detection model not ready in time; using the transcription model for detection this run.");
         }
 
-        public Task<string> TranscribeAsync(string audioPath, string language, CancellationToken cancellationToken, bool translate = false)
-            => TranscribeAsync(audioPath, language, cancellationToken, translate, applyVad: true);
+        public Task<string> TranscribeAsync(string audioPath, string language, CancellationToken cancellationToken, bool translate = false, string? targetLanguage = null)
+        {
+            EnsureEnglishTarget(targetLanguage, Name);
+            return TranscribeAsync(audioPath, language, cancellationToken, translate, applyVad: true);
+        }
+
+        /// <summary>
+        /// Whisper translates only into English. A null target (every existing caller) or "en" keeps
+        /// the existing behaviour; any other target is refused rather than guessed, because
+        /// <c>--translate</c> would silently produce English under a non-English label.
+        /// </summary>
+        internal static void EnsureEnglishTarget(string? targetLanguage, string providerName)
+        {
+            if (targetLanguage == null || string.Equals(targetLanguage.Trim(), "en", StringComparison.OrdinalIgnoreCase)) return;
+            throw new NotSupportedException(
+                $"{providerName} can only translate into English; target '{targetLanguage}' needs the Canary engine.");
+        }
 
         /// <summary>
         /// Transcription overload that can suppress whisper-cli's native VAD pass. Forced-subtitle
@@ -138,156 +153,55 @@ namespace WhisperSubs.Providers
             var tempOutputPrefix = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
             var tempSrtPath = tempOutputPrefix + ".srt";
 
-            try
+            var whisperExecutable = FindWhisperExecutable();
+            if (whisperExecutable == null)
             {
-                var whisperExecutable = FindWhisperExecutable();
-                if (whisperExecutable == null)
-                {
-                    throw new InvalidOperationException(
-                        "Whisper executable not found. Please install whisper.cpp and ensure 'whisper-cli' is in PATH, or set the binary path in plugin settings.");
-                }
-
-                var langPrompt = GetLanguagePrompt(language);
-
-                var startInfo = new ProcessStartInfo
-                {
-                    FileName = whisperExecutable,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    WorkingDirectory = Path.GetDirectoryName(whisperExecutable) ?? ""
-                };
-
-                // Resolve whether VAD applies (requested + model configured + present on disk). The
-                // rule lives in the pure ShouldUseVad helper so "applyVad:false suppresses VAD even
-                // with a model present" — the invariant forced chunks rely on — is unit-testable.
-                // (Issue #95.)
-                var vadModelExists = !string.IsNullOrEmpty(_vadModelPath) && File.Exists(_vadModelPath);
-                var useVad = ShouldUseVad(applyVad, _vadModelPath, vadModelExists);
-                foreach (var arg in BuildTranscribeArguments(
-                    _modelPath, audioPath, language, _threadCount, translate,
-                    useVad ? _vadModelPath : null, tempOutputPrefix, langPrompt, _vadTuning, _maxLineLength))
-                {
-                    startInfo.ArgumentList.Add(arg);
-                }
-
-                AppendCustomArgs(startInfo);
-
-                _logger.LogInformation("Running: {Executable} {Arguments} (cwd: {WorkingDirectory})",
-                    whisperExecutable, string.Join(" ", startInfo.ArgumentList), startInfo.WorkingDirectory);
-
-                using var process = new Process { StartInfo = startInfo };
-
-                var errorBuilder = new StringBuilder();
-
-                process.OutputDataReceived += (sender, e) =>
-                {
-                    if (!string.IsNullOrEmpty(e.Data))
-                    {
-                        _logger.LogDebug("Whisper output: {Output}", e.Data);
-                    }
-                };
-
-                process.ErrorDataReceived += (sender, e) =>
-                {
-                    if (!string.IsNullOrEmpty(e.Data))
-                    {
-                        errorBuilder.AppendLine(e.Data);
-
-                        // Progress lines drive the per-file bar; everything else is whisper-cli's own
-                        // diagnostic output. whisper-cli writes ALL of it (model load, system_info,
-                        // VAD, timings) to stderr by design — it is not a warning, so log it at Debug
-                        // rather than flooding the Jellyfin log with [WRN] on a healthy run. A genuine
-                        // failure still surfaces via the non-zero exit-code path below, which throws
-                        // with the full captured stderr (errorBuilder). (Issue #95.)
-                        if (TryParseProgress(e.Data, out var pct))
-                        {
-                            SubtitleQueueService.Instance.ReportFileProgress(pct);
-                        }
-                        else
-                        {
-                            _logger.LogDebug("Whisper stderr: {Error}", e.Data);
-                        }
-                    }
-                };
-
-                // Reset the per-file progress bar to 0 at the start of every whisper run. This is the
-                // single choke point all transcription paths funnel through (full / translation /
-                // forced-segment / lyrics / resume) and is reached by both the scheduled task and the
-                // manual Generate drain loop — so the manual path (which has no item-level reset)
-                // no longer shows the previous run's stale 100% and runs backwards. The scheduled
-                // task also resets at item start (before audio extraction); that reset stays.
-                SubtitleQueueService.Instance.ResetFileProgress();
-
-                process.Start();
-                process.BeginOutputReadLine();
-                process.BeginErrorReadLine();
-
-                try
-                {
-                    await process.WaitForExitAsync(cancellationToken);
-                }
-                catch (OperationCanceledException)
-                {
-                    try { process.Kill(entireProcessTree: true); } catch { }
-
-                    // Save whatever partial SRT whisper wrote before being killed
-                    if (File.Exists(tempSrtPath))
-                    {
-                        var partial = await File.ReadAllTextAsync(tempSrtPath);
-                        if (!string.IsNullOrWhiteSpace(partial))
-                        {
-                            _logger.LogInformation("Cancelled — returning partial SRT ({Bytes} bytes)", partial.Length);
-                            return partial;
-                        }
-                    }
-
-                    throw;
-                }
-
-                // Flush async stdout/stderr pipe buffers so errorBuilder is complete
-                process.WaitForExit();
-
-                if (process.ExitCode != 0)
-                {
-                    var stderr = errorBuilder.ToString();
-                    var failure = DescribeWhisperExitFailure(process.ExitCode, stderr);
-                    if (failure != null) throw new WhisperLaunchException(process.ExitCode, failure);
-                    throw new InvalidOperationException($"Whisper process failed with exit code {process.ExitCode}. Error: {stderr}");
-                }
-
-                if (File.Exists(tempSrtPath))
-                {
-                    var srtContent = await File.ReadAllTextAsync(tempSrtPath, cancellationToken);
-                    _logger.LogInformation("Successfully generated subtitle file");
-                    return srtContent;
-                }
-
-                var altPath = Path.ChangeExtension(audioPath, ".srt");
-                if (File.Exists(altPath))
-                {
-                    var srtContent = await File.ReadAllTextAsync(altPath, cancellationToken);
-                    return srtContent;
-                }
-
-                // whisper-cli can exit 0 having done nothing (its argument parser prints the error and
-                // exit(0)s), so reaching here with no output usually means it complained on stderr and
-                // that complaint is the only real diagnosis available. Prefer it over the path-not-found
-                // message, which describes the symptom rather than the cause. (Issue #153.)
-                var missingOutput = DescribeMissingOutputFailure(errorBuilder.ToString());
-                if (missingOutput != null) throw new InvalidOperationException(missingOutput);
-
-                throw new FileNotFoundException($"Subtitle file not found at expected location: {tempSrtPath}");
+                throw new InvalidOperationException(
+                    "Whisper executable not found. Please install whisper.cpp and ensure 'whisper-cli' is in PATH, or set the binary path in plugin settings.");
             }
-            finally
+
+            var langPrompt = GetLanguagePrompt(language);
+
+            var startInfo = new ProcessStartInfo
             {
-                if (File.Exists(tempSrtPath))
-                {
-                    try { File.Delete(tempSrtPath); }
-                    catch { }
-                }
+                FileName = whisperExecutable,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WorkingDirectory = Path.GetDirectoryName(whisperExecutable) ?? ""
+            };
+
+            // Resolve whether VAD applies (requested + model configured + present on disk). The
+            // rule lives in the pure ShouldUseVad helper so "applyVad:false suppresses VAD even
+            // with a model present" — the invariant forced chunks rely on — is unit-testable.
+            // (Issue #95.)
+            var vadModelExists = !string.IsNullOrEmpty(_vadModelPath) && File.Exists(_vadModelPath);
+            var useVad = ShouldUseVad(applyVad, _vadModelPath, vadModelExists);
+            foreach (var arg in BuildTranscribeArguments(
+                _modelPath, audioPath, language, _threadCount, translate,
+                useVad ? _vadModelPath : null, tempOutputPrefix, langPrompt, _vadTuning, _maxLineLength))
+            {
+                startInfo.ArgumentList.Add(arg);
             }
+
+            AppendCustomArgs(startInfo);
+
+            return await SrtProcessRunner.RunAsync(
+                _logger,
+                startInfo,
+                "Whisper",
+                tempSrtPath,
+                Path.ChangeExtension(audioPath, ".srt"),
+                (exitCode, stderr) =>
+                {
+                    var failure = DescribeWhisperExitFailure(exitCode, stderr);
+                    return failure != null
+                        ? new WhisperLaunchException(exitCode, failure)
+                        : new InvalidOperationException($"Whisper process failed with exit code {exitCode}. Error: {stderr}");
+                },
+                DescribeMissingOutputFailure,
+                cancellationToken);
         }
 
         public async Task<(string Language, float Probability)> DetectLanguageAsync(string audioPath, CancellationToken cancellationToken)
@@ -924,14 +838,17 @@ namespace WhisperSubs.Providers
             }
         }
 
-        // Anchored to whisper.cpp's own progress emitters so an unrelated stderr line that merely
+        // Anchored to each engine's own progress emitter so an unrelated stderr line that merely
         // contains "progress = N%" can't be misread as progress (and thereby silently skipped from the
-        // warning log). Both the whisper_print_progress_callback and whisper_full_with_state forms seen
-        // across builds begin with a "whisper_" token, hence the family anchor.
+        // warning log). Two alternatives, both anchored at the line start:
+        //  - whisper.cpp: the whisper_print_progress_callback and whisper_full_with_state forms seen
+        //    across builds both begin with a "whisper_" token, hence the family anchor.
+        //  - crispasr's Canary backend: "crispasr: progress =  11% (1/9 slices)", matched with its
+        //    slice counter so only that exact emitter qualifies.
         // Compiled (unlike the file's other inline regexes) because this one runs once per stderr
         // line for the whole transcription — the only regex on that hot path.
         private static readonly Regex ProgressRegex = new(
-            @"^\s*whisper_\S*:\s*progress\s*=\s*(\d+)%",
+            @"^\s*(?:whisper_\S*:\s*progress\s*=\s*(?<pct>\d+)%|crispasr:\s*progress\s*=\s*(?<pct>\d+)%\s*\(\d+/\d+\s+slices\))",
             RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
         /// <summary>
@@ -945,7 +862,7 @@ namespace WhisperSubs.Providers
             if (string.IsNullOrEmpty(line)) return false;
             var m = ProgressRegex.Match(line);
             return m.Success
-                && int.TryParse(m.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out pct);
+                && int.TryParse(m.Groups["pct"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out pct);
         }
 
         internal void AppendCustomArgs(ProcessStartInfo startInfo)
