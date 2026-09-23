@@ -259,7 +259,10 @@ As shipped:
   fields together, with `CanTranslate` false for a transcribe-only row.
 - An OpenAI-dialect row never advertises a Canary target, even if a hand-edited config lists one.
 - The local worker advertises `{"en"}` plus the configured targets when crispasr and the Canary
-  model are installed, and carries a `CanaryProvider` next to its whisper provider for them.
+  model are installed, and carries a `CanaryProvider` next to its whisper provider for them. Both
+  are live, not fixed when the pool is built: the targets come from the current configuration and a
+  cached install check each time the pool asks, because the pool is rebuilt only at an idle session
+  start, and a long sweep kept a freshly installed engine unusable for hours.
 - A CrispASR row whose targets do not list `en` never takes a whole-item job, with translation on
   or off, in any mode. It serves only the Canary-target jobs it lists. The first version filtered
   on `en` only when translation was possible, so with translation off such a row took ordinary

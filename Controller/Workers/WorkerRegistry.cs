@@ -70,23 +70,17 @@ namespace WhisperSubs.Controller.Workers
 
             // Add the host's own local whisper unless the plan says otherwise. The fallback guarantees the
             // pool is never empty (e.g. an explicit list of all-disabled/blank workers with local off).
-            if (plan.AddLocal || workers.Count == 0)
+            if (WorkerPlan.IncludesLocal(plan.AddLocal, workers.Count))
             {
-                // English is whisper-cli's translate task. The configured Canary targets join the local
-                // worker's capabilities only when crispasr and the Canary model are installed, served by a
-                // CanaryProvider next to the whisper provider.
-                var canary = NormalizedTargets(config).Count > 0
-                    ? SubtitleProviderFactory.CreateCanary(config, loggerFactory.CreateLogger<CanaryProvider>())
-                    : null;
-                workers.Add(new TranscriptionWorker(
-                    "local", "Local (this server)",
+                // English is whisper-cli's translate task. The configured Canary targets are live: read from
+                // the current configuration and install state each time the pool asks, so installing the
+                // engine or ticking a target works without waiting for the pool to be rebuilt.
+                var canaryLogger = loggerFactory.CreateLogger<CanaryProvider>();
+                workers.Add(new LocalTranscriptionWorker(
                     SubtitleProviderFactory.CreateLocal(config, loggerFactory),
-                    new WorkerCapabilities
-                    {
-                        IsLocal = true, CostWeight = 0, MaxConcurrency = 1,
-                        TranslateTargets = WorkerTargets.ForLocal(config.TranslationTargetLanguages, canary != null),
-                    },
-                    canary));
+                    () => Plugin.Instance?.Configuration ?? config,
+                    CanaryInstall,
+                    current => NormalizedTargets(current).Count > 0 ? SubtitleProviderFactory.CreateCanary(current, canaryLogger) : null));
             }
 
             return workers;
@@ -115,6 +109,9 @@ namespace WhisperSubs.Controller.Workers
                 TranscribesItems = WorkerTargets.TranscribesItems(dialect, translateTargets),
             });
         }
+
+        /// <summary>Shared across pool rebuilds so the cached install verdict survives them.</summary>
+        private static readonly CanaryInstallCheck CanaryInstall = new();
 
         private static List<string> NormalizedTargets(PluginConfiguration config)
             => SubtitleManager.NormalizeTranslationTargets(config.TranslationTargetLanguages);

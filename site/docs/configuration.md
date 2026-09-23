@@ -134,7 +134,7 @@ Per title and per language, the pass skips instead of translating when:
 - The plugin already wrote a translated subtitle in that language.
 - A usable subtitle in that language exists and **Skip media that already has subtitles** is on.
 
-If the audio is English and no engine can make the language, a title you generate by hand fails that language with an error that says why: nothing is installed, or crispasr is installed but this server is not a worker in the pool. An engine is the local crispasr binary and Canary model together, or a worker that lists the language, as described in [Remote workers](./remote-workers.md#crispasr-server-workers). No file is written for a language that fails or skips.
+If the audio is English and no engine can make the language, a title you generate by hand fails that language with an error that says why: nothing is installed, **Also use this server as a worker** is off, or a single Remote API URL keeps this server out of the pool. An engine is the local crispasr binary and Canary model together, or a worker that lists the language, as described in [Remote workers](./remote-workers.md#crispasr-server-workers). No file is written for a language that fails or skips.
 
 The scheduled task treats an English title as finished only when every checked language has its subtitle, so adding a language gets picked up by the next automatic run. Changing the list also clears the skip cache. A checked language that no engine can make is left out of each automatic run, with one warning in the log naming it, so it never fails your English titles. Installing the engine clears the skip cache and the next run picks those titles up.
 

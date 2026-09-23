@@ -250,7 +250,7 @@ public class TranslationTargetsTests
         Func<string, bool>? owned = null,
         Func<string, bool>? usable = null,
         bool force = false,
-        bool installedHere = false,
+        LocalCanaryState localCanary = LocalCanaryState.NotInstalled,
         bool skipUnserved = false)
         => SubtitleManager.PlanTranslationTargets(
             targets,
@@ -260,7 +260,7 @@ public class TranslationTargetsTests
             owned ?? (_ => false),
             usable ?? (_ => false),
             force,
-            installedHere,
+            localCanary,
             skipUnserved);
 
     [Fact]
@@ -351,11 +351,11 @@ public class TranslationTargetsTests
     }
 
     [Fact]
-    public void Plan_InstalledHereButNotAWorker_FailureSaysSo()
+    public void Plan_InstalledButLocalWorkerOff_FailureSaysSo()
     {
-        var plan = Assert.Single(Plan(new[] { "nl" }, canary: false, installedHere: true));
+        var plan = Assert.Single(Plan(new[] { "nl" }, canary: false, localCanary: LocalCanaryState.LocalWorkerOff));
         var message = SubtitleManager.TargetFailureMessage(plan, "A Title");
-        Assert.Contains("this server is not a worker in the pool", message);
+        Assert.Contains("\"Also use this server as a worker\" is off", message);
         Assert.DoesNotContain("not installed", message);
     }
 
