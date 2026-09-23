@@ -14,6 +14,10 @@ Pooled workers are currently assumed healthy; a slow or unreachable worker is on
 
 Cost-weighted routing already prefers free local workers and only "bursts" to a worker with a non-zero cost weight when the local ones are saturated. Build first-class cloud-burst ergonomics on top of that — managed cloud endpoints and spend caps — so a homelab can spill over to a paid API during a big catch-up run without hand-configuring each endpoint.
 
+### Non-English translation targets (CrispASR + Canary)
+
+Whisper only translates into English. NVIDIA Canary-1B-v2 translates English audio into 24 European languages, and CrispASR runs it with whisper-cli's flags and an OpenAI-compatible server mode. Add those 24 targets next to "English" for titles with English audio, keeping Whisper for the English pass and text-to-text translation out of scope. Design: [docs/design/crispasr-translation-engine.md](docs/design/crispasr-translation-engine.md). Tracks #38 and #41.
+
 ### Parakeet Provider
 
 NVIDIA Parakeet integration for GPU-accelerated transcription.
