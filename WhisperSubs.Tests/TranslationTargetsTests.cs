@@ -156,7 +156,9 @@ public class TranslationTargetsTests
         bool canary = true,
         Func<string, bool>? owned = null,
         Func<string, bool>? usable = null,
-        bool force = false)
+        bool force = false,
+        bool installedHere = false,
+        bool skipUnserved = false)
         => SubtitleManager.PlanTranslationTargets(
             targets,
             new HashSet<string>(audio ?? new[] { "en" }, StringComparer.OrdinalIgnoreCase),
@@ -164,7 +166,9 @@ public class TranslationTargetsTests
             _ => canary,
             owned ?? (_ => false),
             usable ?? (_ => false),
-            force);
+            force,
+            installedHere,
+            skipUnserved);
 
     [Fact]
     public void Plan_NoTargets_PlansNothing()
@@ -233,6 +237,33 @@ public class TranslationTargetsTests
         Assert.Equal(TranslationEngine.EngineMissing, plan.Route.Engine);
         Assert.Equal(SubtitleManager.GenerationOutcome.Failed, SubtitleManager.PlannedOutcome(plan));
         Assert.Contains("not installed", SubtitleManager.TargetFailureMessage(plan, "A Title"));
+    }
+
+    // The scheduled sweep skips a target nobody can serve (it warns once per run); an explicit request
+    // keeps failing it, so the admin sees why nothing was made.
+    [Fact]
+    public void Plan_CanaryMissing_OnTheSweep_IsSkippedNotFailed()
+    {
+        var sweep = Assert.Single(Plan(new[] { "nl" }, canary: false, skipUnserved: true));
+        Assert.Equal(TranslationEngine.EngineMissing, sweep.Route.Engine);
+        Assert.Equal(SubtitleManager.GenerationOutcome.Skipped, SubtitleManager.PlannedOutcome(sweep));
+        Assert.Contains("not installed", sweep.SkipReason);
+
+        var manual = Assert.Single(Plan(new[] { "nl" }, canary: false, skipUnserved: false));
+        Assert.Equal(SubtitleManager.GenerationOutcome.Failed, SubtitleManager.PlannedOutcome(manual));
+
+        // Only a missing engine is skipped: config corruption still fails on the sweep.
+        var corrupt = Assert.Single(Plan(new[] { "xx" }, skipUnserved: true));
+        Assert.Equal(SubtitleManager.GenerationOutcome.Failed, SubtitleManager.PlannedOutcome(corrupt));
+    }
+
+    [Fact]
+    public void Plan_InstalledHereButNotAWorker_FailureSaysSo()
+    {
+        var plan = Assert.Single(Plan(new[] { "nl" }, canary: false, installedHere: true));
+        var message = SubtitleManager.TargetFailureMessage(plan, "A Title");
+        Assert.Contains("this server is not a worker in the pool", message);
+        Assert.DoesNotContain("not installed", message);
     }
 
     // A target outside the catalog is config corruption: it fails even for English audio.

@@ -203,8 +203,15 @@ namespace WhisperSubs.ScheduledTasks
             // unchanged, already-satisfied items. Keyed on the item change token (DateLastSaved) + a
             // settings signature; persisted in the finally below so an interrupted run keeps the
             // progress it made (each entry is independently valid — no global high-water mark).
+            // Targets no engine can serve (nothing installed, or this server is not a pool worker) are
+            // named once here and left out of the completeness gate and the pass, so they never fail
+            // every English title on every run. The pool was built at the start of this run.
+            var unservedTargets = needsTranslation && translationTargets.Count > 0
+                ? SubtitleManager.WarnUnservedTargets(translationTargets, t => pool.HasCapableWorker(WorkerJob.ForTarget(t)), _logger)
+                : Array.Empty<string>();
+
             var cachePath = SubtitleSkipCache.DefaultPath();
-            var cacheSignature = SubtitleSkipCache.ComputeSignature(config);
+            var cacheSignature = SubtitleSkipCache.ComputeSignature(config, unservedTargets);
             var skipCache = (config.CacheSkippedItems && !string.IsNullOrEmpty(cachePath))
                 ? SubtitleSkipCache.Load(cachePath, cacheSignature, _logger)
                 : null;
@@ -422,7 +429,8 @@ namespace WhisperSubs.ScheduledTasks
                                     target => config.SkipIfSubtitleExists && SubtitleInventory.HasUsableSubtitle(
                                         streams, target,
                                         ignoreForced: config.IgnoreForcedSubtitles,
-                                        requireText: !config.CountImageSubtitlesAsPresent));
+                                        requireText: !config.CountImageSubtitlesAsPresent),
+                                    target => !unservedTargets.Contains(target));
                             }
                         }
 
@@ -586,12 +594,12 @@ namespace WhisperSubs.ScheduledTasks
                 {
                     if (config.PauseOnPlayback)
                     {
-                        await TranscribeWithPlaybackMonitorAsync(manager, item, lease.Worker.Provider, new PoolTargetEngines(pool, lease), language, cancellationToken);
+                        await TranscribeWithPlaybackMonitorAsync(manager, item, lease.Worker.Provider, new PoolTargetEngines(pool, lease, skipUnservedTargets: true), language, cancellationToken);
                     }
                     else
                     {
                         await manager.GenerateSubtitleAsync(item, lease.Worker.Provider, language, cancellationToken,
-                            targetEngines: new PoolTargetEngines(pool, lease));
+                            targetEngines: new PoolTargetEngines(pool, lease, skipUnservedTargets: true));
                     }
                     CountSweptItem();
                 }

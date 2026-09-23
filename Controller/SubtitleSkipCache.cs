@@ -72,7 +72,7 @@ namespace WhisperSubs.Controller
         /// hence which items read as already-satisfied. The ordered extra translation targets are included
         /// too, so adding, removing or reordering one invalidates cached skips. (Issue #110; guards #82/#83.)
         /// </summary>
-        public static string ComputeSignature(PluginConfiguration c)
+        public static string ComputeSignature(PluginConfiguration c, IReadOnlyCollection<string>? unservedTargets = null)
         {
             var signature = string.Join(
                 "|",
@@ -92,7 +92,15 @@ namespace WhisperSubs.Controller
             // list must drop cached skips. Appended only when non-empty: with no targets the signature is
             // byte-identical to the one an existing install persisted, so upgrading keeps its cache.
             var targets = SubtitleManager.NormalizeTranslationTargets(c.TranslationTargetLanguages);
-            return targets.Count == 0 ? signature : signature + "|targets=" + string.Join(",", targets);
+            if (targets.Count == 0) return signature;
+            signature += "|targets=" + string.Join(",", targets);
+
+            // A target no engine serves does not hold titles back, so titles get cached as complete without
+            // it. Installing the engine later must drop those entries, or the cache would hide the titles
+            // from the new target until the backstop expires. Appended only when some target is unserved.
+            return unservedTargets == null || unservedTargets.Count == 0
+                ? signature
+                : signature + "|unserved=" + string.Join(",", unservedTargets);
         }
 
         /// <summary>

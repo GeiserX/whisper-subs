@@ -84,7 +84,13 @@ configured target. The shipped split is:
   passes all skip succeeds with nothing generated, for example a Spanish title that already has an
   English subtitle.
 - `EngineMissing` fails that target with a per-item error naming the engine: English audio, a valid
-  target, and neither a local crispasr install nor a worker that lists the target.
+  target, and neither a local crispasr install nor a worker that lists the target. The error says
+  "not installed" only when nothing is installed; when crispasr is installed but this server is not
+  a worker in the pool (a single legacy remote URL, or the local worker turned off), it says that
+  instead, because installing again would not help. This failure is for an explicit request. The
+  scheduled sweep skips such a target and warns once per run naming it, because failing it would
+  fail every English title on every run while the settings page allows a target with nothing
+  installed.
 - `Unsupported` stays an error, because a target outside the list means the configuration is corrupt.
 
 A skip reason found first (the audio is already in the target, a translated subtitle for it exists,
@@ -216,9 +222,12 @@ back for a new target. With targets configured, a title whose audio is English (
 stream tags, no FFprobe) is done only when every target has an owned translated file in that
 language, a usable subtitle in it, or audio already in it. A title whose audio is not English, or
 is untagged, is complete for the targets: the pass skips it anyway, and treating untagged audio as
-incomplete would re-run the language probe on it every sweep. The ordered target list is part of
-the skip-cache signature, appended only when non-empty so an install without targets keeps its
-cache on upgrade.
+incomplete would re-run the language probe on it every sweep. A target no engine can serve does
+not count toward incompleteness either: the sweep asks the pool once per run which targets some
+worker lists, logs one warning naming the rest, and leaves them out of both the gate and the pass.
+The ordered target list is part of the skip-cache signature, appended only when non-empty so an
+install without targets keeps its cache on upgrade. The unserved targets are appended too, only
+when there are any, so installing the engine drops the entries cached while a target was unserved.
 
 ### Worker pool
 

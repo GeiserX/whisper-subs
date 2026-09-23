@@ -52,6 +52,23 @@ public class TranslationRouteTests
         Assert.Equal(TranslationEngine.EngineMissing, decision.Engine);
         Assert.Contains("not installed", decision.Reason);
         Assert.Contains("CrispASR worker", decision.Reason);
+        Assert.DoesNotContain("not a worker", decision.Reason);
+    }
+
+    // Installed here, but no pool worker lists the target (a legacy single remote URL, or the local
+    // worker turned off): installing again would not help, so the reason must say what would.
+    [Fact]
+    public void EnglishAudio_CanaryInstalledButServerNotAWorker_SaysSo()
+    {
+        var decision = TranslationRoute.Decide("en", "nl", canaryAvailable: false, canaryInstalledHere: true);
+        Assert.Equal(TranslationEngine.EngineMissing, decision.Engine);
+        Assert.Contains("installed on this server, but this server is not a worker in the pool", decision.Reason);
+        Assert.Contains("Also use this server as a worker", decision.Reason);
+        Assert.Contains("CrispASR server row that lists 'nl'", decision.Reason);
+        Assert.DoesNotContain("not installed", decision.Reason);
+
+        // An available engine wins whatever the local install says.
+        Assert.Equal(TranslationEngine.Canary, TranslationRoute.Decide("en", "nl", canaryAvailable: true, canaryInstalledHere: true).Engine);
     }
 
     // A non-English source to a non-English target is the pair the spike showed failing silently.

@@ -417,14 +417,18 @@ namespace WhisperSubs.Controller
         /// subtitle in that language or a usable subtitle in it (a target its audio is already in counts as
         /// done). A title whose audio is not English, or is untagged, is complete with respect to the
         /// targets by definition: the translation pass skips them for such audio, and treating untagged
-        /// audio as incomplete would re-run the language probe on it every sweep.
+        /// audio as incomplete would re-run the language probe on it every sweep. A target no engine can
+        /// serve (<paramref name="engineAvailable"/> false) does not count either: the sweep could not
+        /// produce it, so holding titles back for it would only re-run them every sweep. The sweep warns
+        /// about such targets once per run (<see cref="WarnUnservedTargets"/>).
         /// </summary>
         internal static bool IsTranslationComplete(
             bool englishDone,
             IReadOnlyList<string> targets,
             IEnumerable<string?> audioLanguages,
             Func<string, bool> hasOwnedTranslation,
-            Func<string, bool> hasUsableSubtitle)
+            Func<string, bool> hasUsableSubtitle,
+            Func<string, bool> engineAvailable)
         {
             if (!englishDone) return false;
             if (targets.Count == 0) return true;
@@ -439,10 +443,30 @@ namespace WhisperSubs.Controller
 
             foreach (var target in targets)
             {
+                if (!engineAvailable(target)) continue;
                 if (audio.Contains(target) || hasOwnedTranslation(target) || hasUsableSubtitle(target)) continue;
                 return false;
             }
             return true;
+        }
+
+        /// <summary>
+        /// The configured targets no engine can serve, logged as one warning naming all of them. The sweep
+        /// calls it once before its item loop, so the cause shows once per run, not once per item. Returns
+        /// the unserved targets in config order (empty when every target is served, with nothing logged).
+        /// </summary>
+        internal static IReadOnlyList<string> WarnUnservedTargets(
+            IReadOnlyList<string> targets, Func<string, bool> engineAvailable, ILogger logger)
+        {
+            var unserved = targets.Where(t => !engineAvailable(t)).ToList();
+            if (unserved.Count > 0)
+            {
+                logger.LogWarning(
+                    "No engine can serve the translation target(s) {Targets}, so this scheduled run leaves them out: titles are not held back for them and nothing is written in them. " +
+                    "Install crispasr and the Canary model on the settings page, turn on \"Also use this server as a worker\" if you use remote workers, or add a CrispASR server row that lists them.",
+                    string.Join(", ", unserved));
+            }
+            return unserved;
         }
 
         /// <summary>
@@ -891,7 +915,9 @@ namespace WhisperSubs.Controller
                 engines.CanServe,
                 HasOwned,
                 HasUsable,
-                force);
+                force,
+                canaryInstalledHere: SubtitleProviderFactory.IsCanaryInstalled(config.CrispAsrBinaryPath, config.CanaryModelPath, File.Exists),
+                skipUnserved: engines.SkipUnservedTargets);
 
             // englishAudioPath is set only once a complete extraction exists, so every target reuses it.
             // tempAudioPath is named before FFmpeg starts, so the finally below also deletes a partial
@@ -1051,6 +1077,9 @@ namespace WhisperSubs.Controller
         /// usable subtitle in it exists (bypassed by <paramref name="force"/>), or when the audio is not
         /// English (<see cref="TranslationEngine.SkipSourceNotEnglish"/>); otherwise the target carries its
         /// <see cref="TranslationRoute"/> decision, and an EngineMissing or Unsupported route fails.
+        /// With <paramref name="skipUnserved"/> (the scheduled sweep) an EngineMissing target is skipped
+        /// instead: the sweep warns about it once per run, and failing it would fail every English title on
+        /// every run. An explicit request keeps the failure, so it says why nothing was made.
         /// Pure: the filesystem and stream checks come in as predicates.
         /// </summary>
         internal static IReadOnlyList<TranslationTargetPlan> PlanTranslationTargets(
@@ -1060,12 +1089,14 @@ namespace WhisperSubs.Controller
             Func<string, bool> engineAvailable,
             Func<string, bool> hasOwnedTranslation,
             Func<string, bool> hasUsableSubtitle,
-            bool force)
+            bool force,
+            bool canaryInstalledHere = false,
+            bool skipUnserved = false)
         {
             var plans = new List<TranslationTargetPlan>(targets.Count);
             foreach (var target in targets)
             {
-                var route = TranslationRoute.Decide(sourceLanguage, target, engineAvailable(target));
+                var route = TranslationRoute.Decide(sourceLanguage, target, engineAvailable(target), canaryInstalledHere);
                 string? skip = null;
                 if (audioLanguages.Contains(target))
                 {
@@ -1082,6 +1113,10 @@ namespace WhisperSubs.Controller
                 else if (route.Engine == TranslationEngine.SkipSourceNotEnglish)
                 {
                     // Most of a library is not English audio. That is not a fault: skip, never fail.
+                    skip = route.Reason;
+                }
+                else if (skipUnserved && route.Engine == TranslationEngine.EngineMissing)
+                {
                     skip = route.Reason;
                 }
                 plans.Add(new TranslationTargetPlan(target, route, skip));

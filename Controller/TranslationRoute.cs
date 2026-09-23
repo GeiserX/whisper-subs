@@ -47,7 +47,13 @@ namespace WhisperSubs.Controller
     /// </summary>
     public static class TranslationRoute
     {
-        public static TranslationRouteDecision Decide(string? sourceLanguage, string? targetLanguage, bool canaryAvailable)
+        /// <param name="canaryAvailable">Some engine can serve the target: a local install that is in the
+        /// pool, or a worker that lists it.</param>
+        /// <param name="canaryInstalledHere">crispasr and the Canary model are installed on this server. Only
+        /// changes the reason when <paramref name="canaryAvailable"/> is false: the install exists, but this
+        /// server is not a worker in the pool, so installing again would not help.</param>
+        public static TranslationRouteDecision Decide(
+            string? sourceLanguage, string? targetLanguage, bool canaryAvailable, bool canaryInstalledHere = false)
         {
             var target = (targetLanguage ?? "").Trim();
             var source = (sourceLanguage ?? "").Trim();
@@ -78,6 +84,12 @@ namespace WhisperSubs.Controller
             {
                 return new(TranslationEngine.SkipSourceNotEnglish,
                     $"The audio is '{source}'. A '{target}' subtitle can only be made from English audio; other languages translate to English only.");
+            }
+
+            if (!canaryAvailable && canaryInstalledHere)
+            {
+                return new(TranslationEngine.EngineMissing,
+                    $"A '{target}' subtitle needs the Canary engine. It is installed on this server, but this server is not a worker in the pool. Turn on \"Also use this server as a worker\" under Worker Pool, or add a CrispASR server row that lists '{target}'. A single Remote API URL never uses this server, so add that server as a worker row instead.");
             }
 
             if (!canaryAvailable)

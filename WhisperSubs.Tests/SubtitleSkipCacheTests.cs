@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using Microsoft.Extensions.Logging;
+using Moq;
 using WhisperSubs.Configuration;
 using WhisperSubs.Controller;
 using Xunit;
@@ -160,8 +162,9 @@ public class SubtitleSkipCacheTests
     // ── Translation targets in the completeness gate ──────────────────────────
 
     private static bool TranslationDone(
-        bool englishDone, string[] targets, string?[] audio, Func<string, bool>? owned = null, Func<string, bool>? usable = null)
-        => SubtitleManager.IsTranslationComplete(englishDone, targets, audio, owned ?? (_ => false), usable ?? (_ => false));
+        bool englishDone, string[] targets, string?[] audio, Func<string, bool>? owned = null, Func<string, bool>? usable = null,
+        Func<string, bool>? engine = null)
+        => SubtitleManager.IsTranslationComplete(englishDone, targets, audio, owned ?? (_ => false), usable ?? (_ => false), engine ?? (_ => true));
 
     [Fact]
     public void TranslationComplete_NoTargets_IsTheEnglishRuleAlone()
@@ -200,6 +203,54 @@ public class SubtitleSkipCacheTests
     public void TranslationComplete_TargetAlreadyInTheAudio_IsDone()
     {
         Assert.True(TranslationDone(true, new[] { "es" }, new string?[] { "eng", "spa" }));
+    }
+
+    // A target nobody can serve must not hold an English title back: the sweep could never produce
+    // it, so the title would be re-run (and fail) on every scheduled run. With an engine it counts.
+    [Fact]
+    public void TranslationComplete_TargetNoEngineServes_DoesNotHoldTheTitleBack()
+    {
+        Assert.True(TranslationDone(true, new[] { "nl" }, new string?[] { "eng" }, engine: _ => false));
+        Assert.False(TranslationDone(true, new[] { "nl" }, new string?[] { "eng" }, engine: _ => true));
+        // Only the unserved target is left out; a served one still counts.
+        Assert.False(TranslationDone(true, new[] { "nl", "de" }, new string?[] { "eng" }, engine: t => t == "de"));
+    }
+
+    [Fact]
+    public void WarnUnservedTargets_LogsOneWarningNamingEveryUnservedTarget()
+    {
+        var logger = new Mock<ILogger>();
+        var unserved = SubtitleManager.WarnUnservedTargets(new[] { "nl", "fr", "de" }, t => t == "fr", logger.Object);
+
+        Assert.Equal(new[] { "nl", "de" }, unserved);
+        logger.Verify(l => l.Log(
+            LogLevel.Warning, It.IsAny<EventId>(),
+            It.Is<It.IsAnyType>((v, _) => v.ToString()!.Contains("nl, de")),
+            It.IsAny<Exception?>(), It.IsAny<Func<It.IsAnyType, Exception?, string>>()), Times.Once);
+        Assert.Single(logger.Invocations);
+    }
+
+    [Fact]
+    public void WarnUnservedTargets_EveryTargetServed_LogsNothing()
+    {
+        var logger = new Mock<ILogger>();
+        Assert.Empty(SubtitleManager.WarnUnservedTargets(new[] { "nl", "de" }, _ => true, logger.Object));
+        Assert.Empty(logger.Invocations);
+    }
+
+    // Titles get cached as complete while a target is unserved; installing the engine must drop them.
+    [Fact]
+    public void Signature_Changes_WhenATargetIsUnserved()
+    {
+        var c = BaseConfig();
+        c.TranslationTargetLanguages = new List<string> { "nl", "de" };
+        var served = SubtitleSkipCache.ComputeSignature(c);
+
+        Assert.Equal(served, SubtitleSkipCache.ComputeSignature(c, Array.Empty<string>()));
+        Assert.NotEqual(served, SubtitleSkipCache.ComputeSignature(c, new[] { "nl" }));
+        Assert.NotEqual(SubtitleSkipCache.ComputeSignature(c, new[] { "nl" }), SubtitleSkipCache.ComputeSignature(c, new[] { "nl", "de" }));
+        // No targets: the signature an existing install persisted, whatever is passed.
+        Assert.Equal(SubtitleSkipCache.ComputeSignature(BaseConfig()), SubtitleSkipCache.ComputeSignature(BaseConfig(), new[] { "nl" }));
     }
 
     // Jellyfin reports the raw tag; "bul" must count as the audio already being in the "bg" target.

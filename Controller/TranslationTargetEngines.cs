@@ -38,6 +38,12 @@ namespace WhisperSubs.Controller
         /// <summary>True when some engine can ever serve <paramref name="target"/> (it may be busy).</summary>
         bool CanServe(string target);
 
+        /// <summary>
+        /// True for the scheduled sweep: a target no engine serves is skipped, because the sweep warns about
+        /// it once per run. False for an explicit request, which fails that target with the reason.
+        /// </summary>
+        bool SkipUnservedTargets { get; }
+
         /// <summary>An engine for <paramref name="target"/>. Throws when none can be had for this item.</summary>
         Task<TargetEngineLease> AcquireAsync(string target, string itemName, CancellationToken cancellationToken);
     }
@@ -53,11 +59,14 @@ namespace WhisperSubs.Controller
         private readonly WorkerPool _pool;
         private readonly WorkerLease _lease;
 
-        public PoolTargetEngines(WorkerPool pool, WorkerLease lease)
+        public PoolTargetEngines(WorkerPool pool, WorkerLease lease, bool skipUnservedTargets = false)
         {
             _pool = pool;
             _lease = lease;
+            SkipUnservedTargets = skipUnservedTargets;
         }
+
+        public bool SkipUnservedTargets { get; }
 
         public bool CanServe(string target) => _pool.HasCapableWorker(WorkerJob.ForTarget(target));
 
@@ -101,6 +110,8 @@ namespace WhisperSubs.Controller
         }
 
         public bool CanServe(string target) => _canary != null && CanaryCatalog.IsTarget(target);
+
+        public bool SkipUnservedTargets => false;
 
         public Task<TargetEngineLease> AcquireAsync(string target, string itemName, CancellationToken cancellationToken)
             => _canary != null
