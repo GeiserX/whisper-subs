@@ -179,17 +179,6 @@ namespace WhisperSubs.Controller.Workers
         }
 
         /// <summary>
-        /// True if ANY worker could serve <paramref name="job"/>'s hard requirements ignoring current load —
-        /// i.e. a capable worker exists (maybe busy). The dispatcher checks this before <see cref="AcquireAsync"/>
-        /// so a job no worker can EVER serve is failed fast instead of blocking a slot forever.
-        /// <para>
-        /// Deliberately ignores availability: this answers "is the CONFIG able to serve this job", whose only
-        /// cure is an admin edit, so it stays the fail-fast-and-drop signal it has always been. A worker that
-        /// is merely out of rotation is a temporary fault the items should WAIT for — that is
-        /// <see cref="HasAvailableWorker"/>. (Issue #185.)
-        /// </para>
-        /// </summary>
-        /// <summary>
         /// Whether the running pool holds the host's own worker. The composition is fixed when the pool is
         /// built, so this can differ from what the current settings would build until the next rebuild.
         /// </summary>
@@ -208,6 +197,17 @@ namespace WhisperSubs.Controller.Workers
             }
         }
 
+        /// <summary>
+        /// True if ANY worker could serve <paramref name="job"/>'s hard requirements ignoring current load —
+        /// i.e. a capable worker exists (maybe busy). The dispatcher checks this before <see cref="AcquireAsync"/>
+        /// so a job no worker can EVER serve is failed fast instead of blocking a slot forever.
+        /// <para>
+        /// Deliberately ignores availability: this answers "is the CONFIG able to serve this job", whose only
+        /// cure is an admin edit, so it stays the fail-fast-and-drop signal it has always been. A worker that
+        /// is merely out of rotation is a temporary fault the items should WAIT for — that is
+        /// <see cref="HasAvailableWorker"/>. (Issue #185.)
+        /// </para>
+        /// </summary>
         public bool HasCapableWorker(JobRequirements job)
         {
             lock (_gate)

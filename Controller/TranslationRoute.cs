@@ -137,14 +137,16 @@ namespace WhisperSubs.Controller
         /// first, then whether the running pool holds this server (<paramref name="localWorkerInPool"/>,
         /// its real composition). Only when it does not do the current settings explain why, through
         /// <see cref="WorkerPlan.HostsLocal"/>, the rule the registry builds from: settings that would now
-        /// include it mean the pool predates the change. Pure.
+        /// include it mean the pool predates the change. Without a pool (<paramref name="localWorkerInPool"/>
+        /// null) the only engine is this server's install as read when the pass began, and it can only have
+        /// failed because the engine was not installed then, even if the files have appeared since. Pure.
         /// </summary>
         public static LocalCanaryState LocalCanary(
-            bool installed, bool localWorkerInPool,
+            bool installed, bool? localWorkerInPool,
             int explicitWorkerCount, int usableExplicitRows, bool hasLegacyRemoteUrl, bool enableLocalWorker)
         {
-            if (!installed) return LocalCanaryState.NotInstalled;
-            if (localWorkerInPool) return LocalCanaryState.InPool;
+            if (!installed || localWorkerInPool is null) return LocalCanaryState.NotInstalled;
+            if (localWorkerInPool.Value) return LocalCanaryState.InPool;
             if (WorkerPlan.HostsLocal(explicitWorkerCount, usableExplicitRows, hasLegacyRemoteUrl, enableLocalWorker)) return LocalCanaryState.PendingPoolRebuild;
             return WorkerPlan.Decide(explicitWorkerCount, hasLegacyRemoteUrl, enableLocalWorker).Source == WorkerSource.LegacyRemote
                 ? LocalCanaryState.LegacyRemoteOnly

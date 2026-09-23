@@ -109,6 +109,23 @@ public class TranslationRouteTests
         Assert.Equal(expected, TranslationRoute.LocalCanary(installed, builtWithLocal, rows, usableRows, legacyUrl, enableLocal));
     }
 
+    // Without a pool (null) the only engine is this server's install as read when the pass began. A
+    // failure there means it was not installed then, even if the files have appeared since; the message
+    // must not mention a pool worker, the local-worker option or a rebuild, none of which exist here.
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public void LocalCanary_NoPool_IsNotInstalledWhateverTheSettings(bool enableLocal, bool legacyUrl)
+    {
+        var state = TranslationRoute.LocalCanary(installed: true, localWorkerInPool: null, 2, 2, legacyUrl, enableLocal);
+        Assert.Equal(LocalCanaryState.NotInstalled, state);
+        var reason = TranslationRoute.Decide("en", "nl", false, state).Reason;
+        Assert.DoesNotContain("pool", reason);
+        Assert.DoesNotContain("is off", reason);
+        Assert.DoesNotContain("Remote API URL", reason);
+    }
+
     // The pool is fixed when built; the settings may have changed since. The running pool wins.
     [Fact]
     public void LocalCanary_RunningPoolWinsOverChangedSettings()
