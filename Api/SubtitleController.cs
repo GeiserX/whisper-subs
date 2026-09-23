@@ -353,7 +353,9 @@ namespace WhisperSubs.Api
                 ApiKey = request.ApiKey ?? "",
                 Model = request.Model ?? "",
                 MaxConcurrency = 1,
-                CostWeight = 0
+                CostWeight = 0,
+                Dialect = request.Dialect ?? "openai",
+                TranslateTargets = request.TranslateTargets ?? new List<string>()
             };
             var (valid, error) = Controller.Workers.WorkerConfigValidation.Validate(worker);
             if (!valid)
@@ -1607,5 +1609,11 @@ namespace WhisperSubs.Api
         public string? ApiUrl { get; set; }
         public string? ApiKey { get; set; }
         public string? Model { get; set; }
+
+        /// <summary>Row dialect (openai or crispasr), validated with the targets before the probe runs.</summary>
+        public string? Dialect { get; set; }
+
+        /// <summary>Row translation targets, validated before the probe runs.</summary>
+        public List<string>? TranslateTargets { get; set; }
     }
 }

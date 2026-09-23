@@ -31,8 +31,27 @@ namespace WhisperSubs.Configuration
         /// <summary>Selection cost: 0 = free/local-priced (preferred); &gt;0 = paid, used only to burst. Default 0.</summary>
         public double CostWeight { get; set; } = 0;
 
-        /// <summary>Whether this worker can translate to English. Default true.</summary>
+        /// <summary>
+        /// Whether this worker can translate to English. Default true. Kept for rows saved before
+        /// <see cref="TranslateTargets"/> existed, and written alongside it (true when the list holds "en")
+        /// so a downgrade still reads a sensible value.
+        /// </summary>
         public bool CanTranslate { get; set; } = true;
+
+        /// <summary>
+        /// Languages this worker translates into: "en" and, for a CrispASR server, Canary target codes.
+        /// An empty list means "derive from <see cref="CanTranslate"/>": that is how a row saved by an older
+        /// version reads, because the XML serializer turns an absent list element into an empty list, so
+        /// "absent" and "empty" cannot be told apart. The config page therefore writes both fields together,
+        /// with <see cref="CanTranslate"/> false for a row that translates nothing.
+        /// </summary>
+        public System.Collections.Generic.List<string> TranslateTargets { get; set; } = new();
+
+        /// <summary>
+        /// Request dialect: <c>openai</c> (default; whisper-server, OpenAI, Groq) or <c>crispasr</c> (a
+        /// <c>crispasr --server</c>, which has no translations route and takes the target as form fields).
+        /// </summary>
+        public string Dialect { get; set; } = "openai";
 
         /// <summary>
         /// Largest upload this endpoint accepts, in bytes. <c>0</c> (default) means unlimited, which is the

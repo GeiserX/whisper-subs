@@ -45,7 +45,8 @@ namespace WhisperSubs.Controller.Workers
                             model: string.IsNullOrWhiteSpace(w.Model) ? config.RemoteWhisperModel : w.Model,
                             maxConcurrency: w.MaxConcurrency,
                             costWeight: w.CostWeight,
-                            canTranslate: w.CanTranslate,
+                            translateTargets: WorkerTargets.ForRow(w),
+                            dialect: w.Dialect,
                             maxUploadBytes: w.MaxUploadBytes,
                             uploadCodec: w.UploadCodec,
                             config: config,
@@ -60,7 +61,8 @@ namespace WhisperSubs.Controller.Workers
                         url: config.RemoteWhisperApiUrl,
                         key: (config.RemoteWhisperApiKey ?? string.Empty).Trim(),
                         model: config.RemoteWhisperModel,
-                        maxConcurrency: 1, costWeight: 0, canTranslate: true,
+                        maxConcurrency: 1, costWeight: 0, translateTargets: WorkerTargets.EnglishOnly,
+                        dialect: WorkerDialect.OpenAi,
                         maxUploadBytes: 0, uploadCodec: null,
                         config: config, loggerFactory: loggerFactory));
                     break;
@@ -70,10 +72,21 @@ namespace WhisperSubs.Controller.Workers
             // pool is never empty (e.g. an explicit list of all-disabled/blank workers with local off).
             if (plan.AddLocal || workers.Count == 0)
             {
+                // English is whisper-cli's translate task. The configured Canary targets join the local
+                // worker's capabilities only when crispasr and the Canary model are installed, served by a
+                // CanaryProvider next to the whisper provider.
+                var canary = NormalizedTargets(config).Count > 0
+                    ? SubtitleProviderFactory.CreateCanary(config, loggerFactory.CreateLogger<CanaryProvider>())
+                    : null;
                 workers.Add(new TranscriptionWorker(
                     "local", "Local (this server)",
                     SubtitleProviderFactory.CreateLocal(config, loggerFactory),
-                    new WorkerCapabilities { IsLocal = true, CostWeight = 0, MaxConcurrency = 1, CanTranslate = true }));
+                    new WorkerCapabilities
+                    {
+                        IsLocal = true, CostWeight = 0, MaxConcurrency = 1,
+                        TranslateTargets = WorkerTargets.ForLocal(config.TranslationTargetLanguages, canary != null),
+                    },
+                    canary));
             }
 
             return workers;
@@ -81,7 +94,7 @@ namespace WhisperSubs.Controller.Workers
 
         private static ITranscriptionWorker BuildRemote(
             string id, string name, string url, string key, string model,
-            int maxConcurrency, double costWeight, bool canTranslate,
+            int maxConcurrency, double costWeight, IReadOnlySet<string> translateTargets, string? dialect,
             long maxUploadBytes, string? uploadCodec,
             PluginConfiguration config, ILoggerFactory loggerFactory)
         {
@@ -90,15 +103,19 @@ namespace WhisperSubs.Controller.Workers
                 loggerFactory.CreateLogger<RemoteWhisperProvider>(),
                 url, resolvedModel, key,
                 config.JobTimeoutRealtimeFactor, config.JobMinTimeoutSeconds, config.JobMaxTimeoutHours,
-                httpClient: null, maxUploadBytes: maxUploadBytes, uploadCodec: uploadCodec);
+                httpClient: null, maxUploadBytes: maxUploadBytes, uploadCodec: uploadCodec,
+                dialect: WorkerDialect.Normalize(dialect));
 
             return new TranscriptionWorker(id, name, provider, new WorkerCapabilities
             {
                 IsLocal = false,
                 CostWeight = costWeight,
                 MaxConcurrency = maxConcurrency < 1 ? 1 : maxConcurrency,
-                CanTranslate = canTranslate
+                TranslateTargets = translateTargets
             });
         }
+
+        private static List<string> NormalizedTargets(PluginConfiguration config)
+            => SubtitleManager.NormalizeTranslationTargets(config.TranslationTargetLanguages);
     }
 }

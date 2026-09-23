@@ -2484,6 +2484,11 @@
                         // Worker pool (v4.0). Fully-blank rows are dropped; numbers are coerced.
                         config.EnableLocalWorker = page.querySelector('#chkEnableLocalWorker').checked;
                         config.Workers = WhisperSubsConfig.collectWorkers(page);
+                        var workerTargetError = WhisperSubsConfig.validateWorkerTargets(config.Workers);
+                        if (workerTargetError) {
+                            Dashboard.alert(workerTargetError);
+                            return;
+                        }
 
                         // Collect enabled libraries from checkboxes
                         var libraryCheckboxes = page.querySelectorAll('.chkLibrary');
@@ -2741,7 +2746,19 @@
                         (w.UploadCodec || 'wav'),
                         'Audio sent to THIS worker. WAV is 1.92 MB per minute, so a 40-minute title is 76.8 MB and exceeds hosted caps. Keep WAV for self-hosted workers (whisper.cpp decodes WAV only); use FLAC or Opus only on a hosted endpoint documented to accept it.'));
 
-                    row.appendChild(WhisperSubsConfig._workerCheckbox('wkTranslate', 'Can translate to English', w.CanTranslate !== false));
+                    row.appendChild(WhisperSubsConfig._workerSelect(
+                        'Dialect', 'wkDialect',
+                        [['openai', 'OpenAI-compatible'], ['crispasr', 'CrispASR server']],
+                        (w.Dialect === 'crispasr' ? 'crispasr' : 'openai'),
+                        'OpenAI-compatible covers whisper-server, OpenAI and Groq. Pick CrispASR server for crispasr --server running the Canary model: it has no translations route, so the plugin sends the target language as form fields.'));
+                    // Rows saved before this field existed carry only CanTranslate: migrate it to "en" or nothing.
+                    var targetsValue = (w.TranslateTargets && w.TranslateTargets.length)
+                        ? w.TranslateTargets.join(', ')
+                        : (w.CanTranslate !== false ? 'en' : '');
+                    row.appendChild(WhisperSubsConfig._workerField(
+                        'Translation targets', 'text', 'wkTargets', { placeholder: 'en', maxlength: '256', spellcheck: 'false' },
+                        targetsValue,
+                        'Comma-separated language codes this worker translates into. en is Whisper translation. Canary codes (nl, de, fr, ...) need the CrispASR dialect. Leave blank for a transcribe-only worker.'));
                     row.appendChild(WhisperSubsConfig._workerCheckbox('wkEnabled', 'Enabled', w.Enabled !== false));
 
                     // Re-check for duplicate endpoints whenever this row's URL or Enabled state changes.
@@ -2872,6 +2889,39 @@
                     return container;
                 },
 
+                // Splits a worker's "Translation targets" field: trimmed, lower-case, no duplicates, input order.
+                // Mirrors WorkerTargets.Parse on the server.
+                parseWorkerTargets: function (raw) {
+                    var out = [];
+                    (raw || '').split(/[,; ]+/).forEach(function (part) {
+                        var code = part.trim().toLowerCase();
+                        if (code && out.indexOf(code) < 0) out.push(code);
+                    });
+                    return out;
+                },
+
+                // Mirrors WorkerConfigValidation's target rules so a bad row is caught before saving: every
+                // code must be en or a Canary target, and only a CrispASR row may list a Canary target. The
+                // catalog comes from the CrispASR status call; when it has not loaded, only the dialect rule
+                // is checked and the server drops unknown codes when it builds the pool.
+                validateWorkerTargets: function (workers) {
+                    var known = WhisperSubsConfig._crispasrTargets
+                        ? ['en'].concat(WhisperSubsConfig._crispasrTargets.map(function (t) { return t.Code; }))
+                        : null;
+                    for (var i = 0; i < workers.length; i++) {
+                        var w = workers[i];
+                        var label = w.Name || w.ApiUrl || ('worker ' + (i + 1));
+                        var unknown = known ? w.TranslateTargets.filter(function (c) { return known.indexOf(c) < 0; }) : [];
+                        if (unknown.length) {
+                            return label + ': unknown translation target(s) ' + unknown.join(', ') + '. Use en and the Canary codes listed under Translation.';
+                        }
+                        if (w.Dialect !== 'crispasr' && w.TranslateTargets.some(function (c) { return c !== 'en'; })) {
+                            return label + ': only a CrispASR server can translate into languages other than en. Set the dialect to CrispASR server or keep only en.';
+                        }
+                    }
+                    return null;
+                },
+
                 // Reads every row into config.Workers, skipping rows the user never filled in and
                 // coercing MaxConcurrency/CostWeight to numbers.
                 collectWorkers: function (page) {
@@ -2886,7 +2936,8 @@
                         var costRaw = (row.querySelector('.wkCost').value || '').trim();
                         var maxUploadRaw = (row.querySelector('.wkMaxUpload').value || '').trim();
                         var uploadCodec = (row.querySelector('.wkUploadCodec').value || 'wav').trim();
-                        var canTranslate = row.querySelector('.wkTranslate').checked;
+                        var dialect = row.querySelector('.wkDialect').value === 'crispasr' ? 'crispasr' : 'openai';
+                        var targets = WhisperSubsConfig.parseWorkerTargets(row.querySelector('.wkTargets').value);
                         var enabled = row.querySelector('.wkEnabled').checked;
 
                         // Skip a row the user never filled in (all text/number fields blank).
@@ -2915,7 +2966,11 @@
                             CostWeight: cost,
                             MaxUploadBytes: maxUploadBytes,
                             UploadCodec: uploadCodec,
-                            CanTranslate: canTranslate
+                            Dialect: dialect,
+                            TranslateTargets: targets,
+                            // Written alongside the list: an empty list reads as "use CanTranslate", so a
+                            // transcribe-only row must say false here, and a downgrade still sees a sane value.
+                            CanTranslate: targets.indexOf('en') >= 0
                         });
                     });
                     return workers;
@@ -2938,7 +2993,11 @@
                     ApiClient.ajax({
                         type: 'POST',
                         url: ApiClient.getUrl('Plugins/WhisperSubs/Workers/TestConnection'),
-                        data: JSON.stringify({ apiUrl: url, apiKey: key, model: model }),
+                        data: JSON.stringify({
+                            apiUrl: url, apiKey: key, model: model,
+                            dialect: row.querySelector('.wkDialect').value,
+                            translateTargets: WhisperSubsConfig.parseWorkerTargets(row.querySelector('.wkTargets').value)
+                        }),
                         contentType: 'application/json',
                         dataType: 'json'
                     }).then(function (response) {

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.IO;
@@ -138,6 +139,7 @@ namespace WhisperSubs.Providers
         private readonly HttpClient _httpClient;
         private readonly long _maxUploadBytes;
         private readonly string _uploadCodec;
+        private readonly string _dialect;
         // Set once a blind (body-didn't-say-so) format retry has been spent for this provider instance.
         // The cached format only fills on SUCCESS, so without this a worker that always 4xxs — e.g. the bare
         // OpenRouter model slug this release's README warns about — would upload the full audio twice on
@@ -158,8 +160,10 @@ namespace WhisperSubs.Providers
         [ExcludeFromCodeCoverage(Justification = "Construction + HTTPS-key warning; no unit-testable logic")]
         public RemoteWhisperProvider(ILogger logger, string apiUrl, string model, string apiKey = "",
             double realtimeFactor = 6.0, int minTimeoutSeconds = 60, int maxTimeoutHours = 12,
-            HttpClient? httpClient = null, long maxUploadBytes = 0, string? uploadCodec = null)
+            HttpClient? httpClient = null, long maxUploadBytes = 0, string? uploadCodec = null,
+            string? dialect = null)
         {
+            _dialect = WorkerDialect.Normalize(dialect);
             _logger = logger;
             _apiUrl = apiUrl.TrimEnd('/');
             _model = model;
@@ -194,21 +198,25 @@ namespace WhisperSubs.Providers
         [ExcludeFromCodeCoverage(Justification = "HTTP I/O; the pure deadline policy is tested in TranscriptionTimeoutTests")]
         public async Task<string> TranscribeAsync(string audioPath, string language, CancellationToken cancellationToken, bool translate = false, string? targetLanguage = null)
         {
-            WhisperProvider.EnsureEnglishTarget(targetLanguage, Name);
+            // Only a CrispASR server takes a non-English target; an OpenAI-compatible endpoint would answer
+            // it with an English subtitle, so that dialect refuses before anything is uploaded.
+            if (_dialect != WorkerDialect.CrispAsr)
+            {
+                WhisperProvider.EnsureEnglishTarget(targetLanguage, Name);
+            }
             if (!File.Exists(audioPath))
             {
                 throw new FileNotFoundException($"Audio file not found: {audioPath}");
             }
 
-            var endpoint = translate
-                ? $"{_apiUrl}/v1/audio/translations"
-                : $"{_apiUrl}/v1/audio/transcriptions";
+            var canaryTarget = CanaryTargetOrNull(translate, targetLanguage);
+            var endpoint = _apiUrl + BuildTranscriptionRequest(_dialect, _model, "srt", language, translate, canaryTarget).Path;
 
             // SanitizeEndpoint, not the raw endpoint: an admin may legitimately paste a key into the URL
             // (Azure-style "?api-version=", proxy "?api_key="), and this line lands in jellyfin.log — the
             // file users paste into public issues.
-            _logger.LogInformation("Sending audio to remote Whisper API: {Endpoint} [lang={Language}, translate={Translate}]",
-                UpstreamErrorSanitizer.SanitizeEndpoint(endpoint), language, translate);
+            _logger.LogInformation("Sending audio to remote Whisper API: {Endpoint} [lang={Language}, translate={Translate}, target={Target}]",
+                UpstreamErrorSanitizer.SanitizeEndpoint(endpoint), language, translate, canaryTarget ?? (translate ? "en" : "-"));
 
             // SOURCE bytes = the extracted 16 kHz mono PCM WAV. Every duration/deadline decision must be
             // derived from THIS, never from whatever we end up uploading: the upload may be a compressed
@@ -235,7 +243,7 @@ namespace WhisperSubs.Providers
                 }
 
                 return await TranscribeUploadAsync(
-                    endpoint, uploadPath, sourceAudioBytes, effectiveCodec, language, translate, cancellationToken)
+                    endpoint, uploadPath, sourceAudioBytes, effectiveCodec, language, translate, canaryTarget, cancellationToken)
                     .ConfigureAwait(false);
             }
             finally
@@ -255,8 +263,11 @@ namespace WhisperSubs.Providers
             string uploadCodec,
             string language,
             bool translate,
+            string? canaryTarget,
             CancellationToken cancellationToken)
         {
+            // A Canary target is a translation too: it shares the translation format cache.
+            translate = translate || canaryTarget != null;
             var cachedResponseFormat = translate
                 ? Volatile.Read(ref _translationResponseFormat)
                 : Volatile.Read(ref _transcriptionResponseFormat);
@@ -272,7 +283,7 @@ namespace WhisperSubs.Providers
             try
             {
                 response = await PostTranscriptionAsync(
-                    endpoint, audioPath, sourceAudioBytes, uploadCodec, language, responseFormat, includeLanguage: !translate, cancellationToken: cancellationToken)
+                    endpoint, audioPath, sourceAudioBytes, uploadCodec, language, responseFormat, translate, canaryTarget, cancellationToken)
                     .ConfigureAwait(false);
             }
             catch (HttpRequestException ex) when (ShouldNegotiateAlternateFormat(ex, formatNotYetNegotiated))
@@ -295,7 +306,7 @@ namespace WhisperSubs.Providers
                 _logger.LogInformation(
                     "Remote API rejected response format; retrying with {ResponseFormat}", responseFormat);
                 response = await PostTranscriptionAsync(
-                    endpoint, audioPath, sourceAudioBytes, uploadCodec, language, responseFormat, includeLanguage: !translate, cancellationToken: cancellationToken)
+                    endpoint, audioPath, sourceAudioBytes, uploadCodec, language, responseFormat, translate, canaryTarget, cancellationToken)
                     .ConfigureAwait(false);
             }
 
@@ -305,17 +316,12 @@ namespace WhisperSubs.Providers
                 _logger.LogInformation(
                     "Remote API returned untimed JSON; retrying with {ResponseFormat}", responseFormat);
                 response = await PostTranscriptionAsync(
-                    endpoint, audioPath, sourceAudioBytes, uploadCodec, language, responseFormat, includeLanguage: !translate, cancellationToken: cancellationToken)
+                    endpoint, audioPath, sourceAudioBytes, uploadCodec, language, responseFormat, translate, canaryTarget, cancellationToken)
                     .ConfigureAwait(false);
             }
 
             var audioDurationSeconds = SourceAudioDurationSeconds(sourceAudioBytes);
-            var srt = ConvertTranscriptionResponseToSrt(response, audioDurationSeconds);
-
-            if (string.IsNullOrWhiteSpace(srt))
-            {
-                throw new InvalidOperationException("Remote Whisper API returned empty response");
-            }
+            var srt = RequireSrtCues(ConvertTranscriptionResponseToSrt(response, audioDurationSeconds), canaryTarget);
 
             if (translate)
             {
@@ -337,7 +343,8 @@ namespace WhisperSubs.Providers
             string uploadCodec,
             string language,
             string responseFormat,
-            bool includeLanguage,
+            bool translate,
+            string? canaryTarget,
             CancellationToken cancellationToken)
         {
             using var content = new MultipartFormDataContent();
@@ -350,25 +357,88 @@ namespace WhisperSubs.Providers
             // file EXTENSION, so a FLAC body called "audio.wav" is rejected or mis-decoded.
             fileContent.Headers.ContentType = new MediaTypeHeaderValue(RemoteUploadFormat.ContentType(uploadCodec));
             content.Add(fileContent, "file", RemoteUploadFormat.FileName(uploadCodec));
-            content.Add(new StringContent(_model), "model");
-            content.Add(new StringContent(responseFormat), "response_format");
-            // NOTE: we deliberately do NOT send timestamp_granularities[]. verbose_json already returns
-            // segment timestamps by default (segment IS the default granularity), and we only ever read
-            // "segments" from the response — never "words". Sending it is therefore redundant for us, and
-            // actively harmful: OpenRouter accepts the field only when the requested model happens to route
-            // to an OpenAI-compatible backend and returns HTTP 400 otherwise, which made every OpenRouter
-            // transcription fail regardless of format negotiation (issue #138).
-
-            if (includeLanguage
-                && !string.IsNullOrWhiteSpace(language) &&
-                !string.Equals(language, "auto", StringComparison.OrdinalIgnoreCase))
+            foreach (var (name, value) in BuildTranscriptionRequest(_dialect, _model, responseFormat, language, translate, canaryTarget).Fields)
             {
-                content.Add(new StringContent(language), "language");
+                content.Add(new StringContent(value), name);
             }
 
             // sourceAudioBytes (the uncompressed WAV), NOT the uploaded body length: the deadline must track
             // how long the audio actually is, not how well it compressed.
             return await PostAudioAsync(endpoint, content, sourceAudioBytes, cancellationToken).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// The Canary target a call asks for, or null for transcription and for the English translation.
+        /// </summary>
+        internal static string? CanaryTargetOrNull(bool translate, string? targetLanguage)
+        {
+            var target = (targetLanguage ?? "").Trim().ToLowerInvariant();
+            return translate && target.Length > 0 && target != "en" ? target : null;
+        }
+
+        /// <summary>
+        /// The route and form fields (besides the audio "file" part) for one transcription call. Pure, so
+        /// the exact field set per dialect is unit-tested.
+        /// <para>
+        /// OpenAI dialect (unchanged): translation goes to <c>/v1/audio/translations</c> without a
+        /// <c>language</c> field (OpenAI and Groq reject a source language there); transcription goes to
+        /// <c>/v1/audio/transcriptions</c> with <c>language</c> unless it is blank or "auto".
+        /// </para>
+        /// <para>
+        /// CrispASR dialect: a <c>crispasr --server</c> has no translations route, so everything goes to
+        /// <c>/v1/audio/transcriptions</c>, <c>language</c> is sent under the same rule as transcription,
+        /// English translation adds <c>translate=true</c>, and a Canary target adds <c>source_lang=en</c>
+        /// and <c>target_lang</c>.
+        /// </para>
+        /// We deliberately never send <c>timestamp_granularities[]</c>: verbose_json already returns segment
+        /// timestamps by default, we only read "segments", and OpenRouter answers the field with HTTP 400
+        /// unless the model routes to an OpenAI-compatible backend (issue #138).
+        /// </summary>
+        internal static (string Path, IReadOnlyList<(string Name, string Value)> Fields) BuildTranscriptionRequest(
+            string dialect, string model, string responseFormat, string? language, bool translate, string? canaryTarget)
+        {
+            var crisp = WorkerDialect.Normalize(dialect) == WorkerDialect.CrispAsr;
+            var fields = new List<(string Name, string Value)>
+            {
+                ("model", model),
+                ("response_format", responseFormat),
+            };
+            var knownLanguage = !string.IsNullOrWhiteSpace(language)
+                && !string.Equals(language, "auto", StringComparison.OrdinalIgnoreCase);
+
+            if (!crisp)
+            {
+                if (!translate && knownLanguage) fields.Add(("language", language!));
+                return (translate ? "/v1/audio/translations" : "/v1/audio/transcriptions", fields);
+            }
+
+            if (knownLanguage) fields.Add(("language", language!));
+            if (canaryTarget != null)
+            {
+                fields.Add(("source_lang", "en"));
+                fields.Add(("target_lang", canaryTarget));
+            }
+            else if (translate)
+            {
+                fields.Add(("translate", "true"));
+            }
+            return ("/v1/audio/transcriptions", fields);
+        }
+
+        /// <summary>
+        /// Rejects a response with no subtitle cue. A CrispASR server answers a target it cannot serve with
+        /// HTTP 200 and an empty body, so for a Canary target the error names the target language.
+        /// </summary>
+        internal static string RequireSrtCues(string? srt, string? canaryTarget)
+        {
+            if (!string.IsNullOrWhiteSpace(srt)) return srt;
+            if (canaryTarget != null)
+            {
+                throw new InvalidOperationException(
+                    $"The CrispASR worker returned no subtitle cues for target language '{canaryTarget}'. " +
+                    "It answers HTTP 200 with an empty body for a target it cannot serve: check that it runs the Canary model and that the row's translation targets are right.");
+            }
+            throw new InvalidOperationException("Remote Whisper API returned empty response");
         }
 
         /// <summary>

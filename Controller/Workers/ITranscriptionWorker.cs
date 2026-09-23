@@ -15,9 +15,18 @@ namespace WhisperSubs.Controller.Workers
         string Name { get; }
         ISubtitleProvider Provider { get; }
         WorkerCapabilities Capabilities { get; }
+
+        /// <summary>
+        /// The provider for a Canary translation target, when it is not <see cref="Provider"/>: the host's
+        /// own worker transcribes with whisper-cli but translates into Canary targets with crispasr. Null
+        /// means <see cref="Provider"/> serves every target in <see cref="WorkerCapabilities.TranslateTargets"/>
+        /// (a CrispASR server does).
+        /// </summary>
+        ISubtitleProvider? TargetProvider => null;
     }
 
     /// <summary>Default worker: an id/name + the provider that transcribes + its advertised capabilities.</summary>
     public sealed record TranscriptionWorker(
-        string Id, string Name, ISubtitleProvider Provider, WorkerCapabilities Capabilities) : ITranscriptionWorker;
+        string Id, string Name, ISubtitleProvider Provider, WorkerCapabilities Capabilities,
+        ISubtitleProvider? TargetProvider = null) : ITranscriptionWorker;
 }

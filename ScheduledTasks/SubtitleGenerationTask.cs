@@ -586,11 +586,12 @@ namespace WhisperSubs.ScheduledTasks
                 {
                     if (config.PauseOnPlayback)
                     {
-                        await TranscribeWithPlaybackMonitorAsync(manager, item, lease.Worker.Provider, language, cancellationToken);
+                        await TranscribeWithPlaybackMonitorAsync(manager, item, lease.Worker.Provider, new PoolTargetEngines(pool, lease), language, cancellationToken);
                     }
                     else
                     {
-                        await manager.GenerateSubtitleAsync(item, lease.Worker.Provider, language, cancellationToken);
+                        await manager.GenerateSubtitleAsync(item, lease.Worker.Provider, language, cancellationToken,
+                            targetEngines: new PoolTargetEngines(pool, lease));
                     }
                     CountSweptItem();
                 }
@@ -677,7 +678,7 @@ namespace WhisperSubs.ScheduledTasks
         /// Resume logic in SubtitleManager picks up from where the partial SRT left off.
         /// </summary>
         private async Task TranscribeWithPlaybackMonitorAsync(
-            SubtitleManager manager, BaseItem item, ISubtitleProvider provider,
+            SubtitleManager manager, BaseItem item, ISubtitleProvider provider, ITranslationTargetEngines targetEngines,
             string language, CancellationToken cancellationToken)
         {
             while (true)
@@ -686,7 +687,8 @@ namespace WhisperSubs.ScheduledTasks
 
                 using var playbackCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 var monitorTask = MonitorPlaybackAsync(playbackCts.Token);
-                var transcribeTask = manager.GenerateSubtitleAsync(item, provider, language, playbackCts.Token);
+                var transcribeTask = manager.GenerateSubtitleAsync(item, provider, language, playbackCts.Token,
+                    targetEngines: targetEngines);
 
                 var finished = await Task.WhenAny(transcribeTask, monitorTask);
 

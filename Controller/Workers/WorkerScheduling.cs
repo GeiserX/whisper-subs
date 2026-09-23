@@ -16,7 +16,7 @@ namespace WhisperSubs.Controller.Workers
         public static bool CanServe(WorkerSlot s, JobRequirements job)
             => s.Healthy
                && s.InFlight < s.Capabilities.MaxConcurrency
-               && (!job.Translate || s.Capabilities.CanTranslate)
+               && (job.TranslateTarget is null || s.Capabilities.TranslateTargets.Contains(job.TranslateTarget))
                && (job.RequiredModel is null
                    || s.Capabilities.Models.Count == 0            // empty = serves any model
                    || s.Capabilities.Models.Contains(job.RequiredModel));

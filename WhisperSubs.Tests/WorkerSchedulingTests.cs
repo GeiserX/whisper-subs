@@ -12,17 +12,17 @@ namespace WhisperSubs.Tests;
 public class WorkerSchedulingTests
 {
     private static WorkerCapabilities Caps(bool local = true, double cost = 0, int maxConc = 1,
-        bool canTranslate = true, int priority = 0, string[]? models = null)
+        bool canTranslate = true, int priority = 0, string[]? models = null, IReadOnlySet<string>? targets = null)
         => new()
         {
-            IsLocal = local, CostWeight = cost, MaxConcurrency = maxConc, CanTranslate = canTranslate,
+            IsLocal = local, CostWeight = cost, MaxConcurrency = maxConc, TranslateTargets = targets ?? (canTranslate ? WorkerTargets.EnglishOnly : WorkerTargets.None),
             Priority = priority, Models = new HashSet<string>(models ?? Array.Empty<string>())
         };
 
     private static WorkerSlot Slot(string id, bool healthy = true, int inFlight = 0, WorkerCapabilities? caps = null)
         => new(id, healthy, inFlight, caps ?? Caps());
 
-    private static readonly JobRequirements AnyJob = new(false, null);
+    private static readonly JobRequirements AnyJob = new(null, null);
 
     // ── CanServe (hard constraints) ──
     [Fact] public void CanServe_HealthyFreeWorker_True()
@@ -36,14 +36,14 @@ public class WorkerSchedulingTests
 
     [Fact] public void CanServe_TranslateJob_NeedsTranslateCapability()
     {
-        var job = new JobRequirements(true, null);
+        var job = new JobRequirements("en", null);
         Assert.False(WorkerScheduling.CanServe(Slot("a", caps: Caps(canTranslate: false)), job));
         Assert.True(WorkerScheduling.CanServe(Slot("b", caps: Caps(canTranslate: true)), job));
     }
 
     [Fact] public void CanServe_ModelConstraint()
     {
-        var job = new JobRequirements(false, "large-v3");
+        var job = new JobRequirements(null, "large-v3");
         Assert.True(WorkerScheduling.CanServe(Slot("any"), job));                                        // empty models = any
         Assert.True(WorkerScheduling.CanServe(Slot("has", caps: Caps(models: new[] { "large-v3" })), job));
         Assert.False(WorkerScheduling.CanServe(Slot("no", caps: Caps(models: new[] { "small" })), job));

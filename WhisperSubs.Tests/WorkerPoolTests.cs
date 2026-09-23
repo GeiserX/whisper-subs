@@ -29,11 +29,11 @@ public class WorkerPoolTests
         {
             MaxConcurrency = maxConcurrency,
             CostWeight = cost,
-            CanTranslate = canTranslate,
+            TranslateTargets = canTranslate ? WorkerTargets.EnglishOnly : WorkerTargets.None,
             IsLocal = cost == 0
         });
 
-    private static readonly JobRequirements AnyJob = new(Translate: false, RequiredModel: null);
+    private static readonly JobRequirements AnyJob = new(TranslateTarget: null, RequiredModel: null);
 
     [Fact]
     public void TotalCapacity_IsSumOfMaxConcurrency_AtLeastOne()
@@ -100,8 +100,8 @@ public class WorkerPoolTests
     public void HasCapableWorker_FalseWhenTranslateNeededButNoneTranslate()
     {
         var pool = new WorkerPool(new[] { Worker("t", 1, canTranslate: false) });
-        Assert.False(pool.HasCapableWorker(new JobRequirements(Translate: true, RequiredModel: null)));
-        Assert.True(pool.HasCapableWorker(new JobRequirements(Translate: false, RequiredModel: null)));
+        Assert.False(pool.HasCapableWorker(new JobRequirements(TranslateTarget: "en", RequiredModel: null)));
+        Assert.True(pool.HasCapableWorker(new JobRequirements(TranslateTarget: null, RequiredModel: null)));
     }
 
     [Fact]
@@ -111,7 +111,7 @@ public class WorkerPoolTests
         // with InvalidOperationException, not loop forever acquiring/releasing the slot.
         var pool = new WorkerPool(new[] { Worker("t", 1, canTranslate: false) });
         await Assert.ThrowsAsync<System.InvalidOperationException>(
-            () => pool.AcquireAsync(new JobRequirements(Translate: true, RequiredModel: null), default));
+            () => pool.AcquireAsync(new JobRequirements(TranslateTarget: "en", RequiredModel: null), default));
     }
 
     [Fact]

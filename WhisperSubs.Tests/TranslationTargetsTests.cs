@@ -149,7 +149,7 @@ public class TranslationTargetsTests
             targets,
             new HashSet<string>(audio ?? new[] { "en" }, StringComparer.OrdinalIgnoreCase),
             source,
-            canary,
+            _ => canary,
             owned ?? (_ => false),
             usable ?? (_ => false),
             force);

@@ -336,11 +336,11 @@ public class LocalBinaryLaunchTests
         {
             MaxConcurrency = 1,
             CostWeight = cost,
-            CanTranslate = true,
+            TranslateTargets = WorkerTargets.EnglishOnly,
             IsLocal = isLocal
         });
 
-    private static readonly JobRequirements AnyJob = new(Translate: false, RequiredModel: null);
+    private static readonly JobRequirements AnyJob = new(TranslateTarget: null, RequiredModel: null);
 
     [Fact]
     public async Task LocalOnlyPool_WithABrokenBinary_RefusesToHandOutASlot()

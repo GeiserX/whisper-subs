@@ -37,6 +37,20 @@ namespace WhisperSubs.Controller.Workers
             {
                 return (false, "Upload format must be wav, flac or opus.");
             }
+            if (!WorkerDialect.IsKnown(worker.Dialect))
+                return (false, "Dialect must be openai or crispasr.");
+            if (worker.TranslateTargets is { Count: > 0 })
+            {
+                var invalid = worker.TranslateTargets
+                    .Select(t => (t ?? "").Trim())
+                    .Where(t => !WorkerTargets.IsValidTarget(t))
+                    .ToList();
+                if (invalid.Count > 0)
+                    return (false, $"Unknown translation target(s): {string.Join(", ", invalid.Select(t => t.Length == 0 ? "(blank)" : t))}. Use en and the Canary codes listed under Translation.");
+                if (WorkerDialect.Normalize(worker.Dialect) != WorkerDialect.CrispAsr
+                    && worker.TranslateTargets.Any(t => !string.Equals((t ?? "").Trim(), "en", StringComparison.OrdinalIgnoreCase)))
+                    return (false, "Only a CrispASR server can translate into languages other than en. Set the dialect to CrispASR or keep only en.");
+            }
             return (true, null);
         }
 

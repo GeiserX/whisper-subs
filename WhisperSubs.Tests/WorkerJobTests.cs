@@ -29,11 +29,11 @@ public class WorkerJobTests
     public void Requirements_TranslateFollowsTranslationPossible_ModelAlwaysNull()
     {
         var needsTranslate = WorkerJob.Requirements(SubtitleMode.TranslationOnly, false);
-        Assert.True(needsTranslate.Translate);
+        Assert.Equal("en", needsTranslate.TranslateTarget);
         Assert.Null(needsTranslate.RequiredModel);
 
         var noTranslate = WorkerJob.Requirements(SubtitleMode.Full, false);
-        Assert.False(noTranslate.Translate);
+        Assert.Null(noTranslate.TranslateTarget);
         Assert.Null(noTranslate.RequiredModel);
     }
 }

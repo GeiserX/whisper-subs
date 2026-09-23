@@ -31,11 +31,11 @@ public class WorkerPoolReconcileTests
         {
             MaxConcurrency = maxConcurrency,
             CostWeight = cost,
-            CanTranslate = canTranslate,
+            TranslateTargets = canTranslate ? WorkerTargets.EnglishOnly : WorkerTargets.None,
             IsLocal = cost == 0
         });
 
-    private static readonly JobRequirements AnyJob = new(Translate: false, RequiredModel: null);
+    private static readonly JobRequirements AnyJob = new(TranslateTarget: null, RequiredModel: null);
 
     [Fact]
     public void Reconcile_AddsNewWorker_GrowsCapacityAndAppearsInSnapshot()

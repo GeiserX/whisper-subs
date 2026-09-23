@@ -208,7 +208,10 @@ namespace WhisperSubs.Controller
         /// generation. The scheduled/auto path passes false. Resume/idempotency skips on the
         /// plugin's own partial output are unaffected.</param>
         [ExcludeFromCodeCoverage(Justification = "Orchestrates external processes (FFmpeg, whisper) and Jellyfin plugin APIs")]
-        public async Task GenerateSubtitleAsync(BaseItem item, ISubtitleProvider provider, string language, CancellationToken cancellationToken, bool force = false)
+        /// <param name="targetEngines">Where each Canary translation target gets its engine: the worker
+        /// pool when the item runs on a leased worker, or null for a local crispasr install only.</param>
+        public async Task GenerateSubtitleAsync(BaseItem item, ISubtitleProvider provider, string language, CancellationToken cancellationToken, bool force = false,
+            ITranslationTargetEngines? targetEngines = null)
         {
             if (item == null) throw new ArgumentNullException(nameof(item));
 
@@ -284,7 +287,7 @@ namespace WhisperSubs.Controller
                 Record(outcome, error);
 
                 // Then each configured non-English target (none by default, which skips this entirely).
-                foreach (var (targetOutcome, targetError) in await GenerateTargetTranslationsAsync(item, provider, mediaPath, languages, force, probe, cancellationToken))
+                foreach (var (targetOutcome, targetError) in await GenerateTargetTranslationsAsync(item, provider, mediaPath, languages, force, probe, targetEngines, cancellationToken))
                 {
                     Record(targetOutcome, targetError);
                 }
@@ -855,7 +858,8 @@ namespace WhisperSubs.Controller
         [ExcludeFromCodeCoverage(Justification = "Orchestrates FFmpeg + crispasr processes for translation")]
         private async Task<List<(GenerationOutcome Outcome, Exception? Error)>> GenerateTargetTranslationsAsync(
             BaseItem item, ISubtitleProvider provider, string mediaPath,
-            List<string> resolvedLanguages, bool force, AudioLanguageProbe probe, CancellationToken cancellationToken)
+            List<string> resolvedLanguages, bool force, AudioLanguageProbe probe, ITranslationTargetEngines? engines,
+            CancellationToken cancellationToken)
         {
             var results = new List<(GenerationOutcome Outcome, Exception? Error)>();
             var config = Plugin.Instance?.Configuration;
@@ -879,12 +883,12 @@ namespace WhisperSubs.Controller
                 await ProbeAudioLanguageOnceAsync(probe, item, provider, mediaPath, cancellationToken);
             }
 
-            var canary = SubtitleProviderFactory.CreateCanary(config, _logger);
+            engines ??= new LocalTargetEngines(config, _logger);
             var plans = PlanTranslationTargets(
                 targets,
                 AudioLanguagesForTargets(resolvedLanguages, probe.Result),
                 ResolveTranslationSource(resolvedLanguages, probe.Result),
-                canaryAvailable: canary != null,
+                engines.CanServe,
                 HasOwned,
                 HasUsable,
                 force);
@@ -909,18 +913,12 @@ namespace WhisperSubs.Controller
                             continue;
                     }
 
-                    if (canary == null)
-                    {
-                        // The route said Canary but the provider could not be built (files removed since).
-                        var missing = new InvalidOperationException(TargetFailureMessage(
-                            plan with { Route = TranslationRoute.Decide("en", plan.Target, canaryAvailable: false) }, item.Name));
-                        _logger.LogError("{Message}", missing.Message);
-                        results.Add((GenerationOutcome.Failed, missing));
-                        continue;
-                    }
-
                     try
                     {
+                        // Take the engine before extracting audio, so a target no worker can take right now
+                        // costs no extraction. Released at the end of this block.
+                        using var engine = await engines.AcquireAsync(plan.Target, item.Name ?? string.Empty, cancellationToken);
+
                         if (englishAudioPath == null)
                         {
                             var audioStreamIndex = await ResolveAudioStreamIndexAsync(mediaPath, "en", cancellationToken);
@@ -934,9 +932,9 @@ namespace WhisperSubs.Controller
                             englishAudioPath = path;
                         }
 
-                        _logger.LogInformation("Generating {Target} translation for {ItemName} with Canary", plan.Target, item.Name);
+                        _logger.LogInformation("Generating {Target} translation for {ItemName} with Canary on {Worker}", plan.Target, item.Name, engine.WorkerName);
                         SubtitleQueueService.Instance.ReportPhase($"Translating to {plan.Target}");
-                        var srtContent = await canary.TranscribeAsync(englishAudioPath, "en", cancellationToken, translate: true, targetLanguage: plan.Target);
+                        var srtContent = await engine.Provider.TranscribeAsync(englishAudioPath, "en", cancellationToken, translate: true, targetLanguage: plan.Target);
                         if (WhisperProvider.CountSrtEntries(srtContent) == 0)
                         {
                             throw new InvalidOperationException($"Canary produced no subtitle cues for '{plan.Target}'.");
@@ -946,7 +944,7 @@ namespace WhisperSubs.Controller
                             mediaPath,
                             englishAudioPath,
                             isResume: false,
-                            requiresOptIn: canary.RequiresSpeechAlignmentOptIn,
+                            requiresOptIn: engine.Provider.RequiresSpeechAlignmentOptIn,
                             effectiveAudioOffset: effectiveAudioOffset,
                             ct: cancellationToken);
 
@@ -1045,7 +1043,7 @@ namespace WhisperSubs.Controller
             IReadOnlyList<string> targets,
             IReadOnlySet<string> audioLanguages,
             string sourceLanguage,
-            bool canaryAvailable,
+            Func<string, bool> engineAvailable,
             Func<string, bool> hasOwnedTranslation,
             Func<string, bool> hasUsableSubtitle,
             bool force)
@@ -1053,7 +1051,7 @@ namespace WhisperSubs.Controller
             var plans = new List<TranslationTargetPlan>(targets.Count);
             foreach (var target in targets)
             {
-                var route = TranslationRoute.Decide(sourceLanguage, target, canaryAvailable);
+                var route = TranslationRoute.Decide(sourceLanguage, target, engineAvailable(target));
                 string? skip = null;
                 if (audioLanguages.Contains(target))
                 {
