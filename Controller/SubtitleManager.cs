@@ -893,7 +893,12 @@ namespace WhisperSubs.Controller
                 HasUsable,
                 force);
 
+            // englishAudioPath is set only once a complete extraction exists, so every target reuses it.
+            // tempAudioPath is named before FFmpeg starts, so the finally below also deletes a partial
+            // file left by a cancel (PauseOnPlayback) or a failure mid-extraction. No unit test: the leak
+            // lives in this FFmpeg orchestration, which has no pure seam.
             string? englishAudioPath = null;
+            string? tempAudioPath = null;
             double effectiveAudioOffset = 0;
             try
             {
@@ -926,10 +931,10 @@ namespace WhisperSubs.Controller
                                 ? await GetAudioStartTimeAsync(mediaPath, audioStreamIndex, cancellationToken)
                                 : 0;
                             effectiveAudioOffset = EffectiveAudioOffset(config.CompensateAudioOffset, audioStartTime);
-                            var path = Path.Combine(Path.GetTempPath(), $"{item.Id}_{Guid.NewGuid()}_canary.wav");
+                            tempAudioPath ??= Path.Combine(Path.GetTempPath(), $"{item.Id}_{Guid.NewGuid()}_canary.wav");
                             SubtitleQueueService.Instance.ReportPhase("Extracting audio (translation)");
-                            await ExtractAudioForTranscriptionAsync(mediaPath, path, "en", cancellationToken, audioStreamIndex: audioStreamIndex);
-                            englishAudioPath = path;
+                            await ExtractAudioForTranscriptionAsync(mediaPath, tempAudioPath, "en", cancellationToken, audioStreamIndex: audioStreamIndex);
+                            englishAudioPath = tempAudioPath;
                         }
 
                         _logger.LogInformation("Generating {Target} translation for {ItemName} with Canary on {Worker}", plan.Target, item.Name, engine.WorkerName);
@@ -967,10 +972,10 @@ namespace WhisperSubs.Controller
             }
             finally
             {
-                if (englishAudioPath != null && File.Exists(englishAudioPath))
+                if (tempAudioPath != null && File.Exists(tempAudioPath))
                 {
-                    try { File.Delete(englishAudioPath); }
-                    catch (Exception ex) { _logger.LogWarning(ex, "Failed to delete temp audio: {Path}", englishAudioPath); }
+                    try { File.Delete(tempAudioPath); }
+                    catch (Exception ex) { _logger.LogWarning(ex, "Failed to delete temp audio: {Path}", tempAudioPath); }
                 }
             }
 
