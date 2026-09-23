@@ -282,6 +282,7 @@ On a 60 s French clip and the 90 s Spanish clip, with VAD and no aligner:
 | fr to en (control) | 0 | 5 | English, weak |
 | fr to es | 0 | 4 | Spanish and French mixed inside the same cue |
 | es to fr | 0 | 1 | 23 VAD segments in, one cue out, the rest dropped silently |
+| es to de | 0 | 0 | empty SRT; the only signal is a stderr warning about "no text produced" |
 
 No warning, exit code 0 every time, and the server gives the identical result. The route
 decision therefore admits only `en` as source for the new targets, and the doc stops calling
@@ -295,7 +296,9 @@ the same untranslated first slice. `translate=true` with `language=es` returned 
 `task=translate` field is ignored. `POST /v1/audio/translations` returns 404. The server did not
 run the aligner even without `no_auto_aligner`, and it ran VAD on every request because the model
 was given at startup. `target_lang=xx` returned 200 with an empty `application/x-subrip` body and
-only a stderr line naming the cause.
+only a stderr line naming the cause. Started without `-vm`, a request carrying `vad=true` made the
+server download the Silero model on the spot, so a worker without internet access needs the VAD
+model given at startup, which is how the plugin's whisper-server worker already ships it.
 
 **Detection.** Canary has no language identification of its own. `--detect-language` on the
 Canary backend loads Whisper tiny, prints `crispasr[lid]: detected 'en' (p=0.973) via whisper`
