@@ -450,8 +450,8 @@
                                 Only for titles with English audio. Other source languages still translate to English only.
                                 <br />
                                 Uses <a href="https://huggingface.co/nvidia/canary-1b-v2" target="_blank" rel="noopener noreferrer">NVIDIA Canary</a>
-                                through <a href="https://github.com/CrispStrobe/CrispASR" target="_blank" rel="noopener noreferrer">CrispASR</a>, running on this server.
-                                Needs the translation option above to be on, plus the binary and model below. Each checked language gets its own
+                                through <a href="https://github.com/CrispStrobe/CrispASR" target="_blank" rel="noopener noreferrer">CrispASR</a>, running on this server or on a CrispASR worker in the Worker Pool.
+                                Needs the translation option above to be on, plus the binary and model below or a worker that lists the language. Each checked language gets its own
                                 <code>.translated</code> subtitle. A title whose audio is already in a language, or that already has a subtitle in it, is skipped for that language.
                             </div>
                             <div id="translationTargetCheckboxes" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(11em, 1fr)); gap:0 1em; margin-bottom:1em;"></div>

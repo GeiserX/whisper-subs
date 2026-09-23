@@ -14,10 +14,6 @@ Pooled workers are currently assumed healthy; a slow or unreachable worker is on
 
 Cost-weighted routing already prefers free local workers and only "bursts" to a worker with a non-zero cost weight when the local ones are saturated. Build first-class cloud-burst ergonomics on top of that — managed cloud endpoints and spend caps — so a homelab can spill over to a paid API during a big catch-up run without hand-configuring each endpoint.
 
-### Non-English translation targets (CrispASR + Canary)
-
-Whisper only translates into English. NVIDIA Canary-1B-v2 translates English audio into 24 European languages, and CrispASR runs it with whisper-cli's flags and an OpenAI-compatible server mode. Add those 24 targets next to "English" for titles with English audio, keeping Whisper for the English pass and text-to-text translation out of scope. Design: [docs/design/crispasr-translation-engine.md](docs/design/crispasr-translation-engine.md). Tracks #38 and #41.
-
 ### Parakeet Provider
 
 NVIDIA Parakeet integration for GPU-accelerated transcription.
@@ -28,6 +24,7 @@ Define arbitrary CLI commands as transcription backends.
 
 ## Done
 
+- **Non-English translation targets (experimental).** English audio can also get subtitles in 24 European languages from NVIDIA Canary, run by a plugin-managed CrispASR binary or a CrispASR server in the worker pool ([design](docs/design/crispasr-translation-engine.md), [#38](https://github.com/GeiserX/whisper-subs/issues/38), [#41](https://github.com/GeiserX/whisper-subs/issues/41)).
 - **Distributed Transcription (Worker Pool)** — pool multiple machines / GPUs / a NAS / cloud endpoints and transcribe in parallel, with cost-weighted routing that prefers free local workers and bursts to paid ones only when locals are saturated. Off by default; a normal single-server install is unchanged. *(v4.0)*
 - **English Translation** — generate an English subtitle for foreign-language audio via whisper's `--translate`, either alongside the native-language subtitle (`Enable Translation`) or on its own (`Translation Only` mode). *(v3.11)*
 - **Forced Subtitles** — foreign-parts-only subtitle tracks: VAD-based chunking, per-chunk language detection (`whisper-cli --detect-language`), selective transcription of only the segments whose language differs from the primary audio. Output `Movie.en.forced.generated.srt`, auto-recognized by Jellyfin. Modes: `Full`, `Forced Only`, `Full + Forced`. *(v3.0)*

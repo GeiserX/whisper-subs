@@ -1,6 +1,6 @@
 # Design: non-English translation targets with CrispASR + Canary
 
-Status: proposed (2026-09-23). Not implemented. Tracks issues [#38](https://github.com/GeiserX/whisper-subs/issues/38) and [#41](https://github.com/GeiserX/whisper-subs/issues/41).
+Status: implemented (2026-09-23). The sections below describe what shipped; where it differs from the first draft, the text says so. Tracks issues [#38](https://github.com/GeiserX/whisper-subs/issues/38) and [#41](https://github.com/GeiserX/whisper-subs/issues/41).
 
 ## The problem
 
@@ -65,17 +65,35 @@ Today the translation pass has one question, "is the model translation-capable?"
 
 ```
 TranslationRoute.Decide(sourceLanguage, targetLanguage, canaryAvailable)
-  -> Whisper      target == "en"                              (unchanged path)
-  -> Canary       source == "en" && target in CanaryTargets && canaryAvailable
-  -> Unsupported  anything else, with a reason string
+  -> Whisper               target == "en"                                  (unchanged path)
+  -> Unsupported           target empty or not in CanaryTargets            (config corruption)
+  -> SkipSourceNotEnglish  source is not "en", or is unknown
+  -> EngineMissing         source == "en", valid target, !canaryAvailable
+  -> Canary                source == "en", valid target, canaryAvailable
 ```
 
-`Unsupported` fails the item with a clear message and never writes a file. This is deliberate:
-the turbo-model trap ([issue #44](https://github.com/GeiserX/whisper-subs/issues/44)) taught that a mislabelled subtitle is worse than no subtitle,
-so a route the engine cannot honour must not produce output.
+None of the three non-engine routes writes a file. This is deliberate: the turbo-model trap
+([issue #44](https://github.com/GeiserX/whisper-subs/issues/44)) taught that a mislabelled subtitle is worse than no subtitle, so a route the engine
+cannot honour must not produce output.
+
+The first draft had a single `Unsupported` that failed the item. That turned the normal case into
+an error: most of a library is not English audio, so every such title would fail once per
+configured target. The shipped split is:
+
+- `SkipSourceNotEnglish` skips the target with an Information log line and no error. An item whose
+  passes all skip succeeds with nothing generated, for example a Spanish title that already has an
+  English subtitle.
+- `EngineMissing` fails that target with a per-item error naming the engine: English audio, a valid
+  target, and neither a local crispasr install nor a worker that lists the target.
+- `Unsupported` stays an error, because a target outside the list means the configuration is corrupt.
+
+A skip reason found first (the audio is already in the target, a translated subtitle for it exists,
+or a usable subtitle in it exists) wins over the route, so a title that already has the subtitle
+never fails.
 
 `CanaryTargets` is a static list in `Setup/CanaryCatalog.cs` mirroring the model card. Unit
-tests cover every branch, including the Latvian exception if the model card's note holds up.
+tests cover every branch. Latvian turned out to be an ordinary target: the model card leaves it out
+of one benchmark comparison only because competing models lack it.
 
 ### Provider interface
 
@@ -92,7 +110,7 @@ Task<string> TranscribeAsync(string audioPath, string language, CancellationToke
 A new `CanaryProvider : ISubtitleProvider` wraps the `crispasr` binary:
 
 ```
-crispasr --backend canary -m <canary.gguf> -f <wav> -sl en -tl <target> -t <threads>
+crispasr --backend canary -m <canary.gguf> -f <wav> -l en -sl en -tl <target> -t <threads>
          --no-auto-aligner --cache-dir <data>/crispasr/cache
          --vad --vad-model <silero> [--vad-* tuning] [--max-len N --split-on-word]
          --print-progress -osrt -of <prefix>
@@ -104,8 +122,10 @@ Every flag after the target is there because the spike showed what happens witho
   using the GPU under `--no-gpu`. Segment timestamps without it were fine for subtitles. Word
   alignment can become an opt-in later.
 - `--cache-dir`: the binary fetches companion models on its own, even without `--auto-download`.
-  Pinning the cache under the plugin's data folder keeps that inside the managed tree, and
-  passing `-sl en` explicitly avoids the language-ID download that `-l auto` triggers.
+  Pinning the cache under the plugin's data folder keeps that inside the managed tree.
+- `-l en` next to `-sl en`: the draft assumed `-sl en` alone avoids the language-ID download.
+  It does not. With `-l` left on its default of `auto`, crispasr still fetched Whisper tiny for
+  language ID, so both flags are passed, in the provider and in the install validation run.
 - `--vad`: without VAD, Canary returns the whole file as one cue. The plugin's existing Silero
   model and tuning flags apply unchanged. `--max-len` with `--split-on-word` is honoured too and
   is the same knob as today's `SubtitleMaxLineLength`.
@@ -144,7 +164,9 @@ crispasr/
 ```
 
 The model download reuses the Hugging Face resolve URL pattern from `ModelCatalog` with a
-content-length check. The upstream tarball version is pinned in the catalog and bumped by hand
+content-length check. Unlike the draft, the URL is pinned to a repository revision
+([`CanaryCatalog.HuggingFaceRevision`](../../Setup/CanaryCatalog.cs)) and each file has a SHA-256, so an upstream re-upload
+cannot turn into a checksum failure or a silent model change. The upstream tarball version is pinned in the catalog and bumped by hand
 after a compatibility run, exactly like BSRoformer's `Version`.
 
 ### Configuration
@@ -181,9 +203,22 @@ naming needs no change. Two places assume the single target is English and must 
 - `ShouldSkipForExistingSubtitle(item, "en")`, which must be evaluated per target.
 
 The per-target skip rules keep the current semantics: skip when the title's audio is already in
-the target, when a usable subtitle in the target exists, or when the route is Unsupported. The
-English pass runs first, and its language probe result (the existing `DetectLanguageAsync` call)
-decides the Canary routes too, so no extra detection runs.
+the target, when a translated subtitle for it exists, when a usable subtitle in the target exists,
+or when the route is `SkipSourceNotEnglish`. The English pass runs first, and its language probe
+result, from the existing `DetectLanguageAsync` call, decides the Canary routes too, so no extra
+detection runs.
+
+The scheduled sweep has its own completeness gate
+([`SubtitleManager.IsTranslationComplete`](../../Controller/SubtitleManager.cs), fed by
+[`SubtitleGenerationTask`](../../ScheduledTasks/SubtitleGenerationTask.cs)), which the draft missed. It counted a title as translated as soon
+as any owned translated file or a usable English subtitle existed, so an English title never came
+back for a new target. With targets configured, a title whose audio is English (from Jellyfin's
+stream tags, no FFprobe) is done only when every target has an owned translated file in that
+language, a usable subtitle in it, or audio already in it. A title whose audio is not English, or
+is untagged, is complete for the targets: the pass skips it anyway, and treating untagged audio as
+incomplete would re-run the language probe on it every sweep. The ordered target list is part of
+the skip-cache signature, appended only when non-empty so an install without targets keeps its
+cache on upgrade.
 
 ### Worker pool
 
@@ -192,12 +227,30 @@ decides the Canary routes too, so no extra detection runs.
 "Translation targets" field. [`WorkerScheduling.CanServe`](../../Controller/Workers/WorkerScheduling.cs) filters on target membership; the
 cost-weighted scoring is untouched.
 
+As shipped:
+
+- The persisted row keeps `CanTranslate` and adds a `TranslateTargets` list. The XML serializer
+  turns an absent list element into an empty list, so "absent" cannot be told from "empty": an
+  empty list falls back to `CanTranslate`, meaning `{"en"}` or nothing, and the settings page writes both
+  fields together, with `CanTranslate` false for a transcribe-only row.
+- An OpenAI-dialect row never advertises a Canary target, even if a hand-edited config lists one.
+- The local worker advertises `{"en"}` plus the configured targets when crispasr and the Canary
+  model are installed, and carries a `CanaryProvider` next to its whisper provider for them.
+- An item is still one job that requires English translation when translation is on. Each Canary
+  target asks the pool for its own worker through `WorkerJob.ForTarget`. The item's own worker is used
+  when it lists the target. Otherwise the pass waits for a capable worker only when its own worker
+  serves no Canary target at all; when its worker serves some other Canary targets it takes a free
+  capable worker or fails that target for this run. That rule keeps two items on workers with
+  different partial target sets from waiting on each other forever.
+
 [`RemoteWhisperProvider`](../../Providers/RemoteWhisperProvider.cs) today selects the endpoint by
 path: `/v1/audio/translations` for English, `/v1/audio/transcriptions` otherwise. A CrispASR
 server answers 404 on the translations route, so a worker row needs a dialect switch. Rows keep
 the current path-based dialect by default (whisper-server, OpenAI, Groq); a row marked as a
 CrispASR server sends everything to `/v1/audio/transcriptions` and expresses translation as
-`translate=true` (to English) or `source_lang` + `target_lang` (Canary targets). Two more facts
+`translate=true` for English, or `source_lang` + `target_lang` for a Canary target. Unlike the
+OpenAI dialect, it sends `language` on translation requests too, because the server reads the
+source language from it. Two more facts
 from the spike shape that dialect: the server runs VAD on every request when started with `-vm`,
 and there is no per-request VAD model field, so the worker's startup command owns segmentation
 (same as the whisper-server worker today); and an unsupported `target_lang` returns HTTP 200 with
@@ -310,7 +363,7 @@ Detection stays on the Whisper base model.
 1. Catalog + setup service + settings page section, behind the empty-list default. Nothing
    changes for an existing install.
 2. `TranslationRoute`, `CanaryProvider`, the per-target loop, unit tests for every pure piece.
-3. Worker capability change with the `{"en"}` default and the two multipart fields.
+3. Worker capability change with the `{"en"}` default, the dialect switch and the multipart fields.
 4. Docs: [`configuration.md`](../../site/docs/configuration.md) gains the field, [`limitations.md`](../../site/docs/limitations.md) rewrites the "English is the only
    target language" section to "English is the only target for non-English audio", and the
    Lingarr pointer stays for that case.

@@ -96,7 +96,7 @@ Re-checking the filesystem for every candidate item on every scheduled run is th
 
 | Setting | Default | What it does |
 |---|---|---|
-| Remember already-subtitled items between runs | On | Caches the "already has subtitles" verdict per item. An entry is reused only while the item's Jellyfin change token is unchanged and the skip settings above are unchanged. Any metadata or subtitle change, or any edit to a skip setting, re-checks the item. Scheduled task only. |
+| Remember already-subtitled items between runs | On | Caches the "already has subtitles" verdict per item. An entry is reused only while the item's Jellyfin change token is unchanged and the skip settings above are unchanged. Any metadata or subtitle change, any edit to a skip setting, or a change to the translation target languages re-checks the item. Scheduled task only. |
 | Skip-cache re-verify (days) | `30` | Backstop. Re-check a cached item after this many days even if nothing changed, so a subtitle you deleted outside Jellyfin is eventually regenerated. Deleting a file outside Jellyfin does not bump the change token until the next library scan, which is what this covers. `0` disables the time backstop and relies on the change token alone. |
 
 The **Clear skip cache now** button next to the field empties the cache immediately, so the next scheduled run re-checks every item from scratch.
@@ -111,6 +111,34 @@ English is the only language whisper can translate into.
 | Also create an English subtitle when a title has none | Off | For a title whose audio is not English and that has no English subtitle, additionally translate it. Titles with English audio, or an existing English subtitle, are skipped automatically, so this only fills a gap. Uses whisper's own `--translate`, no external service. |
 
 This applies only when Subtitle Mode includes Full subtitles. It does nothing in Forced Only, and it is implicit in Translation Only.
+
+## More target languages (experimental)
+
+Whisper translates only into English. For a title whose audio is English, the plugin can also write a subtitle in any of 24 European languages with [NVIDIA Canary](https://huggingface.co/nvidia/canary-1b-v2), which [CrispASR](https://github.com/CrispStrobe/CrispASR) runs. The [design doc](https://github.com/GeiserX/whisper-subs/blob/main/docs/design/crispasr-translation-engine.md) has the reasoning and the test results.
+
+The section sits under Translation on the settings page and needs **Also create an English subtitle when a title has none** turned on. Nothing changes until you pick a language.
+
+| Setting | Default | What it does |
+|---|---|---|
+| Target language checkboxes | none | Each checked language gets its own `.translated` subtitle, for example `Movie.nl.WhisperSubs.translated.srt`. Stored as `TranslationTargetLanguages`. |
+| crispasr Binary | not installed | Downloads the pinned CrispASR release for your platform. On Linux x64 the variants are CPU, which is the default, CPU compatibility for CPUs without AVX2, Vulkan, CUDA 12, CUDA 13 and ROCm. CPU is the default because Canary ran no faster on an integrated GPU. The Vulkan and ROCm builds do not fall back to the CPU when the driver is missing. |
+| Canary Model | not installed | Downloads the Canary GGUF weights. Q8_0 is 1.05 GB and recommended. Q5_0 is 720 MB. |
+| crispasr binary path | empty | Filled by the Download button. Set it only for your own build. |
+| Canary model path | empty | Filled by the model Download button. |
+| Canary thread count | `0` | crispasr `-t`. `0` keeps the engine's own default. |
+
+Per title and per language, the pass skips instead of translating when:
+
+- The audio is not English, or its language cannot be determined. This is the normal case for most of a library, so it is logged at Information level and is not an error.
+- The audio is already in that language.
+- The plugin already wrote a translated subtitle in that language.
+- A usable subtitle in that language exists and **Skip media that already has subtitles** is on.
+
+If the audio is English and no engine can make the language, that language fails for the title with an error naming the missing engine. An engine is the local crispasr binary and Canary model together, or a worker that lists the language, as described in [Remote workers](./remote-workers.md#crispasr-server-workers). No file is written for a language that fails or skips.
+
+The scheduled task treats an English title as finished only when every checked language has its subtitle, so adding a language gets picked up by the next automatic run. Changing the list also clears the skip cache.
+
+Canary output is experimental. [Limitations](./limitations.md#translation) explains what it cannot do.
 
 ## Subtitle timing
 
@@ -247,4 +275,4 @@ The remaining settings belong to features with their own pages.
 |---|---|
 | Whisper Binary Path, Whisper Model Path, and the recorded binary variant | [Setup guide](/docs/setup) |
 | Vocal separation: the master switch, binary and model paths, the recorded variant and quantization, overlap and chunk size | [Vocal separation](/docs/setup#vocal-separation) |
-| Remote Whisper API URL, model and key, the worker pool list, and whether the local host participates as a worker | [Remote workers](/remote-workers) |
+| Remote Whisper API URL, model and key, the worker pool list with each worker's dialect and translation targets, and whether the local host participates as a worker | [Remote workers](/remote-workers) |

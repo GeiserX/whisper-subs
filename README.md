@@ -36,6 +36,7 @@ Everything past this page lives at **[geiserx.github.io/whisper-subs](https://ge
 - **Automatic language detection.** Reads each audio stream's language tag, falling back to whisper's own detection when tags are absent. A multi-language file gets one subtitle per audio language.
 - **Forced subtitles.** Transcribe only foreign-language dialogue, via VAD speech segmentation and per-chunk language detection.
 - **English translation.** Optionally add an English subtitle to a title that has none. English is the only language whisper can translate into.
+- **More target languages (experimental).** English audio can also get subtitles in 24 European languages from [NVIDIA Canary](https://huggingface.co/nvidia/canary-1b-v2), run by [CrispASR](https://github.com/CrispStrobe/CrispASR) on this server or on a CrispASR worker. Audio in other languages still translates to English only. See [Settings](https://geiserx.github.io/whisper-subs/configuration/#more-target-languages-experimental).
 - **Lyrics (experimental).** `.lrc` files for music libraries, picked up by Jellyfin automatically.
 - **Vocal separation (optional).** Isolate vocals with [BSRoformer.cpp](https://github.com/chenmozhijin/BSRoformer.cpp) before transcription for noisy content. Falls back to the original audio when unavailable.
 - **GPU acceleration.** CUDA (NVIDIA), Vulkan (Intel / AMD / NVIDIA) and ROCm (AMD).
@@ -87,6 +88,7 @@ Subtitles are written next to the media and picked up by Jellyfin on the metadat
 | Full subtitles | `Movie.es.WhisperSubs.srt` |
 | Forced subtitles | `Movie.es.WhisperSubs.forced.srt` |
 | English translation | `Movie.en.WhisperSubs.translated.srt` |
+| Canary translation, English audio only (experimental) | `Movie.nl.WhisperSubs.translated.srt` |
 | Lyrics | `Song.lrc` |
 
 The label is both the title shown in Jellyfin's subtitle picker and the marker the plugin uses to recognise its own files, so pick something distinctive if you change it. Files written by older versions with the `.generated.` anchor are still recognised. Both **Subtitle label** and **Filename template** are on the settings page.
