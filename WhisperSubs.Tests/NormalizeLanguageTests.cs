@@ -73,6 +73,17 @@ public class NormalizeLanguageCodeTests
         Assert.Equal(expected, CallNormalizeLanguageCode(input));
     }
 
+    // This result names output files. The comparison table learned these codes; the audio-tag table
+    // must not, or a title with Bulgarian audio would get a differently named subtitle on the next run.
+    [Theory]
+    [InlineData("bul", "bul")]
+    [InlineData("hrv", "hrv")]
+    [InlineData("slo", "slo")]
+    public void ComparisonOnlyCodes_DoNotChangeTheAudioTag(string input, string expected)
+    {
+        Assert.Equal(expected, CallNormalizeLanguageCode(input));
+    }
+
     [Theory]
     [InlineData("en", "en")]
     [InlineData("es", "es")]

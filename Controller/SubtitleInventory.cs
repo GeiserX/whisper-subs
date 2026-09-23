@@ -118,9 +118,32 @@ namespace WhisperSubs.Controller
         /// <summary>
         /// Normalizes a language tag (639-2/B, 639-2/T, full English word, or already-639-1) to a
         /// canonical ISO 639-1 code for comparison. Returns null for empty/undetermined ("und").
-        /// Mirrors SubtitleManager.NormalizeLanguageCode plus common English-word spellings.
+        /// This is the comparison table: it is <see cref="NormalizeAudioTag"/> plus the Canary target
+        /// languages that table lacks, so a subtitle or audio track tagged "bul" matches the "bg" target.
         /// </summary>
         public static string? NormalizeLang(string? code)
+        {
+            var c = NormalizeAudioTag(code);
+            return c switch
+            {
+                "bul" or "bulgarian" => "bg",
+                "hrv" or "croatian" => "hr",
+                "est" or "estonian" => "et",
+                "lav" or "latvian" => "lv",
+                "lit" or "lithuanian" => "lt",
+                "mlt" or "maltese" => "mt",
+                "slk" or "slo" or "slovak" => "sk",
+                "slv" or "slovenian" => "sl",
+                _ => c
+            };
+        }
+
+        /// <summary>
+        /// The table SubtitleManager.NormalizeLanguageCode uses for audio-track tags. Its result names
+        /// generated subtitle files and is the language whisper is run with, so a new arm here renames
+        /// the output of existing titles. Add comparison-only codes to <see cref="NormalizeLang"/> instead.
+        /// </summary>
+        internal static string? NormalizeAudioTag(string? code)
         {
             if (string.IsNullOrWhiteSpace(code)) return null;
             var c = code.Trim().ToLowerInvariant();
@@ -160,7 +183,7 @@ namespace WhisperSubs.Controller
                 "eus" or "baq" or "basque" or "eu" => "eu",
                 "glg" or "galician" or "gl" => "gl",
                 // Region-qualified (e.g. "pt-BR", "en-US") → base language.
-                _ when c.Contains('-') => NormalizeLang(c.Split('-')[0]),
+                _ when c.Contains('-') => NormalizeAudioTag(c.Split('-')[0]),
                 _ => c
             };
         }

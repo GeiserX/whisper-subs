@@ -202,6 +202,13 @@ public class SubtitleSkipCacheTests
         Assert.True(TranslationDone(true, new[] { "es" }, new string?[] { "eng", "spa" }));
     }
 
+    // Jellyfin reports the raw tag; "bul" must count as the audio already being in the "bg" target.
+    [Fact]
+    public void TranslationComplete_BulgarianAudioTag_SatisfiesTheBgTarget()
+    {
+        Assert.True(TranslationDone(true, new[] { "bg" }, new string?[] { "eng", "bul" }));
+    }
+
     // Non-English or untagged audio skips every target, so the targets never hold such a title back.
     [Theory]
     [InlineData("spa")]

@@ -1033,12 +1033,14 @@ namespace WhisperSubs.Controller
         /// </summary>
         internal static HashSet<string> AudioLanguagesForTargets(IReadOnlyList<string> resolvedLanguages, (string Language, float Probability)? probe)
         {
+            // The audio codes come from the audio-tag table, which keeps "bul" as "bul" so output file
+            // names never change. Comparing against a target needs the wider comparison table.
             var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var l in resolvedLanguages)
             {
-                if (!string.Equals(l, "auto", StringComparison.OrdinalIgnoreCase)) set.Add(l);
+                if (SubtitleInventory.NormalizeLang(l) is { } code) set.Add(code);
             }
-            if (probe is { } p && p.Probability >= 0.3f && !string.IsNullOrWhiteSpace(p.Language)) set.Add(p.Language.Trim());
+            if (probe is { } p && p.Probability >= 0.3f && SubtitleInventory.NormalizeLang(p.Language) is { } probed) set.Add(probed);
             return set;
         }
 
@@ -2668,11 +2670,13 @@ namespace WhisperSubs.Controller
         /// </summary>
         private static string NormalizeLanguageCode(string code)
         {
-            // Delegates to the single canonical table in SubtitleInventory.NormalizeLang (which also
-            // handles English word-forms and region tags like "pt-BR"). The `?? code.ToLowerInvariant()`
-            // preserves this method's non-null contract: callers expect a usable code back, and
-            // placeholder tags ("auto"/"und", which NormalizeLang maps to null) round-trip unchanged.
-            return SubtitleInventory.NormalizeLang(code) ?? (code ?? "").ToLowerInvariant();
+            // Delegates to the audio-tag table in SubtitleInventory.NormalizeAudioTag (which also
+            // handles English word-forms and region tags like "pt-BR"). It is deliberately not the wider
+            // comparison table NormalizeLang: this result names output files, so widening it would rename
+            // the subtitles of existing titles. The `?? code.ToLowerInvariant()` preserves this method's
+            // non-null contract: callers expect a usable code back, and placeholder tags ("auto"/"und",
+            // which the table maps to null) round-trip unchanged.
+            return SubtitleInventory.NormalizeAudioTag(code) ?? (code ?? "").ToLowerInvariant();
         }
     }
 }

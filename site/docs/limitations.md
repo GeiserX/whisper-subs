@@ -75,8 +75,6 @@ Canary output is experimental:
 - Its translation into English was weaker than Whisper's, which is why the English subtitle always comes from Whisper.
 - Its quality on film audio with music, effects and overlapping speech has only been checked on short clips.
 
-The subtitle inventory does not yet map the three-letter codes `bul`, `hrv`, `est`, `lav`, `lit`, `mlt`, `slk` and `slv`, which are Bulgarian, Croatian, Estonian, Latvian, Lithuanian, Maltese, Slovak and Slovenian. An existing subtitle tagged with one of them is not recognised as satisfying that target, so the plugin writes its own subtitle next to it.
-
 WhisperSubs will not add a text-to-text translation step. Translating an existing `.srt` is a different pipeline stage with a different API contract, different failure modes and a separate dependency. Coupling subtitle generation to a translation service's availability doubles the config surface for something orthogonal to speech-to-text.
 
 :::tip Workaround

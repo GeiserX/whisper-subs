@@ -135,6 +135,18 @@ public class TranslationTargetsTests
         Assert.Empty(SubtitleManager.AudioLanguagesForTargets(new[] { "auto" }, null));
     }
 
+    // The audio tag stays "bul" (it names files), but compared with a target it is Bulgarian.
+    [Fact]
+    public void AudioLanguagesForTargets_BulgarianTag_MatchesTheBgTarget()
+    {
+        var audio = SubtitleManager.AudioLanguagesForTargets(new[] { "en", "bul" }, null);
+        Assert.Contains("bg", audio);
+
+        var plan = Assert.Single(SubtitleManager.PlanTranslationTargets(
+            new[] { "bg" }, audio, "en", _ => true, _ => false, _ => false, force: true));
+        Assert.Equal("the audio is already in 'bg'", plan.SkipReason);
+    }
+
     // ── Plan ───────────────────────────────────────────────────────────────
 
     private static IReadOnlyList<SubtitleManager.TranslationTargetPlan> Plan(
