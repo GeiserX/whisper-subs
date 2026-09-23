@@ -31,5 +31,29 @@ namespace WhisperSubs.Controller.Workers
             if (hasLegacyRemoteUrl) return (WorkerSource.LegacyRemote, false);
             return (WorkerSource.LocalOnly, true);
         }
+
+        /// <summary>
+        /// Whether the built pool holds the host's own worker: the plan adds it, or no remote worker was
+        /// built (the pool is never empty, e.g. every explicit row disabled). The one rule for
+        /// <see cref="WorkerRegistry.BuildWorkers"/> and for the translation error that explains why this
+        /// server cannot serve a target.
+        /// </summary>
+        public static bool IncludesLocal(bool addLocal, int builtRemoteWorkers) => addLocal || builtRemoteWorkers == 0;
+
+        /// <summary>
+        /// <see cref="IncludesLocal"/> from config counts: <paramref name="usableExplicitRows"/> is the number
+        /// of enabled explicit rows with a URL, which is what the registry builds remote workers from.
+        /// </summary>
+        public static bool HostsLocal(int explicitWorkerCount, int usableExplicitRows, bool hasLegacyRemoteUrl, bool enableLocalWorker)
+        {
+            var (source, addLocal) = Decide(explicitWorkerCount, hasLegacyRemoteUrl, enableLocalWorker);
+            var remotes = source switch
+            {
+                WorkerSource.ExplicitList => usableExplicitRows,
+                WorkerSource.LegacyRemote => 1,
+                _ => 0,
+            };
+            return IncludesLocal(addLocal, remotes);
+        }
     }
 }

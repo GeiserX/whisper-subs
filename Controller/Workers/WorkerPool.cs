@@ -179,6 +179,25 @@ namespace WhisperSubs.Controller.Workers
         }
 
         /// <summary>
+        /// Whether the running pool holds the host's own worker. The composition is fixed when the pool is
+        /// built, so this can differ from what the current settings would build until the next rebuild.
+        /// </summary>
+        public bool HasLocalWorker
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    foreach (var key in _keys)
+                    {
+                        if (_byKey[key].Capabilities.IsLocal) return true;
+                    }
+                    return false;
+                }
+            }
+        }
+
+        /// <summary>
         /// True if ANY worker could serve <paramref name="job"/>'s hard requirements ignoring current load —
         /// i.e. a capable worker exists (maybe busy). The dispatcher checks this before <see cref="AcquireAsync"/>
         /// so a job no worker can EVER serve is failed fast instead of blocking a slot forever.

@@ -945,7 +945,13 @@ namespace WhisperSubs.Controller
                 HasOwned,
                 HasUsable,
                 force,
-                canaryInstalledHere: SubtitleProviderFactory.IsCanaryInstalled(config.CrispAsrBinaryPath, config.CanaryModelPath, File.Exists),
+                localCanary: TranslationRoute.LocalCanary(
+                    SubtitleProviderFactory.IsCanaryInstalled(config.CrispAsrBinaryPath, config.CanaryModelPath, File.Exists),
+                    engines.LocalWorkerInPool,
+                    config.Workers?.Count ?? 0,
+                    config.Workers?.Count(w => w.Enabled && !string.IsNullOrWhiteSpace(w.ApiUrl)) ?? 0,
+                    !string.IsNullOrWhiteSpace(config.RemoteWhisperApiUrl),
+                    config.EnableLocalWorker),
                 skipUnserved: engines.SkipUnservedTargets);
 
             // englishAudioPath is set only once a complete extraction exists, so every target reuses it.
@@ -1176,13 +1182,13 @@ namespace WhisperSubs.Controller
             Func<string, bool> hasOwnedTranslation,
             Func<string, bool> hasUsableSubtitle,
             bool force,
-            bool canaryInstalledHere = false,
+            LocalCanaryState localCanary = LocalCanaryState.NotInstalled,
             bool skipUnserved = false)
         {
             var plans = new List<TranslationTargetPlan>(targets.Count);
             foreach (var target in targets)
             {
-                var route = TranslationRoute.Decide(sourceLanguage, target, engineAvailable(target), canaryInstalledHere);
+                var route = TranslationRoute.Decide(sourceLanguage, target, engineAvailable(target), localCanary);
                 string? skip = null;
                 if (audioLanguages.Contains(target))
                 {

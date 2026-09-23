@@ -1,3 +1,4 @@
+using System;
 using WhisperSubs.Controller;
 using WhisperSubs.Setup;
 using Xunit;
@@ -55,20 +56,90 @@ public class TranslationRouteTests
         Assert.DoesNotContain("not a worker", decision.Reason);
     }
 
-    // Installed here, but no pool worker lists the target (a legacy single remote URL, or the local
-    // worker turned off): installing again would not help, so the reason must say what would.
+    // Installed, but "Also use this server as a worker" is off and no row lists the target.
     [Fact]
-    public void EnglishAudio_CanaryInstalledButServerNotAWorker_SaysSo()
+    public void EngineMissing_InstalledLocalWorkerOff_NamesTheOption()
     {
-        var decision = TranslationRoute.Decide("en", "nl", canaryAvailable: false, canaryInstalledHere: true);
-        Assert.Equal(TranslationEngine.EngineMissing, decision.Engine);
-        Assert.Contains("installed on this server, but this server is not a worker in the pool", decision.Reason);
-        Assert.Contains("Also use this server as a worker", decision.Reason);
-        Assert.Contains("CrispASR server row that lists 'nl'", decision.Reason);
-        Assert.DoesNotContain("not installed", decision.Reason);
+        var reason = TranslationRoute.Decide("en", "nl", canaryAvailable: false, LocalCanaryState.LocalWorkerOff).Reason;
+        Assert.Contains("installed on this server", reason);
+        Assert.Contains("\"Also use this server as a worker\" is off", reason);
+        Assert.Contains("CrispASR server row that lists 'nl'", reason);
+        Assert.DoesNotContain("not installed", reason);
+    }
 
-        // An available engine wins whatever the local install says.
-        Assert.Equal(TranslationEngine.Canary, TranslationRoute.Decide("en", "nl", canaryAvailable: true, canaryInstalledHere: true).Engine);
+    // Installed, but a single legacy Remote API URL makes the pool remote-only.
+    [Fact]
+    public void EngineMissing_InstalledLegacyRemoteUrl_NamesTheRemoteUrl()
+    {
+        var reason = TranslationRoute.Decide("en", "nl", canaryAvailable: false, LocalCanaryState.LegacyRemoteOnly).Reason;
+        Assert.Contains("installed on this server", reason);
+        Assert.Contains("single Remote API URL", reason);
+        Assert.DoesNotContain("is off", reason);
+        Assert.DoesNotContain("not installed", reason);
+    }
+
+    // The live bug: this server WAS a worker, and the old message said it was not.
+    [Fact]
+    public void EngineMissing_NeverSaysNotAWorkerWhenThisServerIsOne()
+    {
+        foreach (var state in Enum.GetValues<LocalCanaryState>())
+        {
+            Assert.DoesNotContain("not a worker", TranslationRoute.Decide("en", "nl", false, state).Reason);
+        }
+        Assert.Contains("which is a worker in the pool", TranslationRoute.Decide("en", "nl", false, LocalCanaryState.InPool).Reason);
+        // An available engine wins whatever the local state says.
+        Assert.Equal(TranslationEngine.Canary, TranslationRoute.Decide("en", "nl", true, LocalCanaryState.LocalWorkerOff).Engine);
+    }
+
+    // A pool built from these same settings: the state agrees with the rule the registry builds from.
+    [Theory]
+    [InlineData(false, 0, 0, false, true, LocalCanaryState.NotInstalled)]
+    [InlineData(false, 2, 2, false, false, LocalCanaryState.NotInstalled)]   // missing files come first
+    [InlineData(true, 0, 0, false, true, LocalCanaryState.InPool)]           // default single server
+    [InlineData(true, 0, 0, false, false, LocalCanaryState.InPool)]          // the toggle only matters with rows
+    [InlineData(true, 2, 2, false, true, LocalCanaryState.InPool)]
+    [InlineData(true, 2, 2, false, false, LocalCanaryState.LocalWorkerOff)]
+    [InlineData(true, 2, 0, false, false, LocalCanaryState.InPool)]          // every row disabled: the pool falls back to local
+    [InlineData(true, 0, 0, true, true, LocalCanaryState.LegacyRemoteOnly)]
+    [InlineData(true, 2, 2, true, true, LocalCanaryState.InPool)]            // rows win over the legacy URL
+    public void LocalCanary_MatchesThePoolComposition(
+        bool installed, int rows, int usableRows, bool legacyUrl, bool enableLocal, LocalCanaryState expected)
+    {
+        var builtWithLocal = Controller.Workers.WorkerPlan.HostsLocal(rows, usableRows, legacyUrl, enableLocal);
+        Assert.Equal(expected, TranslationRoute.LocalCanary(installed, builtWithLocal, rows, usableRows, legacyUrl, enableLocal));
+    }
+
+    // Without a pool (null) the only engine is this server's install as read when the pass began. A
+    // failure there means it was not installed then, even if the files have appeared since; the message
+    // must not mention a pool worker, the local-worker option or a rebuild, none of which exist here.
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public void LocalCanary_NoPool_IsNotInstalledWhateverTheSettings(bool enableLocal, bool legacyUrl)
+    {
+        var state = TranslationRoute.LocalCanary(installed: true, localWorkerInPool: null, 2, 2, legacyUrl, enableLocal);
+        Assert.Equal(LocalCanaryState.NotInstalled, state);
+        var reason = TranslationRoute.Decide("en", "nl", false, state).Reason;
+        Assert.DoesNotContain("pool", reason);
+        Assert.DoesNotContain("is off", reason);
+        Assert.DoesNotContain("Remote API URL", reason);
+    }
+
+    // The pool is fixed when built; the settings may have changed since. The running pool wins.
+    [Fact]
+    public void LocalCanary_RunningPoolWinsOverChangedSettings()
+    {
+        // Built with this server, the local-worker option since turned off: still in the pool.
+        Assert.Equal(LocalCanaryState.InPool, TranslationRoute.LocalCanary(true, true, 2, 2, false, enableLocalWorker: false));
+
+        // Built without it, the option since turned on: the pool predates the change. Not "is off".
+        var pending = TranslationRoute.LocalCanary(true, false, 2, 2, false, enableLocalWorker: true);
+        Assert.Equal(LocalCanaryState.PendingPoolRebuild, pending);
+        var reason = TranslationRoute.Decide("en", "nl", false, pending).Reason;
+        Assert.Contains("built before that change", reason);
+        Assert.DoesNotContain("is off", reason);
+        Assert.DoesNotContain("within a minute", reason);
     }
 
     // A non-English source to a non-English target is the pair the spike showed failing silently.
