@@ -214,6 +214,13 @@ or when the route is `SkipSourceNotEnglish`. The English pass runs first, and it
 result, from the existing `DetectLanguageAsync` call, decides the Canary routes too, so no extra
 detection runs.
 
+The routes come from the audio, never from the configured transcription language. With a specific
+language setting the manager runs no FFprobe and its language list is just that setting, so the
+first version sent a Spanish title to Canary as English when the setting was `en`. The pass now
+reads the FFprobe audio tags itself in that case, and falls back to the whisper probe only when the
+audio has no tags. The pass, its audio-track choice and the sweep's completeness gate share one
+"is any tag English" test.
+
 The scheduled sweep has its own completeness gate
 ([`SubtitleManager.IsTranslationComplete`](../../Controller/SubtitleManager.cs), fed by
 [`SubtitleGenerationTask`](../../ScheduledTasks/SubtitleGenerationTask.cs)), which the draft missed. It counted a title as translated as soon

@@ -147,6 +147,78 @@ public class TranslationTargetsTests
         Assert.Equal("the audio is already in 'bg'", plan.SkipReason);
     }
 
+    // ── Which language the audio really is ─────────────────────────────────
+
+    // The target route for one title, the way the pass computes it: evidence from the audio, never the
+    // configured language, then the whisper probe for untagged audio.
+    private static SubtitleManager.TranslationTargetPlan RouteFromEvidence(
+        string requested, string[] resolved, string[]? ffprobeTags, (string, float)? probe = null)
+    {
+        var evidence = SubtitleManager.TargetAudioEvidence(requested, resolved, ffprobeTags);
+        return Assert.Single(SubtitleManager.PlanTranslationTargets(
+            new[] { "nl" },
+            SubtitleManager.AudioLanguagesForTargets(evidence, probe),
+            SubtitleManager.ResolveTranslationSource(evidence, probe),
+            _ => true, _ => false, _ => false, force: false));
+    }
+
+    [Fact]
+    public void Evidence_DefaultEnglish_SpanishTaggedAudio_SkipsAsNonEnglish()
+    {
+        var plan = RouteFromEvidence("en", new[] { "en" }, new[] { "es" });
+        Assert.Equal(TranslationEngine.SkipSourceNotEnglish, plan.Route.Engine);
+        Assert.Equal(SubtitleManager.GenerationOutcome.Skipped, SubtitleManager.PlannedOutcome(plan));
+    }
+
+    [Fact]
+    public void Evidence_DefaultEnglish_UntaggedAudio_ProbeSaysSpanish_Skips()
+    {
+        // No tags: the pass must ask the probe instead of believing the setting.
+        Assert.Equal(new[] { "auto" }, SubtitleManager.TargetAudioEvidence("en", new[] { "en" }, Array.Empty<string>()));
+
+        var plan = RouteFromEvidence("en", new[] { "en" }, Array.Empty<string>(), ("es", 0.9f));
+        Assert.Equal(TranslationEngine.SkipSourceNotEnglish, plan.Route.Engine);
+    }
+
+    [Fact]
+    public void Evidence_DefaultSpanish_EnglishTaggedAudio_RoutesToCanary()
+    {
+        Assert.Equal(TranslationEngine.Canary, RouteFromEvidence("es", new[] { "es" }, new[] { "en" }).Route.Engine);
+    }
+
+    [Fact]
+    public void Evidence_Auto_EnglishTaggedAudio_RoutesToCanary()
+    {
+        // With "auto" the resolved list already is the FFprobe tags; no second probe is needed.
+        Assert.Equal(TranslationEngine.Canary, RouteFromEvidence("auto", new[] { "en" }, null).Route.Engine);
+    }
+
+    [Fact]
+    public void Evidence_Auto_UntaggedAudio_ProbeSaysEnglish_RoutesToCanary()
+    {
+        Assert.Equal(TranslationEngine.Canary, RouteFromEvidence("auto", new[] { "auto" }, null, ("en", 0.9f)).Route.Engine);
+        // An unsure probe is not evidence.
+        Assert.Equal(TranslationEngine.SkipSourceNotEnglish, RouteFromEvidence("auto", new[] { "auto" }, null, ("en", 0.1f)).Route.Engine);
+    }
+
+    // The pass and the sweep must agree on whether a title's audio is English, or a title could be
+    // incomplete to the sweep and skipped by the pass on every run.
+    [Theory]
+    [InlineData(new[] { "eng" }, true)]
+    [InlineData(new[] { "en" }, true)]
+    [InlineData(new[] { "en-US" }, true)]
+    [InlineData(new[] { "spa", "eng" }, true)]
+    [InlineData(new[] { "spa" }, false)]
+    [InlineData(new[] { "und" }, false)]
+    [InlineData(new string[0], false)]
+    public void EnglishAudio_PassAndSweepAgree(string[] tags, bool english)
+    {
+        Assert.Equal(english, SubtitleManager.HasEnglishAudioTag(tags));
+        Assert.Equal(english, SubtitleManager.ResolveTranslationSource(tags, null) == "en");
+        var sweepComplete = SubtitleManager.IsTranslationComplete(true, new[] { "nl" }, tags, _ => false, _ => false, _ => true);
+        Assert.Equal(!english, sweepComplete);
+    }
+
     // ── Plan ───────────────────────────────────────────────────────────────
 
     private static IReadOnlyList<SubtitleManager.TranslationTargetPlan> Plan(
