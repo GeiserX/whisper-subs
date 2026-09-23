@@ -20,7 +20,7 @@ public class WorkerPoolReconcileTests
     {
         public string Name => "fake";
         public bool RequiresSpeechAlignmentOptIn => false;
-        public Task<string> TranscribeAsync(string audioPath, string language, CancellationToken ct, bool translate = false)
+        public Task<string> TranscribeAsync(string audioPath, string language, CancellationToken ct, bool translate = false, string? targetLanguage = null)
             => Task.FromResult(string.Empty);
         public Task<(string Language, float Probability)> DetectLanguageAsync(string audioPath, CancellationToken ct)
             => Task.FromResult(("en", 1f));

@@ -233,6 +233,33 @@ public class WhisperProviderArgsTests
         Assert.Equal(150, pct);
     }
 
+    // crispasr's Canary backend prints its own emitter with a slice counter (verified on v0.8.35).
+    [Theory]
+    [InlineData("crispasr: progress =  11% (1/9 slices)", 11)]
+    [InlineData("crispasr: progress = 100% (3/3 slices)", 100)]
+    [InlineData("  crispasr: progress =  33% (1/3 slices)", 33)]
+    public void TryParseProgress_CrispAsrCanaryLines_ParsePercent(string line, int expected)
+    {
+        var ok = WhisperProvider.TryParseProgress(line, out var pct);
+        Assert.True(ok);
+        Assert.Equal(expected, pct);
+    }
+
+    // Negative controls for the second alternative: it is anchored and needs the slice counter, so a
+    // look-alike line from anything else is not progress.
+    [Theory]
+    [InlineData("main: crispasr: progress =  11% (1/9 slices)")]
+    [InlineData("canary: progress =  11% (1/9 slices)")]
+    [InlineData("crispasr: progress = 50%")]
+    [InlineData("crispasr: processing 3 slice(s)")]
+    [InlineData("crispasr[lid]: progress = 50% (1/2 slices)")]
+    public void TryParseProgress_CrispAsrLookAlikes_ReturnFalse(string line)
+    {
+        var ok = WhisperProvider.TryParseProgress(line, out var pct);
+        Assert.False(ok);
+        Assert.Equal(0, pct);
+    }
+
     [Theory]
     [InlineData("whisper_init_state: loading model")]
     [InlineData("system_info: n_threads = 4 | AVX = 1")]

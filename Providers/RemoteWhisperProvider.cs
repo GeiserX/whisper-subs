@@ -192,8 +192,9 @@ namespace WhisperSubs.Providers
         }
 
         [ExcludeFromCodeCoverage(Justification = "HTTP I/O; the pure deadline policy is tested in TranscriptionTimeoutTests")]
-        public async Task<string> TranscribeAsync(string audioPath, string language, CancellationToken cancellationToken, bool translate = false)
+        public async Task<string> TranscribeAsync(string audioPath, string language, CancellationToken cancellationToken, bool translate = false, string? targetLanguage = null)
         {
+            WhisperProvider.EnsureEnglishTarget(targetLanguage, Name);
             if (!File.Exists(audioPath))
             {
                 throw new FileNotFoundException($"Audio file not found: {audioPath}");

@@ -289,8 +289,17 @@ namespace WhisperSubs.Controller
             // existing English subtitle is present, so this naturally fills the gap, not duplicates.
             if (plan.TranslationApplies)
             {
-                var (outcome, error) = await GenerateTranslatedSubtitleAsync(item, provider, mediaPath, languages, force, cancellationToken);
+                // English first, exactly as before. Its language probe (if it ran) is kept so the
+                // extra targets below reuse it instead of detecting the language a second time.
+                var probe = new AudioLanguageProbe();
+                var (outcome, error) = await GenerateTranslatedSubtitleAsync(item, provider, mediaPath, languages, force, probe, cancellationToken);
                 Record(outcome, error);
+
+                // Then each configured non-English target (none by default, which skips this entirely).
+                foreach (var (targetOutcome, targetError) in await GenerateTargetTranslationsAsync(item, provider, mediaPath, languages, force, probe, cancellationToken))
+                {
+                    Record(targetOutcome, targetError);
+                }
             }
 
             // If we attempted real work and every attempt failed, surface the failure
@@ -573,7 +582,7 @@ namespace WhisperSubs.Controller
         [ExcludeFromCodeCoverage(Justification = "Orchestrates FFmpeg + whisper processes for translation")]
         private async Task<(GenerationOutcome Outcome, Exception? Error)> GenerateTranslatedSubtitleAsync(
             BaseItem item, ISubtitleProvider provider, string mediaPath,
-            List<string> resolvedLanguages, bool force, CancellationToken cancellationToken)
+            List<string> resolvedLanguages, bool force, AudioLanguageProbe probe, CancellationToken cancellationToken)
         {
             // Skip if English audio is present
             if (resolvedLanguages.Any(l => string.Equals(l, "en", StringComparison.OrdinalIgnoreCase)))
@@ -590,14 +599,12 @@ namespace WhisperSubs.Controller
             // upgraded install detects a LEGACY "<name>.en.translated.srt" OR a new-label owned
             // translated sub instead of re-translating. Globs media + metadata dirs (issue #101)
             // and filters with the naming engine (Classify == Translated).
-            var existingTranslated = FindGeneratedFiles(item, Path.GetDirectoryName(mediaPath), Path.GetFileNameWithoutExtension(mediaPath) + ".*.srt")
-                .Where(f =>
-                {
-                    var n = Path.GetFileName(f);
-                    return SubtitleNaming.IsPluginOwnedSubtitle(n, label) && SubtitleNaming.Classify(n, label) == SubtitleNaming.OwnedKind.Translated;
-                })
-                .ToList();
-            if (existingTranslated.Count > 0)
+            // With extra translation targets configured, a ".nl." translated file must not count as the
+            // English one, so the match becomes per language. With none configured the original
+            // "any owned translated file" rule is kept, so an existing install decides exactly as before.
+            var ownedTranslated = FindOwnedTranslatedFileNames(item, mediaPath, label);
+            var perLanguage = NormalizeTranslationTargets(Plugin.Instance?.Configuration?.TranslationTargetLanguages).Count > 0;
+            if (HasOwnedTranslation(ownedTranslated, Path.GetFileNameWithoutExtension(mediaPath), "en", perLanguage))
             {
                 _logger.LogInformation("Translated subtitle already exists for {ItemName}, skipping", item.Name);
                 return (GenerationOutcome.Skipped, null);
@@ -650,35 +657,21 @@ namespace WhisperSubs.Controller
 
                 // Detect actual audio language via whisper before translating
                 sourceLanguage = "auto";
-                var probeDir = Path.Combine(Path.GetTempPath(), $"whispersubs_translate_probe_{Guid.NewGuid():N}");
-                Directory.CreateDirectory(probeDir);
-                try
+                var detected = await ProbeAudioLanguageOnceAsync(probe, item, provider, mediaPath, cancellationToken);
+                if (detected is { } d)
                 {
-                    var probeChunk = Path.Combine(probeDir, "probe_chunk.wav");
-                    await ExtractAudioChunkAsync(mediaPath, probeChunk, 0, 30.0, cancellationToken);
-                    var (detectedLang, probability) = await provider.DetectLanguageAsync(probeChunk, cancellationToken);
-
-                    if (string.Equals(detectedLang, "en", StringComparison.OrdinalIgnoreCase) && probability >= 0.3f)
+                    if (string.Equals(d.Language, "en", StringComparison.OrdinalIgnoreCase) && d.Probability >= 0.3f)
                     {
                         _logger.LogInformation(
                             "Skipping translation for {ItemName}: whisper detected English audio (p={Probability:F3})",
-                            item.Name, probability);
+                            item.Name, d.Probability);
                         return (GenerationOutcome.Skipped, null);
                     }
 
-                    sourceLanguage = detectedLang;
+                    sourceLanguage = d.Language;
                     _logger.LogInformation(
                         "Detected source language {Language} (p={Probability:F3}) for translation of {ItemName}",
-                        detectedLang, probability, item.Name);
-                }
-                catch (OperationCanceledException) { throw; }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Language detection failed for {ItemName}, proceeding with auto translation", item.Name);
-                }
-                finally
-                {
-                    try { if (Directory.Exists(probeDir)) Directory.Delete(probeDir, true); } catch { }
+                        d.Language, d.Probability, item.Name);
                 }
             }
             else
@@ -753,6 +746,299 @@ namespace WhisperSubs.Controller
                     catch (Exception ex) { _logger.LogWarning(ex, "Failed to delete temp audio: {Path}", tempAudioPath); }
                 }
             }
+        }
+
+        /// <summary>
+        /// One whisper language probe per item, shared by the English pass and the extra targets so
+        /// detection never runs twice. <see cref="Result"/> is null when the probe failed.
+        /// </summary>
+        internal sealed class AudioLanguageProbe
+        {
+            public bool Ran { get; set; }
+            public (string Language, float Probability)? Result { get; set; }
+        }
+
+        /// <summary>
+        /// Runs the 30-second whisper language probe the first time it is asked for, then returns the
+        /// cached result. A failed probe is logged and cached as null.
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Spawns FFmpeg + whisper for the language probe")]
+        private async Task<(string Language, float Probability)?> ProbeAudioLanguageOnceAsync(
+            AudioLanguageProbe probe, BaseItem item, ISubtitleProvider provider, string mediaPath, CancellationToken cancellationToken)
+        {
+            if (probe.Ran) return probe.Result;
+
+            var probeDir = Path.Combine(Path.GetTempPath(), $"whispersubs_translate_probe_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(probeDir);
+            try
+            {
+                var probeChunk = Path.Combine(probeDir, "probe_chunk.wav");
+                await ExtractAudioChunkAsync(mediaPath, probeChunk, 0, 30.0, cancellationToken);
+                probe.Result = await provider.DetectLanguageAsync(probeChunk, cancellationToken);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                probe.Result = null;
+                _logger.LogWarning(ex, "Language detection failed for {ItemName}, proceeding with auto translation", item.Name);
+            }
+            finally
+            {
+                try { if (Directory.Exists(probeDir)) Directory.Delete(probeDir, true); } catch { }
+            }
+
+            probe.Ran = true;
+            return probe.Result;
+        }
+
+        /// <summary>File names of every plugin-owned translated subtitle for this item (media + metadata dirs).</summary>
+        [ExcludeFromCodeCoverage(Justification = "Globs the filesystem")]
+        private static List<string> FindOwnedTranslatedFileNames(BaseItem item, string mediaPath, string label)
+            => FindGeneratedFiles(item, Path.GetDirectoryName(mediaPath), Path.GetFileNameWithoutExtension(mediaPath) + ".*.srt")
+                .Select(Path.GetFileName)
+                .Where(n => n != null && SubtitleNaming.IsPluginOwnedSubtitle(n, label)
+                            && SubtitleNaming.Classify(n, label) == SubtitleNaming.OwnedKind.Translated)
+                .Select(n => n!)
+                .ToList();
+
+        /// <summary>
+        /// Produces one translated subtitle per configured non-English target (the English one is
+        /// <see cref="GenerateTranslatedSubtitleAsync"/>). Returns nothing, and touches nothing, when
+        /// no targets are configured. Each target is planned by the pure
+        /// <see cref="PlanTranslationTargets"/>: skipped when already satisfied, failed with the route's
+        /// reason when no engine can honour it (no file is written), otherwise run through Canary on
+        /// the English audio track. The audio is extracted once and shared by every Canary target.
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Orchestrates FFmpeg + crispasr processes for translation")]
+        private async Task<List<(GenerationOutcome Outcome, Exception? Error)>> GenerateTargetTranslationsAsync(
+            BaseItem item, ISubtitleProvider provider, string mediaPath,
+            List<string> resolvedLanguages, bool force, AudioLanguageProbe probe, CancellationToken cancellationToken)
+        {
+            var results = new List<(GenerationOutcome Outcome, Exception? Error)>();
+            var config = Plugin.Instance?.Configuration;
+            var targets = NormalizeTranslationTargets(config?.TranslationTargetLanguages);
+            if (config == null || targets.Count == 0) return results;
+
+            var label = config.SubtitleLabel ?? SubtitleNaming.DefaultLabel;
+            var template = SubtitleNaming.EffectiveTemplate(config.SubtitleFilenameTemplate);
+            var mediaBaseName = Path.GetFileNameWithoutExtension(mediaPath);
+            var ownedTranslated = FindOwnedTranslatedFileNames(item, mediaPath, label);
+            bool HasOwned(string lang) => HasOwnedTranslation(ownedTranslated, mediaBaseName, lang, perLanguage: true);
+            bool HasUsable(string lang) => ShouldSkipForExistingSubtitle(item, lang);
+
+            // Untagged audio needs the whisper probe to know whether it is English. Reuse the English
+            // pass's probe; run it here only if that pass skipped before probing and a target still
+            // has work to do.
+            var untagged = resolvedLanguages.Count == 1
+                && string.Equals(resolvedLanguages[0], "auto", StringComparison.OrdinalIgnoreCase);
+            if (untagged && !probe.Ran && targets.Any(t => !HasOwned(t) && (force || !HasUsable(t))))
+            {
+                await ProbeAudioLanguageOnceAsync(probe, item, provider, mediaPath, cancellationToken);
+            }
+
+            var canary = SubtitleProviderFactory.CreateCanary(config, _logger);
+            var plans = PlanTranslationTargets(
+                targets,
+                AudioLanguagesForTargets(resolvedLanguages, probe.Result),
+                ResolveTranslationSource(resolvedLanguages, probe.Result),
+                canaryAvailable: canary != null,
+                HasOwned,
+                HasUsable,
+                force);
+
+            string? englishAudioPath = null;
+            double effectiveAudioOffset = 0;
+            try
+            {
+                foreach (var plan in plans)
+                {
+                    if (plan.SkipReason != null)
+                    {
+                        _logger.LogInformation("Skipping {Target} translation for {ItemName}: {Reason}", plan.Target, item.Name, plan.SkipReason);
+                        results.Add((GenerationOutcome.Skipped, null));
+                        continue;
+                    }
+
+                    if (plan.Route.Engine != TranslationEngine.Canary || canary == null)
+                    {
+                        // A mislabelled subtitle is worse than none: fail the target, write nothing.
+                        var unsupported = new InvalidOperationException($"Cannot create a '{plan.Target}' subtitle for \"{item.Name}\": {plan.Route.Reason}");
+                        _logger.LogError("{Message}", unsupported.Message);
+                        results.Add((GenerationOutcome.Failed, unsupported));
+                        continue;
+                    }
+
+                    try
+                    {
+                        if (englishAudioPath == null)
+                        {
+                            var audioStreamIndex = await ResolveAudioStreamIndexAsync(mediaPath, "en", cancellationToken);
+                            var audioStartTime = audioStreamIndex >= 0 && config.CompensateAudioOffset
+                                ? await GetAudioStartTimeAsync(mediaPath, audioStreamIndex, cancellationToken)
+                                : 0;
+                            effectiveAudioOffset = EffectiveAudioOffset(config.CompensateAudioOffset, audioStartTime);
+                            var path = Path.Combine(Path.GetTempPath(), $"{item.Id}_{Guid.NewGuid()}_canary.wav");
+                            SubtitleQueueService.Instance.ReportPhase("Extracting audio (translation)");
+                            await ExtractAudioForTranscriptionAsync(mediaPath, path, "en", cancellationToken, audioStreamIndex: audioStreamIndex);
+                            englishAudioPath = path;
+                        }
+
+                        _logger.LogInformation("Generating {Target} translation for {ItemName} with Canary", plan.Target, item.Name);
+                        SubtitleQueueService.Instance.ReportPhase($"Translating to {plan.Target}");
+                        var srtContent = await canary.TranscribeAsync(englishAudioPath, "en", cancellationToken, translate: true, targetLanguage: plan.Target);
+                        if (WhisperProvider.CountSrtEntries(srtContent) == 0)
+                        {
+                            throw new InvalidOperationException($"Canary produced no subtitle cues for '{plan.Target}'.");
+                        }
+                        srtContent = await ApplyTimingCorrectionsAsync(
+                            srtContent,
+                            mediaPath,
+                            englishAudioPath,
+                            isResume: false,
+                            requiresOptIn: canary.RequiresSpeechAlignmentOptIn,
+                            effectiveAudioOffset: effectiveAudioOffset,
+                            ct: cancellationToken);
+
+                        var srtPath = ResolveSubtitleSavePath(item, SubtitleNaming.BuildMediaAdjacentPath(mediaPath, template, plan.Target, label, type: "translated", ".srt"));
+                        await WriteTextAtomicAsync(srtPath, srtContent, CancellationToken.None);
+                        _logger.LogInformation("Saved {Target} translated subtitle to {SrtPath}", plan.Target, srtPath);
+                        results.Add((GenerationOutcome.Succeeded, null));
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        _logger.LogInformation("Cancelled {Target} translation for {ItemName}", plan.Target, item.Name);
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Error generating {Target} translated subtitle for {ItemName}", plan.Target, item.Name);
+                        results.Add((GenerationOutcome.Failed, ex));
+                    }
+                }
+            }
+            finally
+            {
+                if (englishAudioPath != null && File.Exists(englishAudioPath))
+                {
+                    try { File.Delete(englishAudioPath); }
+                    catch (Exception ex) { _logger.LogWarning(ex, "Failed to delete temp audio: {Path}", englishAudioPath); }
+                }
+            }
+
+            return results;
+        }
+
+        /// <summary>One configured translation target and what the pass will do with it.</summary>
+        internal sealed record TranslationTargetPlan(string Target, TranslationRouteDecision Route, string? SkipReason);
+
+        /// <summary>
+        /// Normalizes the configured extra targets: trimmed, lower-case, de-duplicated, config order
+        /// kept, English and blanks dropped (English is always the Whisper pass). Pure.
+        /// </summary>
+        internal static List<string> NormalizeTranslationTargets(IEnumerable<string>? configured)
+        {
+            var result = new List<string>();
+            if (configured == null) return result;
+            foreach (var raw in configured)
+            {
+                var code = (raw ?? "").Trim().ToLowerInvariant();
+                if (code.Length == 0 || code == "en" || result.Contains(code)) continue;
+                result.Add(code);
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// The source language the extra targets are routed from: "en" when any audio track is English
+        /// (Canary then reads that track), the whisper probe's language for untagged audio when it is
+        /// confident (p ≥ 0.3, the same bar the English pass uses), otherwise the first tagged
+        /// language, or "auto" when nothing is known. Pure.
+        /// </summary>
+        internal static string ResolveTranslationSource(IReadOnlyList<string> resolvedLanguages, (string Language, float Probability)? probe)
+        {
+            if (resolvedLanguages.Any(l => string.Equals(l, "en", StringComparison.OrdinalIgnoreCase))) return "en";
+
+            var tagged = resolvedLanguages.FirstOrDefault(l => !string.Equals(l, "auto", StringComparison.OrdinalIgnoreCase));
+            if (tagged != null) return tagged.ToLowerInvariant();
+
+            return probe is { } p && p.Probability >= 0.3f && !string.IsNullOrWhiteSpace(p.Language)
+                ? p.Language.Trim().ToLowerInvariant()
+                : "auto";
+        }
+
+        /// <summary>
+        /// Every language the title's audio is known to be in: the tagged tracks, plus the probe's
+        /// language when it is confident. A target in this set needs no translation. Pure.
+        /// </summary>
+        internal static HashSet<string> AudioLanguagesForTargets(IReadOnlyList<string> resolvedLanguages, (string Language, float Probability)? probe)
+        {
+            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var l in resolvedLanguages)
+            {
+                if (!string.Equals(l, "auto", StringComparison.OrdinalIgnoreCase)) set.Add(l);
+            }
+            if (probe is { } p && p.Probability >= 0.3f && !string.IsNullOrWhiteSpace(p.Language)) set.Add(p.Language.Trim());
+            return set;
+        }
+
+        /// <summary>
+        /// Plans the extra translation targets in order. For each target the first matching rule wins:
+        /// skip when the audio is already in the target, when the plugin already made a translated
+        /// subtitle in it (kept even under <paramref name="force"/>, like the English pass), or when a
+        /// usable subtitle in it exists (bypassed by <paramref name="force"/>); otherwise the target
+        /// carries its <see cref="TranslationRoute"/> decision, and an Unsupported route fails.
+        /// Pure: the filesystem and stream checks come in as predicates.
+        /// </summary>
+        internal static IReadOnlyList<TranslationTargetPlan> PlanTranslationTargets(
+            IReadOnlyList<string> targets,
+            IReadOnlySet<string> audioLanguages,
+            string sourceLanguage,
+            bool canaryAvailable,
+            Func<string, bool> hasOwnedTranslation,
+            Func<string, bool> hasUsableSubtitle,
+            bool force)
+        {
+            var plans = new List<TranslationTargetPlan>(targets.Count);
+            foreach (var target in targets)
+            {
+                var route = TranslationRoute.Decide(sourceLanguage, target, canaryAvailable);
+                string? skip = null;
+                if (audioLanguages.Contains(target))
+                {
+                    skip = $"the audio is already in '{target}'";
+                }
+                else if (hasOwnedTranslation(target))
+                {
+                    skip = $"a '{target}' translated subtitle already exists";
+                }
+                else if (!force && hasUsableSubtitle(target))
+                {
+                    skip = $"a usable '{target}' subtitle is already present";
+                }
+                plans.Add(new TranslationTargetPlan(target, route, skip));
+            }
+            return plans;
+        }
+
+        /// <summary>
+        /// Whether a plugin-owned translated subtitle already exists for <paramref name="language"/>.
+        /// Without per-language matching (no extra targets configured) any owned translated file counts,
+        /// which is the rule every existing install has always used. With it, the language must be a
+        /// separate token in the part of the file name after the media's own name, so a name such as
+        /// "It.en.WhisperSubs.translated.srt" is English, not Italian. Pure.
+        /// </summary>
+        internal static bool HasOwnedTranslation(IEnumerable<string> ownedTranslatedFileNames, string mediaBaseName, string language, bool perLanguage)
+        {
+            foreach (var fileName in ownedTranslatedFileNames)
+            {
+                if (!perLanguage) return true;
+                var rest = fileName.StartsWith(mediaBaseName, StringComparison.OrdinalIgnoreCase)
+                    ? fileName[mediaBaseName.Length..]
+                    : fileName;
+                var tokens = rest.Split(new[] { '.', '-', '_', ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                if (tokens.Any(t => string.Equals(t, language, StringComparison.OrdinalIgnoreCase))) return true;
+            }
+            return false;
         }
 
         /// <summary>
