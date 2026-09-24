@@ -141,10 +141,25 @@
         });
     }
 
+    // Whether the server translates this item: a movie, episode or other video, a season or a series.
+    // Collections, albums, people and folders get no list, since the server would refuse the pick. Any
+    // lookup error answers no, so the list is left out rather than offered where it cannot work.
+    function isTranslatableItem(itemId) {
+        try {
+            return ApiClient.getItem(ApiClient.getCurrentUserId(), itemId).then(function (item) {
+                return !!item && (item.MediaType === 'Video' || item.Type === 'Series' || item.Type === 'Season');
+            }).catch(function () { return false; });
+        } catch (e) {
+            return Promise.resolve(false);
+        }
+    }
+
     // "Translate into…" next to the Subtitles button. Native <select>; option labels and every status
     // message go through textContent.
     function injectTranslateControl(row, anchor, mode, itemId) {
-        getTranslationTargets().then(function (targets) {
+        Promise.all([getTranslationTargets(), isTranslatableItem(itemId)]).then(function (found) {
+            var targets = found[0];
+            if (!found[1]) return;
             if (!targets || targets.length === 0) return;
             if (row.querySelector('.btnWhisperSubsTranslate')) return; // guard against a double inject
 
