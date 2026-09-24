@@ -11,6 +11,7 @@ using WhisperSubs.Configuration;
 using WhisperSubs.Controller;
 using WhisperSubs.Controller.Workers;
 using WhisperSubs.Providers;
+using WhisperSubs.Setup;
 using Xunit;
 
 namespace WhisperSubs.Tests;
@@ -120,12 +121,64 @@ public class WorkerTranslateTargetsTests
     // ── Local worker ───────────────────────────────────────────────────────
 
     [Fact]
-    public void ForLocal_AddsConfiguredTargetsOnlyWhenCanaryIsInstalled()
+    public void ForLocal_OffersEveryCanaryTargetOnlyWhenInstalled()
     {
-        var configured = new[] { "nl", "EN", "xx", "de" };
-        Assert.True(WorkerTargets.ForLocal(configured, canaryInstalled: false).SetEquals(new[] { "en" }));
-        Assert.True(WorkerTargets.ForLocal(configured, canaryInstalled: true).SetEquals(new[] { "en", "nl", "de" }));
-        Assert.True(WorkerTargets.ForLocal(null, canaryInstalled: true).SetEquals(new[] { "en" }));
+        var installed = WorkerTargets.ForLocal(canaryInstalled: true);
+        Assert.Equal(25, installed.Count);
+        Assert.Contains("en", installed);
+        Assert.All(CanaryCatalog.Targets, t => Assert.Contains(t.Code, installed));
+        Assert.Contains("ES", installed);   // case-insensitive like every target set
+
+        Assert.True(WorkerTargets.ForLocal(canaryInstalled: false).SetEquals(new[] { "en" }));
+    }
+
+    // ── Served by the configuration (no pool yet) ─────────────────────────
+
+    [Fact]
+    public void ServedByConfig_Rules()
+    {
+        Assert.True(WorkerTargets.ServedByConfig("es", canaryInstalled: true, hostsLocal: true, rows: null));
+        Assert.False(WorkerTargets.ServedByConfig("es", canaryInstalled: true, hostsLocal: false, rows: null));
+        Assert.False(WorkerTargets.ServedByConfig("es", canaryInstalled: false, hostsLocal: true, rows: new List<WhisperWorker>()));
+
+        var disabled = Row("crispasr", "es");
+        disabled.Enabled = false;
+        var blankUrl = Row("crispasr", "es");
+        blankUrl.ApiUrl = "  ";
+        Assert.False(WorkerTargets.ServedByConfig("es", false, false, new[] { disabled, blankUrl }));
+
+        Assert.True(WorkerTargets.ServedByConfig("es", false, false, new[] { Row("crispasr", "en", "es") }));
+        Assert.False(WorkerTargets.ServedByConfig("nl", false, false, new[] { Row("crispasr", "en", "es") }));
+        // An OpenAI-dialect row can only translate into English, whatever it lists.
+        Assert.False(WorkerTargets.ServedByConfig("es", false, false, new[] { Row("openai", "en", "es") }));
+    }
+
+    // ── Which provider makes a target ──────────────────────────────────────
+
+    private sealed class NamedProvider : ISubtitleProvider
+    {
+        public NamedProvider(string name) => Name = name;
+        public string Name { get; }
+        public bool RequiresSpeechAlignmentOptIn => false;
+        public Task<string> TranscribeAsync(string audioPath, string language, CancellationToken ct, bool translate = false, string? targetLanguage = null)
+            => Task.FromResult(string.Empty);
+        public Task<(string Language, float Probability)> DetectLanguageAsync(string audioPath, CancellationToken ct)
+            => Task.FromResult(("en", 1f));
+    }
+
+    [Fact]
+    public void TargetProviders_EnglishUsesTheWhisperProvider_OthersTheTargetProvider()
+    {
+        var whisper = new NamedProvider("whisper");
+        var canary = new NamedProvider("canary");
+        var caps = new WorkerCapabilities { TranslateTargets = WorkerTargets.ForLocal(true) };
+        var local = new TranscriptionWorker("local", "Local", whisper, caps, canary);
+        var remote = new TranscriptionWorker("r", "Remote", whisper, caps);
+
+        Assert.Same(whisper, TargetProviders.For(local, "en"));
+        Assert.Same(whisper, TargetProviders.For(local, "EN"));
+        Assert.Same(canary, TargetProviders.For(local, "es"));
+        Assert.Same(whisper, TargetProviders.For(remote, "es"));   // no target provider: the worker's own
     }
 
     // ── Config field parsing and validation ────────────────────────────────

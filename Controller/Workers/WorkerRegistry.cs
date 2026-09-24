@@ -72,15 +72,16 @@ namespace WhisperSubs.Controller.Workers
             // pool is never empty (e.g. an explicit list of all-disabled/blank workers with local off).
             if (WorkerPlan.IncludesLocal(plan.AddLocal, workers.Count))
             {
-                // English is whisper-cli's translate task. The configured Canary targets are live: read from
-                // the current configuration and install state each time the pool asks, so installing the
-                // engine or ticking a target works without waiting for the pool to be rebuilt.
+                // English is whisper-cli's translate task. The Canary targets are live: read from the install
+                // state each time the pool asks, so installing the engine works without waiting for the pool
+                // to be rebuilt. The Canary provider exists whenever the engine is installed (CreateCanary
+                // returns null otherwise), because per-title translation needs it with no target ticked.
                 var canaryLogger = loggerFactory.CreateLogger<CanaryProvider>();
                 workers.Add(new LocalTranscriptionWorker(
                     SubtitleProviderFactory.CreateLocal(config, loggerFactory),
                     () => Plugin.Instance?.Configuration ?? config,
                     CanaryInstall,
-                    current => NormalizedTargets(current).Count > 0 ? SubtitleProviderFactory.CreateCanary(current, canaryLogger) : null));
+                    current => SubtitleProviderFactory.CreateCanary(current, canaryLogger)));
             }
 
             return workers;
@@ -112,8 +113,5 @@ namespace WhisperSubs.Controller.Workers
 
         /// <summary>Shared across pool rebuilds so the cached install verdict survives them.</summary>
         private static readonly CanaryInstallCheck CanaryInstall = new();
-
-        private static List<string> NormalizedTargets(PluginConfiguration config)
-            => SubtitleManager.NormalizeTranslationTargets(config.TranslationTargetLanguages);
     }
 }

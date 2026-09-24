@@ -87,7 +87,7 @@ namespace WhisperSubs.Controller
             switch (TargetLeaseRouting.Decide(own.Capabilities.TranslateTargets, job.TranslateTarget!))
             {
                 case TargetLeasePolicy.UseOwnWorker:
-                    return new TargetEngineLease(own.TargetProvider ?? own.Provider, own.Name, null);
+                    return new TargetEngineLease(TargetProviders.For(own, job.TranslateTarget!), own.Name, null);
                 case TargetLeasePolicy.TakeFreeAnotherOnly:
                     sub = _pool.TryAcquire(job) ?? throw new InvalidOperationException(
                         $"No worker that translates into '{job.TranslateTarget}' was free while this item ran on {own.Name}, which does not list it. The next run tries again.");
@@ -100,8 +100,22 @@ namespace WhisperSubs.Controller
             var label = $"{itemName} ({job.TranslateTarget})";
             _pool.SetCurrent(sub.Key, label);
             var worker = sub.Worker;
-            return new TargetEngineLease(worker.TargetProvider ?? worker.Provider, worker.Name, () => _pool.Release(sub.Key, label));
+            return new TargetEngineLease(TargetProviders.For(worker, job.TranslateTarget!), worker.Name, () => _pool.Release(sub.Key, label));
         }
+    }
+
+    /// <summary>Which of a worker's providers makes one target. Pure.</summary>
+    internal static class TargetProviders
+    {
+        /// <summary>
+        /// "en" is Whisper's translate task, so it always uses the worker's own <see cref="ITranscriptionWorker.Provider"/>;
+        /// on this server's worker, <see cref="ITranscriptionWorker.TargetProvider"/> is Canary, which must never
+        /// make the English one. Any other target uses the target provider when the worker has one.
+        /// </summary>
+        public static ISubtitleProvider For(ITranscriptionWorker worker, string target)
+            => string.Equals(target, "en", StringComparison.OrdinalIgnoreCase)
+                ? worker.Provider
+                : worker.TargetProvider ?? worker.Provider;
     }
 
     /// <summary>

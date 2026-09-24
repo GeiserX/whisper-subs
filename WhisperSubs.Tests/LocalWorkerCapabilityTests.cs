@@ -10,8 +10,9 @@ using Xunit;
 namespace WhisperSubs.Tests;
 
 /// <summary>
-/// The host's worker must offer a Canary target as soon as the engine is installed and the target is
-/// ticked, without a pool rebuild: a long sweep keeps the pool busy, so a rebuild may be hours away.
+/// The host's worker must offer every Canary target as soon as the engine is installed, ticked or not,
+/// without a pool rebuild: a long sweep keeps the pool busy, so a rebuild may be hours away, and per-title
+/// translation runs with the nightly list empty.
 /// </summary>
 public class LocalWorkerCapabilityTests
 {
@@ -54,7 +55,7 @@ public class LocalWorkerCapabilityTests
         };
         Assert.True(pool.HasCapableWorker(WorkerJob.ForTarget("es")));
         Assert.Equal(TargetLeasePolicy.UseOwnWorker, TargetLeaseRouting.Decide(worker.Capabilities.TranslateTargets, "es"));
-        Assert.False(pool.HasCapableWorker(WorkerJob.ForTarget("nl")));   // not ticked
+        Assert.True(pool.HasCapableWorker(WorkerJob.ForTarget("nl")));    // not ticked, still served
 
         // The files go away: the cached verdict stands until the interval, then the target is gone.
         files.Clear();
@@ -65,6 +66,22 @@ public class LocalWorkerCapabilityTests
         // Whole titles and English never depended on the engine.
         Assert.True(pool.HasCapableWorker(WorkerJob.Requirements(SubtitleMode.Full, enableTranslation: true)));
         Assert.Contains("en", worker.Capabilities.TranslateTargets);
+    }
+
+    [Fact]
+    public void EmptyTargetList_EngineInstalled_ServesEveryCanaryTarget()
+    {
+        var files = new HashSet<string> { Binary, Model };
+        var config = new PluginConfiguration { CrispAsrBinaryPath = Binary, CanaryModelPath = Model };
+        Assert.Empty(config.TranslationTargetLanguages);
+        var worker = new LocalTranscriptionWorker(new FakeProvider(), () => config, new CanaryInstallCheck(files.Contains), _ => null);
+        var pool = new WorkerPool(new ITranscriptionWorker[] { worker });
+
+        Assert.True(pool.HasCapableWorker(WorkerJob.ForTarget("es")));
+        Assert.True(pool.HasCapableWorker(WorkerJob.ForTarget("nl")));
+        Assert.True(pool.HasCapableWorker(WorkerJob.ForTarget("en")));
+        // Every target is its own, so a translate job on this worker never waits for another one.
+        Assert.Equal(TargetLeasePolicy.UseOwnWorker, TargetLeaseRouting.Decide(worker.Capabilities.TranslateTargets, "nl"));
     }
 
     // A pool built with this server keeps it until the next rebuild. Turning the local-worker option
