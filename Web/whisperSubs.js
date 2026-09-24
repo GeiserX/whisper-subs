@@ -26,7 +26,7 @@
         if (caps !== null) return Promise.resolve(caps);
         try {
             var url = ApiClient.getUrl('Plugins/WhisperSubs/Requests/Capabilities');
-            return ApiClient.ajax({ type: 'GET', url: url }).then(function (resp) {
+            return ApiClient.ajax({ type: 'GET', url: url, dataType: 'json' }).then(function (resp) {
                 caps = typeof resp === 'string' ? JSON.parse(resp) : resp;
                 return caps;
             }).catch(function () { caps = { enabled: false }; return caps; });
@@ -42,7 +42,7 @@
         if (translationTargets !== null) return Promise.resolve(translationTargets);
         try {
             var url = ApiClient.getUrl('Plugins/WhisperSubs/TranslationTargets');
-            return ApiClient.ajax({ type: 'GET', url: url }).then(function (resp) {
+            return ApiClient.ajax({ type: 'GET', url: url, dataType: 'json' }).then(function (resp) {
                 var list = typeof resp === 'string' ? JSON.parse(resp) : resp;
                 translationTargets = Array.isArray(list) ? list : [];
                 return translationTargets;
@@ -85,22 +85,22 @@
 
     function generateSubtitles(itemId) {
         var url = ApiClient.getUrl('Plugins/WhisperSubs/Items/' + itemId + '/GenerateAll', { language: 'auto' });
-        return ApiClient.ajax({ type: 'POST', url: url });
+        return ApiClient.ajax({ type: 'POST', url: url, dataType: 'json' });
     }
 
     function requestSubtitles(itemId) {
         var url = ApiClient.getUrl('Plugins/WhisperSubs/Items/' + itemId + '/Request', { language: 'auto' });
-        return ApiClient.ajax({ type: 'POST', url: url });
+        return ApiClient.ajax({ type: 'POST', url: url, dataType: 'json' });
     }
 
     function translateItem(itemId, target) {
         var url = ApiClient.getUrl('Plugins/WhisperSubs/Items/' + itemId + '/Translate', { target: target });
-        return ApiClient.ajax({ type: 'POST', url: url });
+        return ApiClient.ajax({ type: 'POST', url: url, dataType: 'json' });
     }
 
     function requestTranslation(itemId, target) {
         var url = ApiClient.getUrl('Plugins/WhisperSubs/Items/' + itemId + '/Request', { language: 'auto', target: target });
-        return ApiClient.ajax({ type: 'POST', url: url });
+        return ApiClient.ajax({ type: 'POST', url: url, dataType: 'json' });
     }
 
     // A viewer's translation errors map to fixed text by status only: no server text reaches a viewer.
@@ -195,7 +195,7 @@
     function getItemRequestStatus(itemId) {
         try {
             var url = ApiClient.getUrl('Plugins/WhisperSubs/Items/' + itemId + '/RequestStatus');
-            return ApiClient.ajax({ type: 'GET', url: url }).then(function (resp) {
+            return ApiClient.ajax({ type: 'GET', url: url, dataType: 'json' }).then(function (resp) {
                 return typeof resp === 'string' ? JSON.parse(resp) : resp;
             }).catch(function () { return null; });
         } catch (e) {
