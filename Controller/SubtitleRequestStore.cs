@@ -56,6 +56,13 @@ namespace WhisperSubs.Controller
 
         /// <summary>Number of leaf media items this request expands to (1 for a film/episode).</summary>
         public int ItemCount { get; set; } = 1;
+
+        /// <summary>
+        /// Null for a subtitle request. For a translation request, the one target ("en" or a Canary code),
+        /// already validated. Left out of requests.json when null, so existing requests are unchanged.
+        /// </summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? Target { get; set; }
     }
 
     /// <summary>Result of attempting to create a request.</summary>
@@ -129,20 +136,23 @@ namespace WhisperSubs.Controller
         /// <summary>
         /// Attempts to create a request, enforcing de-dup → global cap → per-user active cap → rolling
         /// quota, in that order. Limits &lt;= 0 mean "unlimited" for that check. On success the request is
-        /// added (state Queued when <paramref name="autoApprove"/>, else Pending) and persisted.
+        /// added (state Queued when <paramref name="autoApprove"/>, else Pending) and persisted. A translation
+        /// request (<paramref name="target"/> set) is its own request: it de-dups on (user, item, target), and
+        /// counts toward the same caps and quota as any other.
         /// </summary>
         public RequestCreateResult TryCreate(
             string itemId, string itemName, string itemType, string language,
             string userId, string userName, PriorityTier tier, int itemCount, bool autoApprove,
-            long nowTicks, long windowTicks, int dailyQuota, int activeCap, int globalCap)
+            long nowTicks, long windowTicks, int dailyQuota, int activeCap, int globalCap, string? target = null)
         {
+            var jobTarget = SubtitleQueueService.NormalizeJobTarget(target);
             lock (_gate)
             {
                 EnsureRestoredLocked();
 
-                // De-dup: a user may not hold two active requests for the same item (idempotent).
+                // De-dup: a user may not hold two active requests for the same item and target (idempotent).
                 var existing = _requests.FirstOrDefault(r =>
-                    r.UserId == userId && r.ItemId == itemId && RequestPolicy.IsActive(r.State));
+                    r.UserId == userId && r.ItemId == itemId && r.Target == jobTarget && RequestPolicy.IsActive(r.State));
                 if (existing != null)
                 {
                     return new RequestCreateResult(RequestCreateOutcome.DuplicateActive, existing);
@@ -179,7 +189,8 @@ namespace WhisperSubs.Controller
                     State = autoApprove ? RequestState.Queued : RequestState.Pending,
                     CreatedTicks = nowTicks,
                     UpdatedTicks = nowTicks,
-                    ItemCount = itemCount < 1 ? 1 : itemCount
+                    ItemCount = itemCount < 1 ? 1 : itemCount,
+                    Target = jobTarget
                 };
                 _requests.Add(request);
                 PruneLocked(nowTicks);

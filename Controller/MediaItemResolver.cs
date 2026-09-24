@@ -35,6 +35,16 @@ namespace WhisperSubs.Controller
             || item is MediaBrowser.Controller.Entities.Audio.MusicAlbum;
 
         /// <summary>
+        /// What a per-title translation may target: a movie, episode or other video, a series or a season.
+        /// The generate allow-list without audio and albums, since only video is translated. Collections,
+        /// folders and library roots stay out for the same reason they are out of GenerateAll.
+        /// </summary>
+        public static bool IsTranslatableTarget(BaseItem item)
+            => IsAllowedGenerateTarget(item)
+               && item is not MediaBrowser.Controller.Entities.Audio.Audio
+               && item is not MediaBrowser.Controller.Entities.Audio.MusicAlbum;
+
+        /// <summary>
         /// Resolves the supported leaf media items (Video, or Audio when lyrics are enabled) under
         /// <paramref name="parent"/>. If <paramref name="parent"/> is itself a supported leaf, returns
         /// just it. Items without a filesystem path are excluded.

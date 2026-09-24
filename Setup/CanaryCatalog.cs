@@ -75,6 +75,13 @@ namespace WhisperSubs.Setup
             new CanaryTarget("uk", "Ukrainian"),
         };
 
+        /// <summary>
+        /// Every language a title can be translated into on request: English (Whisper) first, then the 24
+        /// Canary targets. The one list the item page offers, so it never shows a code the server refuses.
+        /// </summary>
+        public static readonly IReadOnlyList<CanaryTarget> RequestableTargets =
+            new[] { new CanaryTarget("en", "English") }.Concat(Targets).ToArray();
+
         /// <summary>True when <paramref name="code"/> is one of <see cref="Targets"/> (case-insensitive).</summary>
         public static bool IsTarget(string? code)
             => !string.IsNullOrWhiteSpace(code)

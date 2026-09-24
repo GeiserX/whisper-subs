@@ -289,6 +289,85 @@ namespace WhisperSubs.Api
         }
 
         /// <summary>
+        /// Queues a translation into <paramref name="target"/> ("en" or one of the 24 Canary languages) for a
+        /// movie, episode, other video, series or season: one translate job per video. Needs neither the
+        /// nightly target list nor the translation option. Every check runs before anything is queued; a
+        /// target no engine can make is refused with 409 and the reason.
+        /// </summary>
+        [HttpPost("Items/{itemId}/Translate")]
+        public ActionResult TranslateItem(
+            [FromRoute] string itemId,
+            [FromQuery] string? target = null)
+        {
+            try
+            {
+                var t = RequestValidation.NormalizeTranslationTarget(target);
+                if (t == null)
+                {
+                    return BadRequest(new { error = "Unsupported target language. Use en or one of the 24 Canary languages." });
+                }
+
+                if (!Guid.TryParse(itemId, out var guid))
+                {
+                    return NotFound(new { error = "Item not found" });
+                }
+
+                var item = _libraryManager.GetItemById(guid);
+                if (item == null)
+                {
+                    return NotFound(new { error = "Item not found" });
+                }
+
+                if (!MediaItemResolver.IsTranslatableTarget(item))
+                {
+                    return BadRequest(new { error = "Translation applies to a movie, episode, series or season." });
+                }
+
+                var leaves = MediaItemResolver.ResolveLeafItems(item, enableLyrics: false, _libraryManager);
+                if (leaves.Count == 0)
+                {
+                    return BadRequest(new { error = "No video found under this item." });
+                }
+
+                var config = Plugin.Instance.Configuration;
+                var queue = SubtitleQueueService.Instance;
+                if (queue.TargetEngineUnavailableReason(config, t) is { } reason)
+                {
+                    return Conflict(new { error = reason });
+                }
+
+                // One title is forced, like Generate; a season or series is not, like GenerateAll. The
+                // plugin's own translated file is kept either way.
+                var force = item is Video;
+                var (queued, skipped) = queue.EnqueueTranslations(leaves, t, config.AdminRequestTier, force);
+                _logger.LogInformation(
+                    "Queued {Queued} translate job(s) into {Target} under {ItemName} ({Skipped} already queued or running)",
+                    queued, t, item.Name, skipped);
+
+                var manager = GetSubtitleManager();
+                queue.EnsureDispatching(manager, config, _loggerFactory, _logger, CancellationToken.None);
+
+                return Accepted(new
+                {
+                    message = skipped > 0
+                        ? $"Queued {queued} title(s) for translation into '{t}' ({skipped} already queued or in progress)"
+                        : $"Queued {queued} title(s) for translation into '{t}'",
+                    item = item.Name,
+                    target = t,
+                    count = leaves.Count,
+                    queued,
+                    skipped,
+                    queueSize = queue.PriorityCount
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error queuing translation for item {ItemId}", itemId);
+                return StatusCode(500, new { error = ex.Message });
+            }
+        }
+
+        /// <summary>
         /// Gets the current queue status.
         /// </summary>
         [HttpGet("Queue")]
@@ -318,7 +397,8 @@ namespace WhisperSubs.Api
                 {
                     name = p.Name,
                     tier = p.Tier.ToString(),
-                    language = p.Language
+                    language = p.Language,
+                    target = p.Target
                 }),
                 // Outbound: which worker/endpoint is transcribing which item right now. (v4.0)
                 workers = queue.SnapshotWorkers().Select(w => new
@@ -672,6 +752,7 @@ namespace WhisperSubs.Api
                 tier = r.Tier.ToString(),
                 state = r.State.ToString(),
                 itemCount = r.ItemCount,
+                target = r.Target,
                 created = new DateTime(r.CreatedTicks, DateTimeKind.Utc),
                 updated = new DateTime(r.UpdatedTicks, DateTimeKind.Utc)
             }));
@@ -700,7 +781,7 @@ namespace WhisperSubs.Api
                 {
                     var config = Plugin.Instance.Configuration;
                     var queued = SubtitleRequestService.EnqueueRequest(
-                        req!.ItemId, req.Language, req.Tier, config, _libraryManager, _loggerFactory, _logger);
+                        req!.ItemId, req.Language, req.Tier, config, _libraryManager, _loggerFactory, _logger, req.Target);
                     _logger.LogInformation("Approved request {Id} for {Item} → queued {Queued} item(s)", requestId, req.ItemName, queued);
                     return Ok(new { message = "Request approved and queued", queued });
                 }
