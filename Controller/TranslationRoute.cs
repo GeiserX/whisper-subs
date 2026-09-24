@@ -144,6 +144,12 @@ namespace WhisperSubs.Controller
         }
 
         /// <summary>
+        /// What a viewer is told when no engine can make the language they asked for. The reasons above name
+        /// server settings, which are the admin's business, so a viewer gets this fixed sentence instead.
+        /// </summary>
+        public const string ViewerEngineMissing = "That language cannot be made on this server right now.";
+
+        /// <summary>
         /// Why no engine can make an English subtitle, for the 409 and for a translate job that fails: the
         /// local Whisper model cannot translate (<paramref name="localInPool"/> and not
         /// <paramref name="localWhisperTranslates"/>), or no worker in the pool translates into English. Pure.

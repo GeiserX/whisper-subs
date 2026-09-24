@@ -160,11 +160,15 @@ namespace WhisperSubs.Api
                 });
             }
 
-            // Refused before TryCreate, so a request nothing could serve spends no quota.
+            // Refused before TryCreate, so a request nothing could serve spends no quota. The reason names
+            // server settings (what is installed, which worker options are on), so it goes to the log for
+            // the admin and the viewer gets a fixed sentence.
             if (translateTarget != null
                 && SubtitleQueueService.Instance.TargetEngineUnavailableReason(config, translateTarget) is { } engineReason)
             {
-                return Conflict(new { error = engineReason });
+                _logger.LogInformation("[Request] Refused a translation into {Target} for {Item}: {Reason}",
+                    translateTarget, item.Name, engineReason);
+                return Conflict(new { error = TranslationRoute.ViewerEngineMissing });
             }
 
             var now = DateTime.UtcNow.Ticks;
