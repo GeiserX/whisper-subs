@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using WhisperSubs.Configuration;
@@ -44,6 +45,13 @@ namespace WhisperSubs.Controller
         /// to queue.json and restored, so the retry budget survives a restart. (whisper-subs-1t0.)
         /// </summary>
         public int RetryCount { get; init; }
+
+        /// <summary>
+        /// Null for a normal generate job. For a translate job: the one target ("en" or a Canary code),
+        /// already validated and lower-case. Part of the queue identity, so a translate job can sit next to
+        /// a generate job for the same item, and next to a translate job for another target.
+        /// </summary>
+        public string? Target { get; init; }
     }
 
     public class QueueEntry
@@ -68,6 +76,14 @@ namespace WhisperSubs.Controller
         /// exactly right for a legacy restore.
         /// </summary>
         public int RetryCount { get; set; }
+
+        /// <summary>
+        /// The translate job's target. Absent in every queue.json written before translate jobs existed and
+        /// for every normal job, so a legacy entry restores as a normal job and a normal job's JSON is
+        /// byte-identical to what 4.9.0.1 wrote.
+        /// </summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? Target { get; set; }
     }
 
     /// <summary>
@@ -311,10 +327,10 @@ namespace WhisperSubs.Controller
         /// is <see cref="PriorityCount"/>. (v4.0.)
         /// </summary>
         [ExcludeFromCodeCoverage(Justification = "Reads BaseItem.Name off queued items; the lane ordering it projects is unit-tested in PriorityLanesTests")]
-        public IReadOnlyList<(string Name, PriorityTier Tier, string Language)> PendingItems(int max = 200)
+        public IReadOnlyList<(string Name, PriorityTier Tier, string Language, string? Target)> PendingItems(int max = 200)
             => _lanes.Snapshot()
                      .Take(max < 0 ? 0 : max)
-                     .Select(e => (e.Value.Item.Name, (PriorityTier)e.Tier, e.Value.Language))
+                     .Select(e => (e.Value.Item.Name, (PriorityTier)e.Tier, e.Value.Language, e.Value.Target))
                      .ToList();
 
         // ── Per-file progress (updated by WhisperProvider stderr) ──
@@ -386,8 +402,21 @@ namespace WhisperSubs.Controller
         // regardless of force or tier (#112). Force is OR-merged and tier promoted onto the existing
         // entry, so a user request at Medium followed by an admin request at Critical becomes one
         // Critical, forced job — never two competing jobs. Language is lowercased so "EN"/"en" match.
-        internal static string IdentityKey(System.Guid itemId, string language) =>
-            $"{itemId:N}|{(language ?? string.Empty).ToLowerInvariant()}";
+        // A translate job adds its target ("|>es"), so it never merges with the generate job for the same
+        // item or with a translate job for another target. A normal job's key is unchanged.
+        internal static string IdentityKey(System.Guid itemId, string language, string? target = null)
+        {
+            var key = $"{itemId:N}|{(language ?? string.Empty).ToLowerInvariant()}";
+            var t = NormalizeJobTarget(target);
+            return t == null ? key : key + "|>" + t;
+        }
+
+        /// <summary>The identity of a work item: its item, language and, for a translate job, its target.</summary>
+        internal static string IdentityKey(SubtitleWorkItem wi) => IdentityKey(wi.Item.Id, wi.Language, wi.Target);
+
+        /// <summary>A translate job's target, trimmed and lower-case; null for a normal generate job.</summary>
+        internal static string? NormalizeJobTarget(string? target)
+            => string.IsNullOrWhiteSpace(target) ? null : target.Trim().ToLowerInvariant();
 
         // Merge two work items for the same identity: keep the item/language, OR the force flag, promote
         // to the stronger tier, and keep whichever completion source exists (an awaited priority request).
@@ -402,7 +431,9 @@ namespace WhisperSubs.Controller
                 Tier = PriorityScheduling.Stronger(existing.Tier, incoming.Tier),
                 // Keep the LARGER retry count so a concurrent fresh request (RetryCount 0) can never reset
                 // the retry budget of an item that is already being retried — the bound only ever tightens.
-                RetryCount = System.Math.Max(existing.RetryCount, incoming.RetryCount)
+                RetryCount = System.Math.Max(existing.RetryCount, incoming.RetryCount),
+                // Same identity means same target; keep it so a merged translate job stays one.
+                Target = existing.Target
             };
 
         // Reserve a key as in-flight (being processed), retaining the work item so the lease is persistable
@@ -457,7 +488,7 @@ namespace WhisperSubs.Controller
         /// </summary>
         internal bool RetryOrRelease(SubtitleWorkItem wi, int maxRetries)
         {
-            var key = IdentityKey(wi.Item.Id, wi.Language);
+            var key = IdentityKey(wi);
             lock (_dispatchGate)
             {
                 var requeue = ShouldRetry(wi.RetryCount, maxRetries);
@@ -471,7 +502,8 @@ namespace WhisperSubs.Controller
                         Completion = null,   // any awaited completion was already signalled by the caller
                         Force = wi.Force,
                         Tier = wi.Tier,
-                        RetryCount = wi.RetryCount + 1
+                        RetryCount = wi.RetryCount + 1,
+                        Target = wi.Target
                     }, MergeWork);
                 }
                 PersistQueue();
@@ -490,7 +522,7 @@ namespace WhisperSubs.Controller
         /// </summary>
         internal void RequeueWithoutRetry(SubtitleWorkItem wi)
         {
-            var key = IdentityKey(wi.Item.Id, wi.Language);
+            var key = IdentityKey(wi);
             lock (_dispatchGate)
             {
                 Release(key);
@@ -501,7 +533,8 @@ namespace WhisperSubs.Controller
                     Completion = null,   // any awaited completion was already signalled by the caller
                     Force = wi.Force,
                     Tier = wi.Tier,
-                    RetryCount = wi.RetryCount
+                    RetryCount = wi.RetryCount,
+                    Target = wi.Target
                 }, MergeWork);
                 PersistQueue();
             }
@@ -565,15 +598,18 @@ namespace WhisperSubs.Controller
             }
         }
 
+        /// <param name="target">Null for a normal generate job. For a translate job, the one target to make
+        /// ("en" or a Canary code); the caller has already validated it.</param>
         [ExcludeFromCodeCoverage(Justification = "Requires BaseItem + Plugin.Instance for persistence")]
-        public bool Enqueue(BaseItem item, string language, PriorityTier tier = PriorityTier.High, bool force = false)
+        public bool Enqueue(BaseItem item, string language, PriorityTier tier = PriorityTier.High, bool force = false, string? target = null)
         {
             // De-dup invariant: Enqueue only READS _inFlight; the in-flight reservation happens once,
             // at drain-entry (TryDequeuePriority → TryReserve), and every releaser lives in
             // DispatchDrainAsync. So a failed/never-started drain leaves items in the lanes (pending,
             // persisted), never orphaned in _inFlight — correctness here depends on PersistQueue
             // swallowing (not propagating) its exceptions, which it does.
-            var key = IdentityKey(item.Id, language);
+            var jobTarget = NormalizeJobTarget(target);
+            var key = IdentityKey(item.Id, language, jobTarget);
 
             // Under _dispatchGate so the in-flight check and the lane-add are atomic with the dispatcher's
             // dequeue+reserve — otherwise a re-add landing in the dequeue→reserve window double-dispatches.
@@ -588,7 +624,8 @@ namespace WhisperSubs.Controller
                     Language = language,
                     Completion = null,
                     Force = force,
-                    Tier = tier
+                    Tier = tier,
+                    Target = jobTarget
                 }, MergeWork);
 
                 // Always persist: even a Duplicate outcome can have OR-merged Force or promoted the tier onto
@@ -597,6 +634,22 @@ namespace WhisperSubs.Controller
                 PersistQueue();
                 return outcome == LaneEnqueueOutcome.Added;
             }
+        }
+
+        /// <summary>
+        /// Queues one translate job per leaf for <paramref name="target"/>, each as <c>(leaf, "auto", target)</c>.
+        /// Shared by the admin Translate endpoint and the viewer request path. Returns how many were newly
+        /// queued and how many were already queued or running for that target.
+        /// </summary>
+        internal (int Queued, int Skipped) EnqueueTranslations(
+            IEnumerable<BaseItem> leaves, string target, PriorityTier tier, bool force)
+        {
+            int queued = 0, skipped = 0;
+            foreach (var leaf in leaves)
+            {
+                if (Enqueue(leaf, "auto", tier, force, target)) queued++; else skipped++;
+            }
+            return (queued, skipped);
         }
 
         [ExcludeFromCodeCoverage(Justification = "Requires Plugin.Instance for persistence")]
@@ -614,7 +667,7 @@ namespace WhisperSubs.Controller
                     // which under _dispatchGate cannot happen for a freshly-dequeued item — but if it ever
                     // did, drop this copy rather than double-dispatch. queue.json is persisted either way
                     // (the item left the lanes).
-                    var reserved = TryReserve(IdentityKey(dequeued.Item.Id, dequeued.Language), dequeued);
+                    var reserved = TryReserve(IdentityKey(dequeued), dequeued);
                     PersistQueue();
                     if (reserved)
                     {
@@ -717,8 +770,13 @@ namespace WhisperSubs.Controller
                     continue;
                 }
 
+                // queue.json is read from disk and the target ends up in a file name, so it is re-checked
+                // against the catalog; an entry naming anything else is dropped.
+                var target = NormalizeJobTarget(entry.Target);
+                if (target != null && !WorkerTargets.IsValidTarget(target)) continue;
+
                 var tier = PriorityScheduling.NormalizeRestoredTier(entry.Tier);
-                var key = IdentityKey(item.Id, entry.Language);
+                var key = IdentityKey(item.Id, entry.Language, target);
 
                 // De-dup the restored set (same (item,language) more than once collapses to one lane entry),
                 // keeping the strongest tier / OR'd force / larger retry count via MergeWork.
@@ -729,7 +787,8 @@ namespace WhisperSubs.Controller
                     Completion = null,
                     Force = entry.Force,
                     Tier = tier,
-                    RetryCount = RestoredRetryCount(wasInFlight, entry.RetryCount)
+                    RetryCount = RestoredRetryCount(wasInFlight, entry.RetryCount),
+                    Target = target
                 }, MergeWork);
 
                 if (outcome == LaneEnqueueOutcome.Added) restored++;
@@ -764,6 +823,21 @@ namespace WhisperSubs.Controller
                 : (file.Pending ?? new List<QueueEntry>(), file.InFlight ?? new List<QueueEntry>());
         }
 
+        /// <summary>One work item as it is written to queue.json. Pure.</summary>
+        internal static QueueEntry ToEntry(SubtitleWorkItem w, int tier) => new QueueEntry
+        {
+            ItemId = w.Item.Id.ToString("N"),
+            Language = w.Language,
+            Force = w.Force,
+            Tier = tier,
+            RetryCount = w.RetryCount,
+            Target = w.Target
+        };
+
+        /// <summary>The queue.json text for a snapshot (the v2 object shape). Pure.</summary>
+        internal static string SerializeQueueFile(List<QueueEntry> pending, List<QueueEntry> inFlight)
+            => JsonSerializer.Serialize(new QueueFile { Version = 2, Pending = pending, InFlight = inFlight });
+
         [ExcludeFromCodeCoverage(Justification = "Requires Plugin.Instance for file path")]
         private void PersistQueue()
         {
@@ -775,27 +849,14 @@ namespace WhisperSubs.Controller
                 // Persist BOTH the pending lanes AND the in-flight leases (whisper-subs-1t0) so a job that
                 // was dequeued-and-running survives a restart instead of being silently dropped. Pending
                 // tier comes from the lane (authoritative for position); in-flight tier from the work item.
-                var pending = _lanes.Snapshot().Select(e => new QueueEntry
-                {
-                    ItemId = e.Value.Item.Id.ToString("N"),
-                    Language = e.Value.Language,
-                    Force = e.Value.Force,
-                    Tier = e.Tier,
-                    RetryCount = e.Value.RetryCount
-                }).ToList();
+                var pending = _lanes.Snapshot().Select(e => ToEntry(e.Value, e.Tier)).ToList();
 
                 var inFlight = _inFlight.Values
                     .Where(w => w != null)
-                    .Select(w => new QueueEntry
-                    {
-                        ItemId = w!.Item.Id.ToString("N"),
-                        Language = w.Language,
-                        Force = w.Force,
-                        Tier = (int)w.Tier,
-                        RetryCount = w.RetryCount
-                    }).ToList();
+                    .Select(w => ToEntry(w!, (int)w!.Tier))
+                    .ToList();
 
-                var json = JsonSerializer.Serialize(new QueueFile { Version = 2, Pending = pending, InFlight = inFlight });
+                var json = SerializeQueueFile(pending, inFlight);
                 lock (_fileLock)
                 {
                     // Atomic write (v4.0.1): serialize to a unique temp file then File.Move(overwrite) so a
@@ -967,7 +1028,7 @@ namespace WhisperSubs.Controller
                     // Deterministic fail-fast (broken config), NOT a transient kill — do not retry, just
                     // drop it. Release AND persist so the interrupted-in-flight snapshot on disk no longer
                     // lists it (otherwise it would restore as pending and re-fail every startup).
-                    ReleaseInFlightAndPersist(IdentityKey(unservable.Item.Id, unservable.Language));
+                    ReleaseInFlightAndPersist(IdentityKey(unservable));
                     logger.LogError("[Dispatch] No capable worker for {ItemName} — skipping", unservable.Item.Name);
                 }
                 _currentItemName = null;
@@ -1035,7 +1096,7 @@ namespace WhisperSubs.Controller
                     // the slot. Cancellation is observed INSIDE, via the token passed to the transcription.
                     running.Add(Task.Run(async () =>
                     {
-                        var key = IdentityKey(wi.Item.Id, wi.Language);
+                        var key = IdentityKey(wi);
                         try
                         {
                             await manager.GenerateSubtitleAsync(
