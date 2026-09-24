@@ -336,16 +336,25 @@ namespace WhisperSubs.Controller
             (GenerationOutcome Outcome, Exception? Error) result;
             if (string.Equals(target, "en", StringComparison.OrdinalIgnoreCase))
             {
-                if (!engines.CanServe("en"))
+                if (SkipEnglishTranslation(item, mediaPath, languages, force))
                 {
-                    throw new TranslationNotPossibleException(
-                        $"Cannot create an 'en' subtitle for \"{item.Name}\": no worker in the pool translates into English.");
+                    // Decided before any worker is taken, and before the engine check: as in the Canary
+                    // pass's plan, a skip wins.
+                    result = (GenerationOutcome.Skipped, null);
                 }
+                else
+                {
+                    if (!engines.CanServe("en"))
+                    {
+                        throw new TranslationNotPossibleException(
+                            $"Cannot create an 'en' subtitle for \"{item.Name}\": no worker in the pool translates into English.");
+                    }
 
-                // Routed like a Canary target, so it never runs on a transcribe-only worker and always uses
-                // the Whisper provider (TargetProviders), never this server's Canary one.
-                using var engine = await engines.AcquireAsync("en", item.Name ?? string.Empty, cancellationToken);
-                result = await GenerateTranslatedSubtitleAsync(item, engine.Provider, mediaPath, languages, force, probe, cancellationToken);
+                    // Routed like a Canary target, so it never runs on a transcribe-only worker and always uses
+                    // the Whisper provider (TargetProviders), never this server's Canary one.
+                    using var engine = await engines.AcquireAsync("en", item.Name ?? string.Empty, cancellationToken);
+                    result = await GenerateTranslatedSubtitleAsync(item, engine.Provider, mediaPath, languages, force, probe, cancellationToken);
+                }
             }
             else
             {
@@ -722,25 +731,20 @@ namespace WhisperSubs.Controller
         }
 
         /// <summary>
-        /// Generates English translated subtitles using whisper's --translate flag.
-        /// Only runs when: no English audio stream detected, no existing .en.translated.srt,
-        /// and (as fallback) no existing English subtitle files when FFprobe couldn't detect languages.
+        /// The English pass's skip rules that need no engine: English audio, the plugin's own English
+        /// translation already there, or (unforced) a usable English subtitle. Logs the reason and returns
+        /// true when one applies. A translate job asks this before it takes a worker for "en", so a title
+        /// that will only skip never waits for, or holds, that worker.
         /// </summary>
-        [ExcludeFromCodeCoverage(Justification = "Orchestrates FFmpeg + whisper processes for translation")]
-        private async Task<(GenerationOutcome Outcome, Exception? Error)> GenerateTranslatedSubtitleAsync(
-            BaseItem item, ISubtitleProvider provider, string mediaPath,
-            List<string> resolvedLanguages, bool force, AudioLanguageProbe probe, CancellationToken cancellationToken)
+        [ExcludeFromCodeCoverage(Justification = "Reads the filesystem and Jellyfin streams; HasOwnedTranslation and ShouldSkipForExistingSubtitle's rules are unit-tested")]
+        private bool SkipEnglishTranslation(BaseItem item, string mediaPath, List<string> resolvedLanguages, bool force)
         {
             // Skip if English audio is present
             if (resolvedLanguages.Any(l => string.Equals(l, "en", StringComparison.OrdinalIgnoreCase)))
             {
                 _logger.LogInformation("Skipping translation for {ItemName}: English audio stream present", item.Name);
-                return (GenerationOutcome.Skipped, null);
+                return true;
             }
-
-            var label = Plugin.Instance?.Configuration?.SubtitleLabel ?? SubtitleNaming.DefaultLabel;
-            var template = SubtitleNaming.EffectiveTemplate(Plugin.Instance?.Configuration?.SubtitleFilenameTemplate);
-            var translatedSrtPath = ResolveSubtitleSavePath(item, SubtitleNaming.BuildMediaAdjacentPath(mediaPath, template, lang: "en", label, type: "translated", ".srt"));
 
             // Skip if translated subs already exist. Widened from a single-path File.Exists so an
             // upgraded install detects a LEGACY "<name>.en.translated.srt" OR a new-label owned
@@ -749,12 +753,13 @@ namespace WhisperSubs.Controller
             // With extra translation targets configured, a ".nl." translated file must not count as the
             // English one, so the match becomes per language. With none configured the original
             // "any owned translated file" rule is kept, so an existing install decides exactly as before.
+            var label = Plugin.Instance?.Configuration?.SubtitleLabel ?? SubtitleNaming.DefaultLabel;
             var ownedTranslated = FindOwnedTranslatedFileNames(item, mediaPath, label);
             var perLanguage = NormalizeTranslationTargets(Plugin.Instance?.Configuration?.TranslationTargetLanguages).Count > 0;
             if (HasOwnedTranslation(ownedTranslated, Path.GetFileNameWithoutExtension(mediaPath), "en", perLanguage))
             {
                 _logger.LogInformation("Translated subtitle already exists for {ItemName}, skipping", item.Name);
-                return (GenerationOutcome.Skipped, null);
+                return true;
             }
 
             // Issue #82: skip translation when the item already carries a usable English subtitle
@@ -765,8 +770,30 @@ namespace WhisperSubs.Controller
             if (!force && ShouldSkipForExistingSubtitle(item, "en"))
             {
                 _logger.LogInformation("Skipping translation for {ItemName}: usable English subtitle already present", item.Name);
+                return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Generates English translated subtitles using whisper's --translate flag.
+        /// Only runs when: no English audio stream detected, no existing .en.translated.srt,
+        /// and (as fallback) no existing English subtitle files when FFprobe couldn't detect languages.
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Orchestrates FFmpeg + whisper processes for translation")]
+        private async Task<(GenerationOutcome Outcome, Exception? Error)> GenerateTranslatedSubtitleAsync(
+            BaseItem item, ISubtitleProvider provider, string mediaPath,
+            List<string> resolvedLanguages, bool force, AudioLanguageProbe probe, CancellationToken cancellationToken)
+        {
+            if (SkipEnglishTranslation(item, mediaPath, resolvedLanguages, force))
+            {
                 return (GenerationOutcome.Skipped, null);
             }
+
+            var label = Plugin.Instance?.Configuration?.SubtitleLabel ?? SubtitleNaming.DefaultLabel;
+            var template = SubtitleNaming.EffectiveTemplate(Plugin.Instance?.Configuration?.SubtitleFilenameTemplate);
+            var translatedSrtPath = ResolveSubtitleSavePath(item, SubtitleNaming.BuildMediaAdjacentPath(mediaPath, template, lang: "en", label, type: "translated", ".srt"));
 
             // Determine source language and perform additional checks for "auto" mode
             string sourceLanguage;
