@@ -74,4 +74,25 @@ public class MediaItemResolverTests
     [Fact]
     public void AggregateFolder_IsRejected()
         => Assert.False(MediaItemResolver.IsAllowedGenerateTarget(new MediaBrowser.Controller.Entities.AggregateFolder()));
+
+    // ── Per-title translation: video and its containers only ─────────────────
+
+    public static IEnumerable<object[]> TranslatableKinds() => new[]
+    {
+        new object[] { new MediaBrowser.Controller.Entities.Movies.Movie(), true },
+        new object[] { new MediaBrowser.Controller.Entities.TV.Episode(), true },
+        new object[] { new MediaBrowser.Controller.Entities.Video(), true },
+        new object[] { new MediaBrowser.Controller.Entities.TV.Series(), true },
+        new object[] { new MediaBrowser.Controller.Entities.TV.Season(), true },
+        new object[] { new MediaBrowser.Controller.Entities.Audio.Audio(), false },
+        new object[] { new MediaBrowser.Controller.Entities.Audio.MusicAlbum(), false },
+        new object[] { new MediaBrowser.Controller.Entities.Movies.BoxSet(), false },
+        new object[] { new MediaBrowser.Controller.Entities.Folder(), false },
+        new object[] { new MediaBrowser.Controller.Entities.CollectionFolder(), false },
+    };
+
+    [Theory]
+    [MemberData(nameof(TranslatableKinds))]
+    public void IsTranslatableTarget_VideoSeriesAndSeasonOnly(MediaBrowser.Controller.Entities.BaseItem item, bool expected)
+        => Assert.Equal(expected, MediaItemResolver.IsTranslatableTarget(item));
 }

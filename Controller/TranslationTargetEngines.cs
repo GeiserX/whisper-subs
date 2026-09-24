@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics.CodeAnalysis;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
@@ -59,35 +60,51 @@ namespace WhisperSubs.Controller
     /// Routes Canary targets through the worker pool from inside an item that already holds a lease. The
     /// item's own worker is used when it lists the target; otherwise the pool is asked for a worker whose
     /// targets contain it, following <see cref="TargetLeaseRouting"/> so two items never wait on each other.
+    /// A translate job is placed on a worker that lists its target (<see cref="DispatchPlacement"/>), so it
+    /// uses its own worker and never waits here.
     /// </summary>
     [ExcludeFromCodeCoverage(Justification = "Orchestration over the live pool; TargetLeaseRouting, WorkerScheduling and TryAcquire are unit-tested")]
     internal sealed class PoolTargetEngines : ITranslationTargetEngines
     {
         private readonly WorkerPool _pool;
         private readonly WorkerLease _lease;
+        private readonly bool _localWhisperTranslates;
+        private readonly Action? _beforeTargetEngine;
 
-        public PoolTargetEngines(WorkerPool pool, WorkerLease lease, bool skipUnservedTargets = false)
+        /// <param name="localWhisperTranslates">False keeps English off this server's own worker: its
+        /// Whisper model is a turbo model, which cannot translate. Only a translate job asks for English here.</param>
+        /// <param name="beforeTargetEngine">Runs before the first target engine is handed out: the dispatcher
+        /// releases the language-probe lease there, since the probe is over by then.</param>
+        public PoolTargetEngines(WorkerPool pool, WorkerLease lease, bool skipUnservedTargets = false,
+            bool localWhisperTranslates = true, Action? beforeTargetEngine = null)
         {
             _pool = pool;
             _lease = lease;
             SkipUnservedTargets = skipUnservedTargets;
+            _localWhisperTranslates = localWhisperTranslates;
+            _beforeTargetEngine = beforeTargetEngine;
         }
 
         public bool SkipUnservedTargets { get; }
 
         public bool? LocalWorkerInPool => _pool.HasLocalWorker;
 
-        public bool CanServe(string target) => _pool.HasCapableWorker(WorkerJob.ForTarget(target));
+        public bool CanServe(string target) => _pool.HasCapableWorker(WorkerJob.ForTarget(target, _localWhisperTranslates));
 
         public async Task<TargetEngineLease> AcquireAsync(string target, string itemName, CancellationToken cancellationToken)
         {
-            var job = WorkerJob.ForTarget(target);
+            _beforeTargetEngine?.Invoke();
+            var job = WorkerJob.ForTarget(target, _localWhisperTranslates);
             var own = _lease.Worker;
             WorkerLease sub;
-            switch (TargetLeaseRouting.Decide(own.Capabilities.TranslateTargets, job.TranslateTarget!))
+            // A job kept off this server's worker must not use it as its own either.
+            var ownTargets = job.RemoteOnly && own.Capabilities.IsLocal
+                ? WorkerTargets.Set(own.Capabilities.TranslateTargets.Where(t => !string.Equals(t, job.TranslateTarget, StringComparison.OrdinalIgnoreCase)).ToArray())
+                : own.Capabilities.TranslateTargets;
+            switch (TargetLeaseRouting.Decide(ownTargets, job.TranslateTarget!))
             {
                 case TargetLeasePolicy.UseOwnWorker:
-                    return new TargetEngineLease(own.TargetProvider ?? own.Provider, own.Name, null);
+                    return new TargetEngineLease(TargetProviders.For(own, job.TranslateTarget!), own.Name, null);
                 case TargetLeasePolicy.TakeFreeAnotherOnly:
                     sub = _pool.TryAcquire(job) ?? throw new InvalidOperationException(
                         $"No worker that translates into '{job.TranslateTarget}' was free while this item ran on {own.Name}, which does not list it. The next run tries again.");
@@ -100,8 +117,22 @@ namespace WhisperSubs.Controller
             var label = $"{itemName} ({job.TranslateTarget})";
             _pool.SetCurrent(sub.Key, label);
             var worker = sub.Worker;
-            return new TargetEngineLease(worker.TargetProvider ?? worker.Provider, worker.Name, () => _pool.Release(sub.Key, label));
+            return new TargetEngineLease(TargetProviders.For(worker, job.TranslateTarget!), worker.Name, () => _pool.Release(sub.Key, label));
         }
+    }
+
+    /// <summary>Which of a worker's providers makes one target. Pure.</summary>
+    internal static class TargetProviders
+    {
+        /// <summary>
+        /// "en" is Whisper's translate task, so it always uses the worker's own <see cref="ITranscriptionWorker.Provider"/>;
+        /// on this server's worker, <see cref="ITranscriptionWorker.TargetProvider"/> is Canary, which must never
+        /// make the English one. Any other target uses the target provider when the worker has one.
+        /// </summary>
+        public static ISubtitleProvider For(ITranscriptionWorker worker, string target)
+            => string.Equals(target, "en", StringComparison.OrdinalIgnoreCase)
+                ? worker.Provider
+                : worker.TargetProvider ?? worker.Provider;
     }
 
     /// <summary>

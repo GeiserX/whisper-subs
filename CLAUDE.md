@@ -111,6 +111,7 @@ Admin endpoints live in `SubtitleController` (class-level `[Authorize(Policy="Re
 | `GET` | `/Plugins/WhisperSubs/Libraries/{id}/Items?startIndex=0&limit=50` | admin | `PagedItemResult` | Movies/Episodes with subtitle status |
 | `POST` | `/Plugins/WhisperSubs/Items/{id}/Generate?language=auto` | admin | 202 Accepted | Enqueues (forced) at `AdminRequestTier` |
 | `POST` | `/Plugins/WhisperSubs/Items/{id}/GenerateAll?language=auto` | admin | 202 Accepted | Expands a container, enqueues at `AdminRequestTier` |
+| `POST` | `/Plugins/WhisperSubs/Items/{id}/Translate?target=es` | admin | 202 / 400 / 404 / 409 | One translate job per video under a movie/episode/series/season; `target` = `en` or a Canary code; 409 + reason when no engine serves it |
 | `GET` | `/Plugins/WhisperSubs/Items/{id}/Status?language=auto` | admin | `SubtitleStatus` | Checks for `.generated.srt` on disk |
 | `GET` | `/Plugins/WhisperSubs/Items/{id}/AudioLanguages` | admin | `string[]` | FFprobe-detected languages |
 | `GET` | `/Plugins/WhisperSubs/Queue` | admin | `{isProcessing, currentItem, remaining, processed, tiers, pendingRequests, pending[], workers[], …}` | Live queue status + per-tier breakdown (#112); `pending[]` = inbound items in run order, `workers[]` = live per-worker load (v4.0) |
@@ -121,7 +122,8 @@ Admin endpoints live in `SubtitleController` (class-level `[Authorize(Policy="Re
 | `POST` | `/Plugins/WhisperSubs/Requests/{id}/Approve` | admin | 200 | Approve → enqueue at user tier (#112) |
 | `POST` | `/Plugins/WhisperSubs/Requests/{id}/Decline` | admin | 200 | Decline a pending request (#112) |
 | `GET` | `/Plugins/WhisperSubs/Requests/Capabilities` | user | `{enabled, autoApprove, userTier, …}` | Client feature-gate (#112) |
-| `POST` | `/Plugins/WhisperSubs/Items/{id}/Request?language=auto` | user | 202 / 200 / 429 / 503 | Create a request (quota/cap/dedup enforced) (#112) |
+| `GET` | `/Plugins/WhisperSubs/TranslationTargets` | user | `[{code, name}]` | `en` + the 24 Canary targets; static, not gated by `AllowUserRequests` |
+| `POST` | `/Plugins/WhisperSubs/Items/{id}/Request?language=auto` | user | 202 / 200 / 429 / 503 | Create a request (quota/cap/dedup enforced) (#112). With `&target=es` it is a translation request (`language` must be `auto`; 409 before any quota is spent when no engine serves it) |
 | `GET` | `/Plugins/WhisperSubs/Requests/Mine` | user | request[] | The caller's OWN requests only (#112) |
 | `GET` | `/Plugins/WhisperSubs/Items/{id}/RequestStatus` | user | `{enabled, state}` | The caller's active request state for an item (#112) |
 
@@ -129,7 +131,7 @@ Admin endpoints live in `SubtitleController` (class-level `[Authorize(Policy="Re
 
 Rewritten in v4.0 around a shared worker pool. The former single-worker drain loop (`EnsureDraining` + a global `TranscriptionLock(1,1)`) is replaced by an N-slot dispatcher over a `WorkerPool`; with the default configuration (one local worker of `MaxConcurrency` 1) it admits exactly one job at a time — **byte-identical to the old lock**.
 
-- **`Enqueue()`** — Fire-and-forget. `POST /Items/{id}/Generate` returns HTTP 202 immediately. It adds into `PriorityLanes<T>` (one FIFO lane per named tier; strongest tier drained first). De-dup identity is `(item, language)`; a re-request merges (`Force` OR'd, tier promoted) rather than queuing twice (#112).
+- **`Enqueue()`** — Fire-and-forget. `POST /Items/{id}/Generate` returns HTTP 202 immediately. It adds into `PriorityLanes<T>` (one FIFO lane per named tier; strongest tier drained first). De-dup identity is `(item, language)` for a generate job and `(item, "auto", target)` for a per-title translate job (key `{id}|auto|>es`), so the two coexist; a re-request merges (`Force` OR'd, tier promoted) rather than queuing twice (#112). `Target` is left out of queue.json when null, so a generate job's entry is byte-identical to before.
 - **`EnsureDispatching()`** — Replaces `EnsureDraining`. Starts the single background dispatch loop (`Interlocked.CompareExchange` guard), fetches the shared `WorkerPool` via `GetPool` (built from config by `WorkerRegistry`), and runs `DispatchDrainAsync`. The pool build happens **inside** the try so a bad-config throw resets `_isDraining` and does not wedge the dispatcher or busy-loop (v4.0.1).
 - **`WorkerPool` = the concurrency gate** — A `SemaphoreSlim(ΣMaxConcurrency)` backpressure semaphore across all workers (default = 1). `DispatchDrainAsync` acquires a slot FIRST, then dequeues the current highest-priority item, so an item leaves the persisted queue only when a worker is ready to run it now (same crash-durability as the old single-lock loop). Up to ΣMaxConcurrency jobs run concurrently; each is fired via `Task.Run` (un-tokened so the `finally` always frees the slot + reservation).
 - **Atomic dequeue+reserve** — `TryDequeuePriority` moves an identity from the lanes to the in-flight set under `_dispatchGate` (the same lock `Enqueue` takes for its in-flight check + lane-add), so a re-enqueue landing in the dequeue→reserve window can never make the pool dispatch the same `(item,language)` twice — two workers writing one `.srt`.

@@ -3,6 +3,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Threading.Tasks;
 using WhisperSubs.Controller;
+using WhisperSubs.Setup;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Net;
 using Microsoft.AspNetCore.Authorization;
@@ -62,11 +63,25 @@ namespace WhisperSubs.Api
             });
         }
 
-        /// <summary>Creates a subtitle request for an item the user can see. Returns 202 (or 200 if a duplicate).</summary>
+        /// <summary>
+        /// The languages a title can be translated into: English, then the 24 Canary languages, as
+        /// <c>[{ code, name }]</c>. Static catalog data, so it is not gated by AllowUserRequests; the item page
+        /// reads its list from here (viewers cannot call the admin-only engine status).
+        /// </summary>
+        [HttpGet("TranslationTargets")]
+        public ActionResult GetTranslationTargets()
+            => Ok(CanaryCatalog.RequestableTargets.Select(t => new { code = t.Code, name = t.DisplayName }));
+
+        /// <summary>
+        /// Creates a subtitle request for an item the user can see. Returns 202 (or 200 if a duplicate).
+        /// With <paramref name="target"/> it is a translation request into that one language instead; the
+        /// language must then be "auto" or absent, and a target no engine can make is refused with 409.
+        /// </summary>
         [HttpPost("Items/{itemId}/Request")]
         public async Task<ActionResult> RequestSubtitles(
             [FromRoute] string itemId,
-            [FromQuery] string? language = null)
+            [FromQuery] string? language = null,
+            [FromQuery] string? target = null)
         {
             var config = Plugin.Instance.Configuration;
             if (!config.AllowUserRequests)
@@ -107,7 +122,32 @@ namespace WhisperSubs.Api
                 return BadRequest(new { error = "Unsupported language." });
             }
 
-            var leaves = MediaItemResolver.ResolveLeafItems(item, config.EnableLyricsGeneration, _libraryManager);
+            // A translation request: one target, source language read from the audio.
+            string? translateTarget = null;
+            if (!string.IsNullOrWhiteSpace(target))
+            {
+                if (!RequestValidation.IsTranslationLanguageAllowed(language))
+                {
+                    return BadRequest(new { error = "A translation request reads the language from the audio. Send language=auto or leave it out." });
+                }
+
+                translateTarget = RequestValidation.NormalizeTranslationTarget(target);
+                if (translateTarget == null)
+                {
+                    return BadRequest(new { error = "Unsupported target language." });
+                }
+
+                if (!MediaItemResolver.IsTranslatableTarget(item))
+                {
+                    return BadRequest(new { error = "This item type cannot be translated. Select a movie, episode, series or season." });
+                }
+
+                // Never the default language: the job reads the audio.
+                lang = "auto";
+            }
+
+            var leaves = MediaItemResolver.ResolveLeafItems(
+                item, translateTarget == null && config.EnableLyricsGeneration, _libraryManager);
             if (leaves.Count == 0)
             {
                 return BadRequest(new { error = "No subtitle-eligible media found for this item." });
@@ -118,6 +158,17 @@ namespace WhisperSubs.Api
                 {
                     error = $"That request covers {leaves.Count} items, above the per-request limit of {config.UserRequestMaxItemsPerRequest}."
                 });
+            }
+
+            // Refused before TryCreate, so a request nothing could serve spends no quota. The reason names
+            // server settings (what is installed, which worker options are on), so it goes to the log for
+            // the admin and the viewer gets a fixed sentence.
+            if (translateTarget != null
+                && SubtitleQueueService.Instance.TargetEngineUnavailableReason(config, translateTarget) is { } engineReason)
+            {
+                _logger.LogInformation("[Request] Refused a translation into {Target} for {Item}: {Reason}",
+                    translateTarget, item.Name, engineReason);
+                return Conflict(new { error = TranslationRoute.ViewerEngineMissing });
             }
 
             var now = DateTime.UtcNow.Ticks;
@@ -141,7 +192,8 @@ namespace WhisperSubs.Api
                 windowTicks: window,
                 dailyQuota: config.UserRequestDailyQuota,
                 activeCap: config.UserRequestActiveCap,
-                globalCap: config.UserRequestGlobalCap);
+                globalCap: config.UserRequestGlobalCap,
+                target: translateTarget);
 
             switch (result.Outcome)
             {
@@ -166,7 +218,7 @@ namespace WhisperSubs.Api
 
             if (config.AutoApproveUserRequests)
             {
-                SubtitleRequestService.EnqueueRequest(req.ItemId, lang, userTier, config, _libraryManager, _loggerFactory, _logger);
+                SubtitleRequestService.EnqueueRequest(req.ItemId, lang, userTier, config, _libraryManager, _loggerFactory, _logger, translateTarget);
             }
 
             return Accepted(new
@@ -176,7 +228,8 @@ namespace WhisperSubs.Api
                     : "Your subtitle request was submitted and is awaiting approval.",
                 state = req.State.ToString(),
                 requestId = req.Id,
-                itemCount = leaves.Count
+                itemCount = leaves.Count,
+                target = translateTarget
             });
         }
 
@@ -206,6 +259,7 @@ namespace WhisperSubs.Api
                 language = r.Language,
                 state = r.State.ToString(),
                 itemCount = r.ItemCount,
+                target = r.Target,
                 created = new DateTime(r.CreatedTicks, DateTimeKind.Utc)
             }));
         }
@@ -235,7 +289,8 @@ namespace WhisperSubs.Api
             var normId = guid.ToString("N");
             var mine = SubtitleRequestStore.Instance
                 .GetByUser(authInfo.User.Id.ToString("N"))
-                .FirstOrDefault(r => r.ItemId == normId && RequestPolicy.IsActive(r.State));
+                // Subtitle requests only: the badge means "Request Subs", not a translation.
+                .FirstOrDefault(r => r.ItemId == normId && r.Target == null && RequestPolicy.IsActive(r.State));
 
             return Ok(new { enabled = true, state = mine?.State.ToString() });
         }

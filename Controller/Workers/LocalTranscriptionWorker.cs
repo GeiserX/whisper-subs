@@ -76,7 +76,7 @@ namespace WhisperSubs.Controller.Workers
 
         public ISubtitleProvider Provider { get; }
 
-        /// <summary>English through whisper-cli, plus the configured Canary targets while the engine is installed.</summary>
+        /// <summary>English through whisper-cli, plus every Canary target while the engine is installed.</summary>
         public WorkerCapabilities Capabilities
         {
             get
@@ -88,7 +88,6 @@ namespace WhisperSubs.Controller.Workers
                     CostWeight = 0,
                     MaxConcurrency = 1,
                     TranslateTargets = WorkerTargets.ForLocal(
-                        config.TranslationTargetLanguages,
                         _installCheck.IsInstalled(config.CrispAsrBinaryPath, config.CanaryModelPath)),
                 };
             }

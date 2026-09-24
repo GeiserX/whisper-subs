@@ -181,7 +181,7 @@ after a compatibility run, exactly like BSRoformer's `Version`.
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `TranslationTargetLanguages` | `List<string>` | `[]` | Extra targets besides English. Empty keeps today's behaviour. |
+| `TranslationTargetLanguages` | `List<string>` | `[]` | Targets the nightly run adds. Optional: per-title translation does not need it. |
 | `CrispAsrBinaryPath` | `string` | `""` | Set by the setup service after a validated install; manual override allowed. |
 | `CrispAsrBinaryVariant` | `string` | `""` | Installed variant, re-offered on the setup page. |
 | `CrispAsrBinaryVersion` | `string` | `""` | Pinned upstream tag the install came from. |
@@ -244,6 +244,69 @@ The ordered target list is part of the skip-cache signature, appended only when 
 install without targets keeps its cache on upgrade. The unserved targets are appended too, only
 when there are any, so installing the engine drops the entries cached while a target was unserved.
 
+### Per-title action
+
+The nightly list applies to every English-audio title in the library. To translate one title
+instead, an admin calls `POST Items/{id}/Translate?target=<code>`, and a viewer calls
+`Items/{id}/Request?language=auto&target=<code>` under the usual approval, quota and caps. The item
+page offers both as a **Translate into…** list, read from `GET TranslationTargets` (English plus
+the 24 Canary codes). A movie, episode or other video is one job. A season or series becomes one job
+per episode. Collections and folders are refused, as for `GenerateAll`.
+
+Each job is a translate job with the queue identity `(item, "auto", target)`, next to the generate
+identity `(item, language)`, so both can be queued or running for the same title at once.
+`Target` is written to `queue.json` and `requests.json` only when set, so existing files and every
+generate job's bytes are unchanged. The job runs only the translation pass for its one target. For
+`en` that is the English pass, for the rest the Canary pass. It reads none of `SubtitleMode`,
+`EnableTranslation`, `GenerateOriginalLanguageSubtitles` or the nightly list, and none of them has to be
+set. An unforced job still honours **Skip media that already has subtitles**. When the pool can take no
+whole item under the generation settings, only the generate jobs fail fast; the translate jobs still run.
+
+Downgrading to a 4.9.x build loses the target in both files. That build ignores `Target` in `queue.json`,
+so a queued translate job restores as an ordinary `(item, "auto")` generate job, forced for a single
+title. It also ignores `Target` in `requests.json`, so approving a pending translation request there
+queues a generate job for every episode. It re-saves both files without `Target`, so upgrading again
+does not bring the target back.
+
+The dispatcher chooses the job and its worker together. It walks the queue in priority order and takes
+the first job that a free worker can serve right now, leased on that worker, so a job leaves `queue.json`
+only with a worker ready for it. A translate job needs a worker that lists its target, so it always starts
+on one and never waits for a second worker. The first version leased a worker before it knew the job: a
+translate job that landed on the wrong worker handed the slot back and waited, the dispatcher then
+dequeued the next job into the same wait, and one series could turn the whole queue into in-flight
+waiters that held no slot. Now a burst of translate jobs for one busy worker stays queued in order, while
+jobs behind it run on other free workers; when that worker frees, the first of them takes it. With
+nothing placeable, the dispatcher waits for a slot release (at most a second, then it looks again). When
+every queued job waits only for workers out of rotation, the drain pauses and every job keeps its place and
+its retries. A job that no worker can ever serve keeps the fail-fast: a generate job fails when the pool
+takes no whole item, and a translate job for a target nobody lists runs on any worker so the pass fails it
+with the target's reason. When the placed worker takes no whole titles (a target-only CrispASR server),
+the whisper language probe cannot run there, because Canary cannot tell languages apart. The job is then
+placed only together with a second lease on a worker that takes whole titles, runs the probe under it, and
+releases it before its Canary engine starts. With no such worker free, the job stays queued; running the
+probe unleased would put two Whisper processes on one GPU, or fail on a busy remote and leave the language
+unknown. When no worker in the pool runs Whisper at all, the job runs without a probe: tagged audio needs
+none, and untagged audio fails with "language unknown" instead of being guessed.
+
+English needs a worker that translates into it. This server's own worker counts only while its
+Whisper model can translate. A turbo model, the one the catalog recommends, was not trained to
+translate and writes the audio's own language under an English name. A job that lands on this server then moves to
+another worker that lists `en`, and fails with that reason when there is none.
+
+An explicit request changes one rule. The nightly run skips a Canary target when the audio is not
+English, because that is most of a library. A translate job asked for that target, so it fails
+with the route's reason and writes nothing. That failure, a missing engine, an unsupported target
+and a missing video file are all final. The job throws `TranslationNotPossibleException`, and the
+dispatcher records it without spending retries on an answer that cannot change. Skips still win. An
+existing translated file, audio already in the target, or a usable subtitle on an unforced job all
+skip the target.
+
+Both endpoints refuse a target no engine can make with 409. The admin endpoint returns the wording
+the job would record (`TranslationRoute.EngineMissingReason`, or `EnglishMissingReason` for `en`). That
+wording names server settings, so the viewer endpoint returns a fixed sentence and logs the reason for
+the admin. The check reads the live pool without building it; before any pool exists it answers from
+the settings.
+
 ### Worker pool
 
 [`WorkerCapabilities.CanTranslate`](../../Controller/Workers/WorkerModel.cs) (bool) becomes `TranslateTargets` (set of language codes;
@@ -258,11 +321,13 @@ As shipped:
   empty list falls back to `CanTranslate`, meaning `{"en"}` or nothing, and the settings page writes both
   fields together, with `CanTranslate` false for a transcribe-only row.
 - An OpenAI-dialect row never advertises a Canary target, even if a hand-edited config lists one.
-- The local worker advertises `{"en"}` plus the configured targets when crispasr and the Canary
-  model are installed, and carries a `CanaryProvider` next to its whisper provider for them. Both
-  are live, not fixed when the pool is built: the targets come from the current configuration and a
+- The local worker advertises `{"en"}` plus all 24 Canary targets while crispasr and the Canary
+  model are installed, ticked or not, and carries a `CanaryProvider` next to its whisper provider
+  for them. Per-title translation needs every target with the nightly list empty; the nightly run
+  only asks about the ticked ones. Both are live, not fixed when the pool is built: they come from a
   cached install check each time the pool asks, because the pool is rebuilt only at an idle session
-  start, and a long sweep kept a freshly installed engine unusable for hours.
+  start, and a long sweep kept a freshly installed engine unusable for hours. An `en` target lease
+  always uses the worker's whisper provider, never its Canary one.
 - A CrispASR row whose targets do not list `en` never takes a whole-item job, with translation on
   or off, in any mode. It serves only the Canary-target jobs it lists. The first version filtered
   on `en` only when translation was possible, so with translation off such a row took ordinary

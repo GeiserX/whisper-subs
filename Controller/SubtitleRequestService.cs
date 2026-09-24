@@ -20,6 +20,7 @@ namespace WhisperSubs.Controller
         /// <summary>
         /// Expands <paramref name="itemId"/> to leaf media and enqueues each at <paramref name="tier"/>.
         /// Returns the number of newly-queued items. A vanished item or empty container is a safe no-op.
+        /// With <paramref name="target"/> set it queues one translate job per video instead.
         /// </summary>
         public static int EnqueueRequest(
             string itemId,
@@ -28,21 +29,30 @@ namespace WhisperSubs.Controller
             PluginConfiguration config,
             ILibraryManager libraryManager,
             ILoggerFactory loggerFactory,
-            ILogger logger)
+            ILogger logger,
+            string? target = null)
         {
             if (!Guid.TryParse(itemId, out var guid)) return 0;
 
             var item = libraryManager.GetItemById(guid);
             if (item == null) return 0;
 
-            var leaves = MediaItemResolver.ResolveLeafItems(item, config.EnableLyricsGeneration, libraryManager);
+            var leaves = MediaItemResolver.ResolveLeafItems(item, target == null && config.EnableLyricsGeneration, libraryManager);
             if (leaves.Count == 0) return 0;
 
             var queue = SubtitleQueueService.Instance;
             int queued = 0;
-            foreach (var leaf in leaves)
+            if (target != null)
             {
-                if (queue.Enqueue(leaf, language, tier)) queued++;
+                // Non-forced, like every user request: an existing translation is kept.
+                queued = queue.EnqueueTranslations(leaves, target, tier, force: false).Queued;
+            }
+            else
+            {
+                foreach (var leaf in leaves)
+                {
+                    if (queue.Enqueue(leaf, language, tier)) queued++;
+                }
             }
 
             var manager = new SubtitleManager(libraryManager, loggerFactory.CreateLogger<SubtitleManager>());

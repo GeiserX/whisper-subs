@@ -451,8 +451,10 @@
                                 <br />
                                 Uses <a href="https://huggingface.co/nvidia/canary-1b-v2" target="_blank" rel="noopener noreferrer">NVIDIA Canary</a>
                                 through <a href="https://github.com/CrispStrobe/CrispASR" target="_blank" rel="noopener noreferrer">CrispASR</a>, running on this server or on a CrispASR worker in the Worker Pool.
-                                Needs the translation option above to be on, plus the binary and model below or a worker that lists the language. Each checked language gets its own
-                                <code>.translated</code> subtitle. A title whose audio is already in a language, or that already has a subtitle in it, is skipped for that language.
+                                The checkboxes drive the nightly run: each checked language gets its own <code>.translated</code> subtitle, and they need the translation option above to be on.
+                                A title whose audio is already in a language, or that already has a subtitle in it, is skipped for that language.
+                                <br />
+                                To translate one title, season or series, use <strong>Translate into&hellip;</strong> on its page instead. That needs only the binary and model below, or a worker that lists the language, and no checkbox.
                             </div>
                             <div id="translationTargetCheckboxes" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(11em, 1fr)); gap:0 1em; margin-bottom:1em;"></div>
 
@@ -2566,7 +2568,8 @@
 
                             var tdItem = document.createElement('td');
                             tdItem.style.padding = '0.4em 0.6em';
-                            tdItem.textContent = (r.itemName || r.itemId || '') + (r.language ? ' [' + r.language + ']' : '');
+                            tdItem.textContent = (r.itemName || r.itemId || '') + (r.language ? ' [' + r.language + ']' : '') +
+                                (r.target ? ' \u2192 translate to ' + r.target : '');
                             tr.appendChild(tdItem);
 
                             var tdUser = document.createElement('td');
@@ -3322,7 +3325,7 @@
                                 var pend = Array.isArray(q.pending) ? q.pending : [];
                                 if (pend.length > 0) {
                                     var pieces = pend.map(function (p) {
-                                        return (p.name || '') + (p.tier ? ' [' + p.tier + ']' : '');
+                                        return (p.name || '') + (p.target ? ' \u2192 ' + p.target : '') + (p.tier ? ' [' + p.tier + ']' : '');
                                     });
                                     var waitingTotal = (q.remaining != null) ? q.remaining : pend.length;
                                     var pendingLine = 'Waiting (' + waitingTotal + '): ' + pieces.join(' \u00b7 ');

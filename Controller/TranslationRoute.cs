@@ -133,6 +133,33 @@ namespace WhisperSubs.Controller
         }
 
         /// <summary>
+        /// Why no engine can make <paramref name="target"/> at all, whatever the audio: the same wording a
+        /// translate job would fail with for English audio, so refusing a request up front and failing the
+        /// job read alike. Null when an engine can serve it, and always for "en" (Whisper). Pure.
+        /// </summary>
+        public static string? EngineMissingReason(string target, bool canaryAvailable, LocalCanaryState localCanary)
+        {
+            var d = Decide("en", target, canaryAvailable, localCanary);
+            return d.Engine is TranslationEngine.EngineMissing or TranslationEngine.Unsupported ? d.Reason : null;
+        }
+
+        /// <summary>
+        /// What a viewer is told when no engine can make the language they asked for. The reasons above name
+        /// server settings, which are the admin's business, so a viewer gets this fixed sentence instead.
+        /// </summary>
+        public const string ViewerEngineMissing = "That language cannot be made on this server right now.";
+
+        /// <summary>
+        /// Why no engine can make an English subtitle, for the 409 and for a translate job that fails: the
+        /// local Whisper model cannot translate (<paramref name="localInPool"/> and not
+        /// <paramref name="localWhisperTranslates"/>), or no worker in the pool translates into English. Pure.
+        /// </summary>
+        public static string EnglishMissingReason(bool localInPool, bool localWhisperTranslates, string? modelPath)
+            => localInPool && !localWhisperTranslates
+                ? $"An English subtitle comes from the Whisper model on this server, and the active model \"{System.IO.Path.GetFileName(modelPath)}\" is a turbo model, which was not trained to translate: it would write the audio's own language under an English name. Activate a model that is not turbo, such as Large V3 (Q5), on the setup page, or add a worker row that lists 'en' under Translation targets."
+                : "No worker in the pool translates into English. Turn on \"Also use this server as a worker\" under Worker Pool, or list 'en' under Translation targets on a worker row.";
+
+        /// <summary>
         /// The state that picks the <see cref="TranslationEngine.EngineMissing"/> wording: missing files
         /// first, then whether the running pool holds this server (<paramref name="localWorkerInPool"/>,
         /// its real composition). Only when it does not do the current settings explain why, through

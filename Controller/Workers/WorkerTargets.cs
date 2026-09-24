@@ -99,19 +99,31 @@ namespace WhisperSubs.Controller.Workers
             => WorkerDialect.Normalize(dialect) != WorkerDialect.CrispAsr || targets.Contains("en");
 
         /// <summary>
-        /// The host's own worker: English through whisper-cli, plus every configured Canary target when the
-        /// crispasr binary and the Canary model are installed.
+        /// The host's own worker: English through whisper-cli, plus all 24 Canary targets while the crispasr
+        /// binary and the Canary model are installed. Not limited to the targets ticked for the nightly run:
+        /// per-title translation needs every target with that list empty, and the nightly run only ever asks
+        /// about the ticked ones.
         /// </summary>
-        public static IReadOnlySet<string> ForLocal(IEnumerable<string>? configuredTargets, bool canaryInstalled)
+        public static IReadOnlySet<string> ForLocal(bool canaryInstalled)
+            => canaryInstalled
+                ? Set(new[] { "en" }.Concat(CanaryCatalog.Targets.Select(t => t.Code)).ToArray())
+                : EnglishOnly;
+
+        /// <summary>
+        /// Whether the configuration, read without a running pool, gives <paramref name="target"/> an engine:
+        /// this server's own worker while the pool would hold it (<paramref name="hostsLocal"/>), which makes
+        /// what <see cref="ForLocal"/> lists (English only while its Whisper model can translate,
+        /// <paramref name="localWhisperTranslates"/>); the single legacy remote server, which makes English;
+        /// or an enabled row with a URL that lists the target. The same rows the registry builds from. Pure.
+        /// </summary>
+        public static bool ServedByConfig(string target, bool canaryInstalled, bool hostsLocal, IEnumerable<WhisperWorker>? rows,
+            bool legacyRemote = false, bool localWhisperTranslates = true)
         {
-            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "en" };
-            if (!canaryInstalled || configuredTargets == null) return set;
-            foreach (var raw in configuredTargets)
-            {
-                var code = (raw ?? "").Trim().ToLowerInvariant();
-                if (CanaryCatalog.IsTarget(code)) set.Add(code);
-            }
-            return set;
+            var english = string.Equals(target, "en", StringComparison.OrdinalIgnoreCase);
+            return (hostsLocal && ForLocal(canaryInstalled).Contains(target) && (!english || localWhisperTranslates))
+                   || (english && legacyRemote)
+                   || (rows ?? Enumerable.Empty<WhisperWorker>()).Any(w => w.Enabled && !string.IsNullOrWhiteSpace(w.ApiUrl)
+                                                                        && ForRow(w).Contains(target));
         }
 
         /// <summary>
@@ -145,7 +157,8 @@ namespace WhisperSubs.Controller.Workers
         /// worker that serves no Canary target: then every worker a waiter needs is held by an item that
         /// never waits (it serves its targets itself) or by a single-target job, so each wait ends. Two
         /// items on workers with different partial target sets could otherwise each wait for the other's
-        /// worker forever, so that case only takes a worker that is free right now.
+        /// worker forever, so that case only takes a worker that is free right now. A translate job is placed
+        /// on a worker that lists its target (<see cref="DispatchPlacement"/>), so it takes the first branch.
         /// </summary>
         public static TargetLeasePolicy Decide(IReadOnlySet<string> ownTargets, string target)
         {

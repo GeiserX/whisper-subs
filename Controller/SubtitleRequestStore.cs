@@ -56,6 +56,13 @@ namespace WhisperSubs.Controller
 
         /// <summary>Number of leaf media items this request expands to (1 for a film/episode).</summary>
         public int ItemCount { get; set; } = 1;
+
+        /// <summary>
+        /// Null for a subtitle request. For a translation request, the one target ("en" or a Canary code),
+        /// already validated. Left out of requests.json when null, so existing requests are unchanged.
+        /// </summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? Target { get; set; }
     }
 
     /// <summary>Result of attempting to create a request.</summary>
@@ -129,20 +136,23 @@ namespace WhisperSubs.Controller
         /// <summary>
         /// Attempts to create a request, enforcing de-dup → global cap → per-user active cap → rolling
         /// quota, in that order. Limits &lt;= 0 mean "unlimited" for that check. On success the request is
-        /// added (state Queued when <paramref name="autoApprove"/>, else Pending) and persisted.
+        /// added (state Queued when <paramref name="autoApprove"/>, else Pending) and persisted. A translation
+        /// request (<paramref name="target"/> set) is its own request: it de-dups on (user, item, target), and
+        /// counts toward the same caps and quota as any other.
         /// </summary>
         public RequestCreateResult TryCreate(
             string itemId, string itemName, string itemType, string language,
             string userId, string userName, PriorityTier tier, int itemCount, bool autoApprove,
-            long nowTicks, long windowTicks, int dailyQuota, int activeCap, int globalCap)
+            long nowTicks, long windowTicks, int dailyQuota, int activeCap, int globalCap, string? target = null)
         {
+            var jobTarget = SubtitleQueueService.NormalizeJobTarget(target);
             lock (_gate)
             {
                 EnsureRestoredLocked();
 
-                // De-dup: a user may not hold two active requests for the same item (idempotent).
+                // De-dup: a user may not hold two active requests for the same item and target (idempotent).
                 var existing = _requests.FirstOrDefault(r =>
-                    r.UserId == userId && r.ItemId == itemId && RequestPolicy.IsActive(r.State));
+                    r.UserId == userId && r.ItemId == itemId && r.Target == jobTarget && RequestPolicy.IsActive(r.State));
                 if (existing != null)
                 {
                     return new RequestCreateResult(RequestCreateOutcome.DuplicateActive, existing);
@@ -179,7 +189,8 @@ namespace WhisperSubs.Controller
                     State = autoApprove ? RequestState.Queued : RequestState.Pending,
                     CreatedTicks = nowTicks,
                     UpdatedTicks = nowTicks,
-                    ItemCount = itemCount < 1 ? 1 : itemCount
+                    ItemCount = itemCount < 1 ? 1 : itemCount,
+                    Target = jobTarget
                 };
                 _requests.Add(request);
                 PruneLocked(nowTicks);
@@ -276,6 +287,29 @@ namespace WhisperSubs.Controller
             }
         }
 
+        /// <summary>
+        /// The requests read back from requests.json that may be kept. A translation request's target ends
+        /// up in a file name once it is approved, and the file is read from disk, so the target is re-checked
+        /// against the catalog here, as queue.json's is on restore: a request naming anything else is dropped,
+        /// and a valid one keeps the catalog's own code. Pure.
+        /// </summary>
+        internal static List<SubtitleRequest> KeepRestorable(IEnumerable<SubtitleRequest?> loaded)
+        {
+            var kept = new List<SubtitleRequest>();
+            foreach (var request in loaded)
+            {
+                if (request == null) continue;
+                if (request.Target != null)
+                {
+                    var target = RequestValidation.NormalizeTranslationTarget(request.Target);
+                    if (target == null) continue;
+                    request.Target = target;
+                }
+                kept.Add(request);
+            }
+            return kept;
+        }
+
         // Lazily loads the persisted store on first access — callers already hold _gate. Skipped entirely
         // when there is no data path (unit tests), so the in-memory logic stays testable without disk.
         [ExcludeFromCodeCoverage(Justification = "Reads request store from disk; no-op without a data path")]
@@ -288,11 +322,11 @@ namespace WhisperSubs.Controller
             if (string.IsNullOrEmpty(path) || !File.Exists(path)) return;
             try
             {
-                var loaded = JsonSerializer.Deserialize<List<SubtitleRequest>>(File.ReadAllText(path));
+                var loaded = JsonSerializer.Deserialize<List<SubtitleRequest?>>(File.ReadAllText(path));
                 if (loaded != null)
                 {
                     _requests.Clear();
-                    _requests.AddRange(loaded);
+                    _requests.AddRange(KeepRestorable(loaded));
                 }
             }
             catch

@@ -201,4 +201,82 @@ public class RequestStoreTests
         Assert.Equal(2, all.Count);
         Assert.True(all[0].CreatedTicks >= all[1].CreatedTicks); // newest first
     }
+
+    // ── Translation requests (per-title) ──────────────────────────────────
+
+    private static RequestCreateResult CreateTranslate(
+        SubtitleRequestStore store, string user, string item, string? target, int active = 3, int daily = 5)
+        => store.TryCreate(item, "Name", "Movie", "auto", user, "user-" + user, PriorityTier.Medium, 1, false,
+            Now, Window, daily, active, 500, target);
+
+    [Fact]
+    public void TranslateAndGenerate_SameItem_AreSeparateRequests_SameTargetIsADuplicate()
+    {
+        var store = new SubtitleRequestStore();
+        Assert.Equal(RequestCreateOutcome.Created, CreateTranslate(store, "alice", "item1", null).Outcome);
+        var es = CreateTranslate(store, "alice", "item1", "es");
+        Assert.Equal(RequestCreateOutcome.Created, es.Outcome);
+        Assert.Equal("es", es.Request!.Target);
+
+        var again = CreateTranslate(store, "alice", "item1", "ES");
+        Assert.Equal(RequestCreateOutcome.DuplicateActive, again.Outcome);
+        Assert.Same(es.Request, again.Request);
+
+        Assert.Equal(RequestCreateOutcome.Created, CreateTranslate(store, "alice", "item1", "nl").Outcome);
+    }
+
+    [Fact]
+    public void TranslateRequests_CountTowardTheActiveCapAndQuota()
+    {
+        var store = new SubtitleRequestStore();
+        Assert.Equal(RequestCreateOutcome.Created, CreateTranslate(store, "alice", "item1", null, active: 2).Outcome);
+        Assert.Equal(RequestCreateOutcome.Created, CreateTranslate(store, "alice", "item1", "es", active: 2).Outcome);
+        Assert.Equal(RequestCreateOutcome.ActiveCapExceeded, CreateTranslate(store, "alice", "item1", "nl", active: 2).Outcome);
+
+        var quota = new SubtitleRequestStore();
+        Assert.Equal(RequestCreateOutcome.Created, CreateTranslate(quota, "bob", "item1", "es", active: 0, daily: 1).Outcome);
+        Assert.Equal(RequestCreateOutcome.QuotaExceeded, CreateTranslate(quota, "bob", "item2", "de", active: 0, daily: 1).Outcome);
+    }
+
+    [Fact]
+    public void RequestWithoutTarget_StoresNullTarget_AndDedupsAsBefore()
+    {
+        var store = new SubtitleRequestStore();
+        var first = Create(store, "alice", "item1");
+        Assert.Null(first.Request!.Target);
+        Assert.Equal(RequestCreateOutcome.DuplicateActive, Create(store, "alice", "item1").Outcome);
+    }
+
+    [Fact]
+    public void RequestWithNullTarget_SerializesWithoutATargetField()
+    {
+        var store = new SubtitleRequestStore();
+        var plain = Create(store, "alice", "item1").Request!;
+        Assert.DoesNotContain("\"Target\"", System.Text.Json.JsonSerializer.Serialize(plain));
+
+        var translate = CreateTranslate(store, "alice", "item2", "es").Request!;
+        Assert.Contains("\"Target\":\"es\"", System.Text.Json.JsonSerializer.Serialize(translate));
+    }
+    // requests.json is read from disk and an approved translation request's target ends up in a file name,
+    // so it is re-checked on restore the way queue.json's is. A legacy request (no Target) is unchanged.
+    [Fact]
+    public void Restore_ReChecksTheTargetOfEveryTranslationRequest()
+    {
+        const string json = """
+            [
+              { "Id": "a", "ItemId": "i1", "Language": "auto", "State": "Pending", "Target": "../x" },
+              { "Id": "b", "ItemId": "i2", "Language": "auto", "State": "Pending", "Target": "ES" },
+              { "Id": "c", "ItemId": "i3", "Language": "auto", "State": "Pending" },
+              { "Id": "d", "ItemId": "i4", "Language": "auto", "State": "Pending", "Target": " " },
+              null
+            ]
+            """;
+        var loaded = System.Text.Json.JsonSerializer.Deserialize<List<SubtitleRequest?>>(json)!;
+
+        var kept = SubtitleRequestStore.KeepRestorable(loaded);
+
+        Assert.Equal(new[] { "b", "c" }, kept.Select(r => r.Id));
+        Assert.Equal("es", kept[0].Target);
+        Assert.Null(kept[1].Target);
+    }
 }

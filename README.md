@@ -37,6 +37,7 @@ Everything past this page lives at **[geiserx.github.io/whisper-subs](https://ge
 - **Forced subtitles.** Transcribe only foreign-language dialogue, via VAD speech segmentation and per-chunk language detection.
 - **English translation.** Optionally add an English subtitle to a title that has none. English is the only language whisper can translate into.
 - **More target languages (experimental).** English audio can also get subtitles in 24 European languages from [NVIDIA Canary](https://huggingface.co/nvidia/canary-1b-v2), run by [CrispASR](https://github.com/CrispStrobe/CrispASR) on this server or on a CrispASR worker. Audio in other languages still translates to English only. See [Settings](https://geiserx.github.io/whisper-subs/configuration/#more-target-languages-experimental).
+- **Translate one title.** From the item page, translate a movie, episode, season or series into English or, for English audio, any of the 24 Canary languages, without turning on a library-wide list. See [Translate one title](https://geiserx.github.io/whisper-subs/configuration/#translate-one-title).
 - **Lyrics (experimental).** `.lrc` files for music libraries, picked up by Jellyfin automatically.
 - **Vocal separation (optional).** Isolate vocals with [BSRoformer.cpp](https://github.com/chenmozhijin/BSRoformer.cpp) before transcription for noisy content. Falls back to the original audio when unavailable.
 - **GPU acceleration.** CUDA (NVIDIA), Vulkan (Intel / AMD / NVIDIA) and ROCm (AMD).
@@ -151,7 +152,7 @@ The plugin injects a script tag into Jellyfin's `index.html` to add a **Generate
 
 ## REST API
 
-36 endpoints live under `/Plugins/WhisperSubs/`. All of them require authentication. Everything except the four user-request endpoints (`Requests/Capabilities`, `Items/{id}/Request`, `Requests/Mine`, `Items/{id}/RequestStatus`) requires a Jellyfin admin. [Diagnostics](https://geiserx.github.io/whisper-subs/diagnostics/) shows how to call `Setup/Status`, `Queue` and `Setup/InjectionStatus`, which are the three worth capturing when something goes wrong.
+44 endpoints live under `/Plugins/WhisperSubs/`. All of them require authentication. Everything except the five user endpoints (`Requests/Capabilities`, `TranslationTargets`, `Items/{id}/Request`, `Requests/Mine`, `Items/{id}/RequestStatus`) requires a Jellyfin admin. [Diagnostics](https://geiserx.github.io/whisper-subs/diagnostics/) shows how to call `Setup/Status`, `Queue` and `Setup/InjectionStatus`, which are the three worth capturing when something goes wrong.
 
 ## Roadmap
 

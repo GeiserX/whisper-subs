@@ -1,4 +1,5 @@
 using WhisperSubs.Controller;
+using WhisperSubs.Setup;
 using Xunit;
 
 namespace WhisperSubs.Tests;
@@ -58,4 +59,60 @@ public class RequestValidationTests
     [Fact]
     public void NormalizeLanguage_EmptyFallback_WithEmptyInput_IsNull()
         => Assert.Null(RequestValidation.NormalizeLanguage(null, ""));
+}
+
+/// <summary>Per-title translation: the target allow-list that guards a value bound for a file name.</summary>
+public class TranslationTargetValidationTests
+{
+    [Theory]
+    [InlineData("es", "es")]
+    [InlineData(" ES ", "es")]
+    [InlineData("en", "en")]
+    [InlineData("EN", "en")]
+    [InlineData("uk", "uk")]
+    public void NormalizeTranslationTarget_AcceptsEnglishAndCanaryTargets(string input, string expected)
+        => Assert.Equal(expected, RequestValidation.NormalizeTranslationTarget(input));
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("auto")]
+    [InlineData("eng")]
+    [InlineData("zh")]
+    [InlineData("xx")]
+    [InlineData("../es")]
+    [InlineData("es/")]
+    [InlineData("e s")]
+    public void NormalizeTranslationTarget_RejectsEverythingElse(string? input)
+        => Assert.Null(RequestValidation.NormalizeTranslationTarget(input));
+
+    [Fact]
+    public void NormalizeTranslationTarget_ReturnsTheCatalogsOwnString()
+    {
+        var input = new string(new[] { 'E', 'S' });
+        var result = RequestValidation.NormalizeTranslationTarget(input);
+        Assert.Same(CanaryCatalog.Targets.Single(t => t.Code == "es").Code, result);
+        Assert.NotSame(input, result);
+    }
+
+    [Theory]
+    [InlineData(null, true)]
+    [InlineData("", true)]
+    [InlineData("  ", true)]
+    [InlineData("auto", true)]
+    [InlineData("AUTO", true)]
+    [InlineData("en", false)]
+    [InlineData("es", false)]
+    public void IsTranslationLanguageAllowed_OnlyAutoOrBlank(string? language, bool expected)
+        => Assert.Equal(expected, RequestValidation.IsTranslationLanguageAllowed(language));
+
+    [Fact]
+    public void RequestableTargets_EnglishFirst_ThenTheCanaryList_EveryCodeAccepted()
+    {
+        var list = CanaryCatalog.RequestableTargets;
+        Assert.Equal(25, list.Count);
+        Assert.Equal("en", list[0].Code);
+        Assert.Equal(CanaryCatalog.Targets.Select(t => t.Code), list.Skip(1).Select(t => t.Code));
+        Assert.All(list, t => Assert.Equal(t.Code, RequestValidation.NormalizeTranslationTarget(t.Code)));
+    }
 }

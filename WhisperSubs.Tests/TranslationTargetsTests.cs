@@ -450,6 +450,72 @@ public class TranslationTargetsTests
         Assert.Equal(expected, SubtitleManager.HasOwnedTranslation(new[] { fileName }, mediaBaseName, language, perLanguage: true));
     }
 
+    // ── Explicit translate job (per-title) ─────────────────────────────────
+
+    private static SubtitleManager.TranslationTargetPlan PlanExplicit(
+        string target, string source, IEnumerable<string> audio,
+        Func<string, bool>? owned = null, bool failSourceNotEnglish = true)
+        => Assert.Single(SubtitleManager.PlanTranslationTargets(
+            new[] { target },
+            new HashSet<string>(audio, StringComparer.OrdinalIgnoreCase),
+            source,
+            _ => true,
+            owned ?? (_ => false),
+            _ => false,
+            force: true,
+            failSourceNotEnglish: failSourceNotEnglish));
+
+    [Fact]
+    public void ExplicitRequest_AudioNotEnglish_FailsWithTheRouteReason()
+    {
+        var french = PlanExplicit("es", "fr", new[] { "fr" });
+        Assert.Null(french.SkipReason);
+        Assert.Equal(SubtitleManager.GenerationOutcome.Failed, SubtitleManager.PlannedOutcome(french));
+        Assert.Contains("The audio is 'fr'", SubtitleManager.TargetFailureMessage(french, "Film"));
+
+        var unknown = PlanExplicit("es", "auto", Array.Empty<string>());
+        Assert.Equal(SubtitleManager.GenerationOutcome.Failed, SubtitleManager.PlannedOutcome(unknown));
+        Assert.Contains("could not be determined", SubtitleManager.TargetFailureMessage(unknown, "Film"));
+
+        // Without the flag (the nightly run and Generate) both skip, as before.
+        Assert.Equal(SubtitleManager.GenerationOutcome.Skipped,
+            SubtitleManager.PlannedOutcome(PlanExplicit("es", "fr", new[] { "fr" }, failSourceNotEnglish: false)));
+        Assert.Equal(SubtitleManager.GenerationOutcome.Skipped,
+            SubtitleManager.PlannedOutcome(PlanExplicit("es", "auto", Array.Empty<string>(), failSourceNotEnglish: false)));
+    }
+
+    [Fact]
+    public void ExplicitRequest_SkipsStillWin()
+    {
+        // English audio and an owned 'es' file: kept, not failed and not remade.
+        var owned = PlanExplicit("es", "en", new[] { "en" }, owned: t => t == "es");
+        Assert.Equal(SubtitleManager.GenerationOutcome.Skipped, SubtitleManager.PlannedOutcome(owned));
+
+        // Spanish audio with target 'es': the audio is already in the target, a skip, not a failure.
+        var same = PlanExplicit("es", "es", new[] { "es" });
+        Assert.Equal(SubtitleManager.GenerationOutcome.Skipped, SubtitleManager.PlannedOutcome(same));
+        Assert.Contains("already in 'es'", same.SkipReason);
+    }
+
+    [Fact]
+    public void TranslationJobFailure_Rules()
+    {
+        Assert.Null(SubtitleManager.TranslationJobFailure(SubtitleManager.GenerationOutcome.Succeeded, null, "Film", "es"));
+        Assert.Null(SubtitleManager.TranslationJobFailure(SubtitleManager.GenerationOutcome.Skipped, null, "Film", "es"));
+
+        var final = new TranslationNotPossibleException("The audio is 'fr'.");
+        Assert.Same(final, SubtitleManager.TranslationJobFailure(SubtitleManager.GenerationOutcome.Failed, final, "Film", "es"));
+
+        var crash = new IOException("disk full");
+        var wrapped = SubtitleManager.TranslationJobFailure(SubtitleManager.GenerationOutcome.Failed, crash, "Film", "es");
+        Assert.IsNotType<TranslationNotPossibleException>(wrapped);
+        Assert.IsType<InvalidOperationException>(wrapped);
+        Assert.Contains("\"Film\"", wrapped!.Message);
+        Assert.Contains("'es'", wrapped.Message);
+        Assert.Contains("disk full", wrapped.Message);
+        Assert.Same(crash, wrapped.InnerException);
+    }
+
     // ── Canary availability ────────────────────────────────────────────────
 
     [Theory]

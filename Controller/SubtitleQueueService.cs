@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using WhisperSubs.Configuration;
@@ -44,6 +45,13 @@ namespace WhisperSubs.Controller
         /// to queue.json and restored, so the retry budget survives a restart. (whisper-subs-1t0.)
         /// </summary>
         public int RetryCount { get; init; }
+
+        /// <summary>
+        /// Null for a normal generate job. For a translate job: the one target ("en" or a Canary code),
+        /// already validated and lower-case. Part of the queue identity, so a translate job can sit next to
+        /// a generate job for the same item, and next to a translate job for another target.
+        /// </summary>
+        public string? Target { get; init; }
     }
 
     public class QueueEntry
@@ -68,6 +76,14 @@ namespace WhisperSubs.Controller
         /// exactly right for a legacy restore.
         /// </summary>
         public int RetryCount { get; set; }
+
+        /// <summary>
+        /// The translate job's target. Absent in every queue.json written before translate jobs existed and
+        /// for every normal job, so a legacy entry restores as a normal job and a normal job's JSON is
+        /// byte-identical to what 4.9.0.1 wrote.
+        /// </summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? Target { get; set; }
     }
 
     /// <summary>
@@ -121,6 +137,10 @@ namespace WhisperSubs.Controller
         // probe window. Landing exactly on it would race the cache and be served the stale verdict. (#185.)
         private static readonly System.TimeSpan ResumeProbeMargin = System.TimeSpan.FromSeconds(1);
 
+        // Upper bound on how long a drain with nothing placeable waits for a slot release before it looks
+        // at the queue again, so a job enqueued meanwhile for a free worker starts within this bound.
+        private static readonly System.TimeSpan DispatchRecheckInterval = System.TimeSpan.FromSeconds(1);
+
         private int _isDraining;
         private string? _currentItemName;
         private int _processedCount;
@@ -170,6 +190,50 @@ namespace WhisperSubs.Controller
                 }
                 return _pool;
             }
+        }
+
+        /// <summary>
+        /// The live pool, or null when nothing has built one yet. Read-only: unlike <see cref="GetPool"/> it
+        /// never builds or rebuilds, so a controller can ask it between two jobs of a running drain without
+        /// swapping the pool under the dispatcher.
+        /// </summary>
+        internal WorkerPool? CurrentPool { get { lock (_poolGate) return _pool; } }
+
+        /// <summary>
+        /// Why no engine can make <paramref name="target"/> on this server right now, or null when one can.
+        /// English needs a worker that translates into it, and this server's own worker counts only while its
+        /// Whisper model can translate. Asks the live pool when there is one, otherwise what the settings
+        /// would build. The wording is the one a translate job fails with, so refusing up front (HTTP 409)
+        /// and failing later read the same.
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Reads the live pool and the filesystem; the rules are the unit-tested TranslationRoute.EngineMissingReason, TranslationRoute.EnglishMissingReason and WorkerTargets.ServedByConfig")]
+        public string? TargetEngineUnavailableReason(PluginConfiguration config, string target)
+        {
+            var installed = SubtitleProviderFactory.IsCanaryInstalled(config.CrispAsrBinaryPath, config.CanaryModelPath, File.Exists);
+            var rows = config.Workers ?? new List<WhisperWorker>();
+            var usable = rows.Count(w => w.Enabled && !string.IsNullOrWhiteSpace(w.ApiUrl));
+            var legacy = !string.IsNullOrWhiteSpace(config.RemoteWhisperApiUrl);
+            var hostsLocal = WorkerPlan.HostsLocal(rows.Count, usable, legacy, config.EnableLocalWorker);
+            var legacyRemote = WorkerPlan.Decide(rows.Count, legacy, config.EnableLocalWorker).Source == WorkerSource.LegacyRemote;
+            var pool = CurrentPool;
+
+            if (string.Equals(target, "en", System.StringComparison.OrdinalIgnoreCase))
+            {
+                var translates = ModelCatalog.IsTranslationCapable(config.WhisperModelPath);
+                var english = pool != null
+                    ? pool.HasCapableWorker(WorkerJob.ForTarget("en", translates))
+                    : WorkerTargets.ServedByConfig("en", installed, hostsLocal, rows, legacyRemote, translates);
+                return english ? null : TranslationRoute.EnglishMissingReason(pool?.HasLocalWorker ?? hostsLocal, translates, config.WhisperModelPath);
+            }
+
+            var available = pool != null
+                ? pool.HasCapableWorker(WorkerJob.ForTarget(target))
+                : WorkerTargets.ServedByConfig(target, installed, hostsLocal, rows, legacyRemote);
+            // Without a pool, what the pool WOULD hold (hostsLocal), not null: null maps to the
+            // "not installed" wording, which is false for an installed engine with the local worker off.
+            var state = TranslationRoute.LocalCanary(installed, pool?.HasLocalWorker ?? hostsLocal,
+                rows.Count, usable, legacy, config.EnableLocalWorker);
+            return TranslationRoute.EngineMissingReason(target, available, state);
         }
 
         /// <summary>
@@ -311,10 +375,10 @@ namespace WhisperSubs.Controller
         /// is <see cref="PriorityCount"/>. (v4.0.)
         /// </summary>
         [ExcludeFromCodeCoverage(Justification = "Reads BaseItem.Name off queued items; the lane ordering it projects is unit-tested in PriorityLanesTests")]
-        public IReadOnlyList<(string Name, PriorityTier Tier, string Language)> PendingItems(int max = 200)
+        public IReadOnlyList<(string Name, PriorityTier Tier, string Language, string? Target)> PendingItems(int max = 200)
             => _lanes.Snapshot()
                      .Take(max < 0 ? 0 : max)
-                     .Select(e => (e.Value.Item.Name, (PriorityTier)e.Tier, e.Value.Language))
+                     .Select(e => (e.Value.Item.Name, (PriorityTier)e.Tier, e.Value.Language, e.Value.Target))
                      .ToList();
 
         // ── Per-file progress (updated by WhisperProvider stderr) ──
@@ -386,8 +450,21 @@ namespace WhisperSubs.Controller
         // regardless of force or tier (#112). Force is OR-merged and tier promoted onto the existing
         // entry, so a user request at Medium followed by an admin request at Critical becomes one
         // Critical, forced job — never two competing jobs. Language is lowercased so "EN"/"en" match.
-        internal static string IdentityKey(System.Guid itemId, string language) =>
-            $"{itemId:N}|{(language ?? string.Empty).ToLowerInvariant()}";
+        // A translate job adds its target ("|>es"), so it never merges with the generate job for the same
+        // item or with a translate job for another target. A normal job's key is unchanged.
+        internal static string IdentityKey(System.Guid itemId, string language, string? target = null)
+        {
+            var key = $"{itemId:N}|{(language ?? string.Empty).ToLowerInvariant()}";
+            var t = NormalizeJobTarget(target);
+            return t == null ? key : key + "|>" + t;
+        }
+
+        /// <summary>The identity of a work item: its item, language and, for a translate job, its target.</summary>
+        internal static string IdentityKey(SubtitleWorkItem wi) => IdentityKey(wi.Item.Id, wi.Language, wi.Target);
+
+        /// <summary>A translate job's target, trimmed and lower-case; null for a normal generate job.</summary>
+        internal static string? NormalizeJobTarget(string? target)
+            => string.IsNullOrWhiteSpace(target) ? null : target.Trim().ToLowerInvariant();
 
         // Merge two work items for the same identity: keep the item/language, OR the force flag, promote
         // to the stronger tier, and keep whichever completion source exists (an awaited priority request).
@@ -402,7 +479,9 @@ namespace WhisperSubs.Controller
                 Tier = PriorityScheduling.Stronger(existing.Tier, incoming.Tier),
                 // Keep the LARGER retry count so a concurrent fresh request (RetryCount 0) can never reset
                 // the retry budget of an item that is already being retried — the bound only ever tightens.
-                RetryCount = System.Math.Max(existing.RetryCount, incoming.RetryCount)
+                RetryCount = System.Math.Max(existing.RetryCount, incoming.RetryCount),
+                // Same identity means same target; keep it so a merged translate job stays one.
+                Target = existing.Target
             };
 
         // Reserve a key as in-flight (being processed), retaining the work item so the lease is persistable
@@ -457,7 +536,7 @@ namespace WhisperSubs.Controller
         /// </summary>
         internal bool RetryOrRelease(SubtitleWorkItem wi, int maxRetries)
         {
-            var key = IdentityKey(wi.Item.Id, wi.Language);
+            var key = IdentityKey(wi);
             lock (_dispatchGate)
             {
                 var requeue = ShouldRetry(wi.RetryCount, maxRetries);
@@ -471,7 +550,8 @@ namespace WhisperSubs.Controller
                         Completion = null,   // any awaited completion was already signalled by the caller
                         Force = wi.Force,
                         Tier = wi.Tier,
-                        RetryCount = wi.RetryCount + 1
+                        RetryCount = wi.RetryCount + 1,
+                        Target = wi.Target
                     }, MergeWork);
                 }
                 PersistQueue();
@@ -490,7 +570,7 @@ namespace WhisperSubs.Controller
         /// </summary>
         internal void RequeueWithoutRetry(SubtitleWorkItem wi)
         {
-            var key = IdentityKey(wi.Item.Id, wi.Language);
+            var key = IdentityKey(wi);
             lock (_dispatchGate)
             {
                 Release(key);
@@ -501,7 +581,8 @@ namespace WhisperSubs.Controller
                     Completion = null,   // any awaited completion was already signalled by the caller
                     Force = wi.Force,
                     Tier = wi.Tier,
-                    RetryCount = wi.RetryCount
+                    RetryCount = wi.RetryCount,
+                    Target = wi.Target
                 }, MergeWork);
                 PersistQueue();
             }
@@ -565,15 +646,18 @@ namespace WhisperSubs.Controller
             }
         }
 
+        /// <param name="target">Null for a normal generate job. For a translate job, the one target to make
+        /// ("en" or a Canary code); the caller has already validated it.</param>
         [ExcludeFromCodeCoverage(Justification = "Requires BaseItem + Plugin.Instance for persistence")]
-        public bool Enqueue(BaseItem item, string language, PriorityTier tier = PriorityTier.High, bool force = false)
+        public bool Enqueue(BaseItem item, string language, PriorityTier tier = PriorityTier.High, bool force = false, string? target = null)
         {
             // De-dup invariant: Enqueue only READS _inFlight; the in-flight reservation happens once,
             // at drain-entry (TryDequeuePriority → TryReserve), and every releaser lives in
             // DispatchDrainAsync. So a failed/never-started drain leaves items in the lanes (pending,
             // persisted), never orphaned in _inFlight — correctness here depends on PersistQueue
             // swallowing (not propagating) its exceptions, which it does.
-            var key = IdentityKey(item.Id, language);
+            var jobTarget = NormalizeJobTarget(target);
+            var key = IdentityKey(item.Id, language, jobTarget);
 
             // Under _dispatchGate so the in-flight check and the lane-add are atomic with the dispatcher's
             // dequeue+reserve — otherwise a re-add landing in the dequeue→reserve window double-dispatches.
@@ -588,7 +672,8 @@ namespace WhisperSubs.Controller
                     Language = language,
                     Completion = null,
                     Force = force,
-                    Tier = tier
+                    Tier = tier,
+                    Target = jobTarget
                 }, MergeWork);
 
                 // Always persist: even a Duplicate outcome can have OR-merged Force or promoted the tier onto
@@ -597,6 +682,22 @@ namespace WhisperSubs.Controller
                 PersistQueue();
                 return outcome == LaneEnqueueOutcome.Added;
             }
+        }
+
+        /// <summary>
+        /// Queues one translate job per leaf for <paramref name="target"/>, each as <c>(leaf, "auto", target)</c>.
+        /// Shared by the admin Translate endpoint and the viewer request path. Returns how many were newly
+        /// queued and how many were already queued or running for that target.
+        /// </summary>
+        internal (int Queued, int Skipped) EnqueueTranslations(
+            IEnumerable<BaseItem> leaves, string target, PriorityTier tier, bool force)
+        {
+            int queued = 0, skipped = 0;
+            foreach (var leaf in leaves)
+            {
+                if (Enqueue(leaf, "auto", tier, force, target)) queued++; else skipped++;
+            }
+            return (queued, skipped);
         }
 
         [ExcludeFromCodeCoverage(Justification = "Requires Plugin.Instance for persistence")]
@@ -614,7 +715,7 @@ namespace WhisperSubs.Controller
                     // which under _dispatchGate cannot happen for a freshly-dequeued item — but if it ever
                     // did, drop this copy rather than double-dispatch. queue.json is persisted either way
                     // (the item left the lanes).
-                    var reserved = TryReserve(IdentityKey(dequeued.Item.Id, dequeued.Language), dequeued);
+                    var reserved = TryReserve(IdentityKey(dequeued), dequeued);
                     PersistQueue();
                     if (reserved)
                     {
@@ -624,6 +725,46 @@ namespace WhisperSubs.Controller
                 }
             }
             item = null;
+            return false;
+        }
+
+        /// <summary>
+        /// Takes the first queued job, in priority order, that a free worker can serve right now, together
+        /// with the lease on that worker (<see cref="DispatchScan"/>). The job is reserved in-flight and
+        /// queue.json persisted in the same critical section, exactly as <see cref="TryDequeuePriority"/>
+        /// does, so a job leaves the persisted queue only with a worker ready for it. A job no worker can
+        /// ever serve is taken with a null lease, for the caller to fail. False when nothing was taken;
+        /// <paramref name="scan"/> then says whether the jobs wait for busy workers or only for workers out
+        /// of rotation.
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Requires Plugin.Instance for persistence; the walk (TryTakeFirst) and the choice (DispatchScan) are unit-tested")]
+        internal bool TryDequeuePlaceable(
+            WorkerPool pool, Func<SubtitleWorkItem, JobRequirements?> requirementsOf,
+            out SubtitleWorkItem? item, out WorkerLease? lease, out WorkerLease? probeLease, out DispatchScan scan)
+        {
+            scan = new DispatchScan(pool);
+            var walk = scan;
+            lock (_dispatchGate)
+            {
+                if (_lanes.TryTakeFirst(wi => walk.Visit(requirementsOf(wi)), out var taken) && taken != null)
+                {
+                    var reserved = TryReserve(IdentityKey(taken), taken);
+                    PersistQueue();
+                    if (reserved)
+                    {
+                        item = taken;
+                        lease = walk.Lease;
+                        probeLease = walk.ProbeLease;
+                        return true;
+                    }
+                    // Cannot happen under _dispatchGate (see TryDequeuePriority); never double-dispatch.
+                    if (walk.Lease is { } orphan) pool.Release(orphan.Key);
+                    if (walk.ProbeLease is { } orphanProbe) pool.Release(orphanProbe.Key);
+                }
+            }
+            item = null;
+            lease = null;
+            probeLease = null;
             return false;
         }
 
@@ -717,8 +858,13 @@ namespace WhisperSubs.Controller
                     continue;
                 }
 
+                // queue.json is read from disk and the target ends up in a file name, so it is re-checked
+                // against the catalog; an entry naming anything else is dropped.
+                var target = NormalizeJobTarget(entry.Target);
+                if (target != null && !WorkerTargets.IsValidTarget(target)) continue;
+
                 var tier = PriorityScheduling.NormalizeRestoredTier(entry.Tier);
-                var key = IdentityKey(item.Id, entry.Language);
+                var key = IdentityKey(item.Id, entry.Language, target);
 
                 // De-dup the restored set (same (item,language) more than once collapses to one lane entry),
                 // keeping the strongest tier / OR'd force / larger retry count via MergeWork.
@@ -729,7 +875,8 @@ namespace WhisperSubs.Controller
                     Completion = null,
                     Force = entry.Force,
                     Tier = tier,
-                    RetryCount = RestoredRetryCount(wasInFlight, entry.RetryCount)
+                    RetryCount = RestoredRetryCount(wasInFlight, entry.RetryCount),
+                    Target = target
                 }, MergeWork);
 
                 if (outcome == LaneEnqueueOutcome.Added) restored++;
@@ -764,6 +911,21 @@ namespace WhisperSubs.Controller
                 : (file.Pending ?? new List<QueueEntry>(), file.InFlight ?? new List<QueueEntry>());
         }
 
+        /// <summary>One work item as it is written to queue.json. Pure.</summary>
+        internal static QueueEntry ToEntry(SubtitleWorkItem w, int tier) => new QueueEntry
+        {
+            ItemId = w.Item.Id.ToString("N"),
+            Language = w.Language,
+            Force = w.Force,
+            Tier = tier,
+            RetryCount = w.RetryCount,
+            Target = w.Target
+        };
+
+        /// <summary>The queue.json text for a snapshot (the v2 object shape). Pure.</summary>
+        internal static string SerializeQueueFile(List<QueueEntry> pending, List<QueueEntry> inFlight)
+            => JsonSerializer.Serialize(new QueueFile { Version = 2, Pending = pending, InFlight = inFlight });
+
         [ExcludeFromCodeCoverage(Justification = "Requires Plugin.Instance for file path")]
         private void PersistQueue()
         {
@@ -775,27 +937,14 @@ namespace WhisperSubs.Controller
                 // Persist BOTH the pending lanes AND the in-flight leases (whisper-subs-1t0) so a job that
                 // was dequeued-and-running survives a restart instead of being silently dropped. Pending
                 // tier comes from the lane (authoritative for position); in-flight tier from the work item.
-                var pending = _lanes.Snapshot().Select(e => new QueueEntry
-                {
-                    ItemId = e.Value.Item.Id.ToString("N"),
-                    Language = e.Value.Language,
-                    Force = e.Value.Force,
-                    Tier = e.Tier,
-                    RetryCount = e.Value.RetryCount
-                }).ToList();
+                var pending = _lanes.Snapshot().Select(e => ToEntry(e.Value, e.Tier)).ToList();
 
                 var inFlight = _inFlight.Values
                     .Where(w => w != null)
-                    .Select(w => new QueueEntry
-                    {
-                        ItemId = w!.Item.Id.ToString("N"),
-                        Language = w.Language,
-                        Force = w.Force,
-                        Tier = (int)w.Tier,
-                        RetryCount = w.RetryCount
-                    }).ToList();
+                    .Select(w => ToEntry(w!, (int)w!.Tier))
+                    .ToList();
 
-                var json = JsonSerializer.Serialize(new QueueFile { Version = 2, Pending = pending, InFlight = inFlight });
+                var json = SerializeQueueFile(pending, inFlight);
                 lock (_fileLock)
                 {
                     // Atomic write (v4.0.1): serialize to a unique temp file then File.Move(overwrite) so a
@@ -936,7 +1085,8 @@ namespace WhisperSubs.Controller
         /// <para>
         /// Returns true when the drain PAUSED: every worker that could run the queued items is out of
         /// rotation (issue #185 — the host's whisper-cli cannot launch), so the items are still queued with
-        /// their retry budgets intact and the caller must not immediately re-fire.
+        /// their retry budgets intact and the caller must not immediately re-fire. The same holds when a
+        /// translate job was kept back because every worker that makes its target is out of rotation.
         /// </para>
         /// </summary>
         [ExcludeFromCodeCoverage(Justification = "Orchestrates concurrent async transcription with external processes")]
@@ -949,29 +1099,57 @@ namespace WhisperSubs.Controller
             ILogger logger,
             CancellationToken cancellationToken)
         {
+            void FailUnservable(SubtitleWorkItem unservable)
+            {
+                // Match the old counting: the background loop counted a failure toward `processed`,
+                // the scheduled task's priority drain did not (countProcessed distinguishes them).
+                if (countProcessed) Interlocked.Increment(ref _processedCount);
+                Interlocked.Increment(ref _failedCount);
+                _lastError = $"{unservable.Item.Name}: no configured worker can serve this job";
+                unservable.Completion?.TrySetException(
+                    new System.InvalidOperationException("No configured worker can serve this job"));
+                // Deterministic fail-fast (broken config), NOT a transient kill — do not retry, just
+                // drop it. Release AND persist so the interrupted-in-flight snapshot on disk no longer
+                // lists it (otherwise it would restore as pending and re-fail every startup).
+                ReleaseInFlightAndPersist(IdentityKey(unservable));
+                logger.LogError("[Dispatch] No capable worker for {ItemName} — skipping", unservable.Item.Name);
+            }
+
             // The job requirements are uniform across a drain session, so feasibility is decided once: if no
             // worker can EVER serve them (e.g. translation enabled but every configured worker is
-            // transcribe-only) fail the whole queue fast rather than block a slot forever. A misconfig then
+            // transcribe-only) fail the queue fast rather than block a slot forever. A misconfig then
             // surfaces loudly (every item errors with a clear message) instead of the queue hanging.
-            if (!pool.HasCapableWorker(requirements))
+            // Translate jobs are not judged by these requirements: each one runs on a worker that lists its
+            // own target, and fails with the target's own reason when there is none. So they stay queued,
+            // in their order, and this drain runs them with any worker as their first lease.
+            var poolServesItems = pool.HasCapableWorker(requirements);
+            if (!poolServesItems)
             {
+                var translateJobs = new List<SubtitleWorkItem>();
                 while (TryDequeuePriority(out var unservable) && unservable != null)
                 {
-                    // Match the old counting: the background loop counted a failure toward `processed`,
-                    // the scheduled task's priority drain did not (countProcessed distinguishes them).
-                    if (countProcessed) Interlocked.Increment(ref _processedCount);
-                    Interlocked.Increment(ref _failedCount);
-                    _lastError = $"{unservable.Item.Name}: no configured worker can serve this job";
-                    unservable.Completion?.TrySetException(
-                        new System.InvalidOperationException("No configured worker can serve this job"));
-                    // Deterministic fail-fast (broken config), NOT a transient kill — do not retry, just
-                    // drop it. Release AND persist so the interrupted-in-flight snapshot on disk no longer
-                    // lists it (otherwise it would restore as pending and re-fail every startup).
-                    ReleaseInFlightAndPersist(IdentityKey(unservable.Item.Id, unservable.Language));
-                    logger.LogError("[Dispatch] No capable worker for {ItemName} — skipping", unservable.Item.Name);
+                    if (unservable.Target != null) translateJobs.Add(unservable);
+                    else FailUnservable(unservable);
                 }
-                _currentItemName = null;
-                return false;
+                foreach (var job in translateJobs) RequeueWithoutRetry(job);
+                if (translateJobs.Count == 0)
+                {
+                    _currentItemName = null;
+                    return false;
+                }
+            }
+            // Each job is placed on a worker that can serve it before it leaves the queue (DispatchScan).
+            var localWhisperTranslates = ModelCatalog.IsTranslationCapable(Plugin.Instance?.Configuration?.WhisperModelPath);
+            var targetServable = new Dictionary<string, JobRequirements?>(StringComparer.OrdinalIgnoreCase);
+            JobRequirements? RequirementsOf(SubtitleWorkItem wi)
+            {
+                if (wi.Target == null) return DispatchPlacement.RequirementsOf(null, requirements, poolServesItems, localWhisperTranslates, pool.HasCapableWorker);
+                if (!targetServable.TryGetValue(wi.Target, out var job))
+                {
+                    job = DispatchPlacement.RequirementsOf(wi.Target, requirements, poolServesItems, localWhisperTranslates, pool.HasCapableWorker);
+                    targetServable[wi.Target] = job;
+                }
+                return job;
             }
 
             // "The binary is on disk" is not "the binary runs": a CUDA build outlives the container it was
@@ -989,58 +1167,99 @@ namespace WhisperSubs.Controller
 
             var running = new List<Task>();
             var paused = false;
+            // Translate jobs whose target's only workers are out of rotation (issue #185). Each keeps its
+            // retries and is held back until this drain ends, then re-queued: re-queuing at once would put
+            // it straight back on a worker that cannot run it, round after round.
+            var parked = new ConcurrentQueue<SubtitleWorkItem>();
             try
             {
                 while (!_lanes.IsEmpty)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
 
-                    // Acquire a free slot FIRST (backpressure at ΣMaxConcurrency), THEN dequeue the current
-                    // highest-priority item — so an item leaves the persisted queue only when a worker is
-                    // ready to run it now (same crash-durability as the old single-lock loop), and each pick
-                    // sees the freshest priority state.
-                    WorkerLease lease;
-                    try
+                    // Choose the job and its worker together: the first job, in priority order, that a free
+                    // worker can serve now, leased on that worker. A job leaves the persisted queue only with
+                    // a worker ready to run it (crash-durability), and none is dequeued that cannot run, so a
+                    // burst of translate jobs for one busy worker stays queued, in order, instead of becoming
+                    // in-flight waiters that hold no slot while later jobs pile up behind them.
+                    var freed = pool.FreedSignal;   // taken before the walk, so a release during it is not missed
+                    if (!TryDequeuePlaceable(pool, RequirementsOf, out var workItem, out var placed, out var probePlaced, out var scan) || workItem == null)
                     {
-                        lease = await pool.AcquireAsync(requirements, cancellationToken);
-                    }
-                    catch (NoAvailableWorkerException ex)
-                    {
-                        // Nothing was dequeued, so every queued item keeps its place, its tier and its full
-                        // retry budget. Stop here instead of failing them against a worker that cannot run.
-                        // (Issue #185.)
-                        _lastError = ex.Message;
-                        logger.LogError("[Dispatch] Paused with {Count} item(s) still queued — {Reason}",
-                            _lanes.Count, ex.Message);
-                        paused = true;
-                        break;
+                        if (scan.BlockedOnlyByUnavailable)
+                        {
+                            // Every queued job waits for a worker out of rotation: nothing here will bring it
+                            // back, so stop. Nothing was dequeued, so every job keeps its place, its tier and
+                            // its retries. (Issue #185.)
+                            var reason = pool.NoneAvailableReason(scan.UnavailableRequirement!.Value) ?? "No worker is available.";
+                            _lastError = reason;
+                            logger.LogError("[Dispatch] Paused with {Count} item(s) still queued — {Reason}",
+                                _lanes.Count, reason);
+                            paused = true;
+                            break;
+                        }
+
+                        // A busy worker will free: wait for a release (or a queue change picked up within the
+                        // bound), then look again. No spinning and no job is dropped or reordered.
+                        await Task.WhenAny(freed, Task.Delay(DispatchRecheckInterval, cancellationToken)).ConfigureAwait(false);
+                        continue;
                     }
 
-                    if (!TryDequeuePriority(out var workItem) || workItem == null)
+                    if (placed is not { } lease)
                     {
-                        // Emptied by a concurrent consumer between the check and the dequeue — release, re-check.
-                        pool.Release(lease.Key);
+                        // A generate job queued while this drain runs only translate jobs.
+                        FailUnservable(workItem);
                         continue;
                     }
 
                     var wi = workItem;
                     var l = lease;
-                    _currentItemName = wi.Item.Name;
-                    pool.SetCurrent(l.Key, wi.Item.Name);   // "what's running where" — surfaced in the status panel
+                    var probeLease = probePlaced;
+                    // Who runs the language probe: the probe lease, else the job's own worker when it runs
+                    // Whisper, else nobody (no worker in the pool runs Whisper), and the check says so.
+                    var probeProvider = probeLease?.Worker.Provider
+                        ?? (scan.NoProbeWorkerInPool ? NoLanguageProbeProvider.Instance : l.Worker.Provider);
+                    // A translate job shows its target, so two jobs for one title can be told apart. SetCurrent
+                    // and Release below must use this same string.
+                    var label = wi.Target == null ? wi.Item.Name : $"{wi.Item.Name} ({wi.Target})";
+                    _currentItemName = label;
+                    pool.SetCurrent(l.Key, label);   // "what's running where" — surfaced in the status panel
                     logger.LogInformation("[Dispatch] Processing {ItemName} [{Tier}] on {Worker} ({Remaining} remaining)",
-                        wi.Item.Name, wi.Tier, l.Worker.Name, _lanes.Count);
+                        label, wi.Tier, l.Worker.Name, _lanes.Count);
 
                     // Fire the job WITHOUT gating Task.Run on the token: a cancelled token must not skip the
                     // delegate, or the finally (which frees the slot + reservation) would never run and leak
                     // the slot. Cancellation is observed INSIDE, via the token passed to the transcription.
+                    // A translate job on a worker that runs no Whisper also holds a whole-title worker, for the
+                    // language probe only. Released when the job asks for its Canary engine, or when it ends.
+                    var probeLabel = $"{label} (language check)";
+                    if (probeLease is { } heldProbe) pool.SetCurrent(heldProbe.Key, probeLabel);
+                    var probeReleased = 0;
+                    void ReleaseProbe()
+                    {
+                        if (probeLease is { } p && Interlocked.Exchange(ref probeReleased, 1) == 0) pool.Release(p.Key, probeLabel);
+                    }
+
                     running.Add(Task.Run(async () =>
                     {
-                        var key = IdentityKey(wi.Item.Id, wi.Language);
+                        var key = IdentityKey(wi);
                         try
                         {
-                            await manager.GenerateSubtitleAsync(
-                                wi.Item, l.Worker.Provider, wi.Language, cancellationToken, wi.Force,
-                                new PoolTargetEngines(pool, l));
+                            if (wi.Target != null)
+                            {
+                                // A translate job: only the translation pass, for its one target, on a worker
+                                // that lists it. The whisper language probe runs on a worker that transcribes,
+                                // under a lease: the job's own, or the probe lease taken with it.
+                                await manager.TranslateSubtitleAsync(
+                                    wi.Item, probeProvider, wi.Target, wi.Force,
+                                    new PoolTargetEngines(pool, l, localWhisperTranslates: localWhisperTranslates, beforeTargetEngine: ReleaseProbe),
+                                    cancellationToken);
+                            }
+                            else
+                            {
+                                await manager.GenerateSubtitleAsync(
+                                    wi.Item, l.Worker.Provider, wi.Language, cancellationToken, wi.Force,
+                                    new PoolTargetEngines(pool, l));
+                            }
                             if (countProcessed) Interlocked.Increment(ref _processedCount);
                             wi.Completion?.TrySetResult(true);
                             // Completed — release the in-flight lease and persist so a crash can't restore
@@ -1060,6 +1279,29 @@ namespace WhisperSubs.Controller
                             else
                                 logger.LogWarning("[Dispatch] Giving up on {ItemName} after {Attempts} attempt(s) — cancelled and out of retries",
                                     wi.Item.Name, wi.RetryCount + 1);
+                        }
+                        catch (NoAvailableWorkerException ex) when (wi.Target != null)
+                        {
+                            // Every worker that makes this target is out of rotation. Nothing is wrong with the
+                            // job, so like a whole item in a paused drain it keeps its retries: it waits for
+                            // the next drain, which re-checks the local engine first.
+                            _lastError = ex.Message;
+                            wi.Completion?.TrySetException(ex);
+                            parked.Enqueue(wi);
+                            logger.LogWarning("[Dispatch] {ItemName} waits for the next run: no worker that makes '{Target}' is available — {Reason}",
+                                wi.Item.Name, wi.Target, ex.Message);
+                        }
+                        catch (TranslationNotPossibleException ex)
+                        {
+                            // The audio is not English, no engine serves the target, or the item has no video
+                            // file: every attempt would give the same answer. Final, like the unservable
+                            // fail-fast above: record it and drop the job, no retry.
+                            _lastError = ex.Message;
+                            wi.Completion?.TrySetException(ex);
+                            if (countProcessed) Interlocked.Increment(ref _processedCount);
+                            Interlocked.Increment(ref _failedCount);
+                            logger.LogWarning("[Dispatch] {Message}", ex.Message);
+                            ReleaseInFlightAndPersist(key);
                         }
                         catch (System.Exception ex) when (l.Worker.Capabilities.IsLocal
                                                           && WhisperLaunchException.Find(ex) != null)
@@ -1112,7 +1354,8 @@ namespace WhisperSubs.Controller
                             // reservation is released along the success/retry/drop paths above — NOT here —
                             // so a re-queued item that was already re-dequeued+reserved by another slot is
                             // not wrongly un-reserved (which would let it dispatch twice).
-                            pool.Release(l.Key, wi.Item.Name);
+                            ReleaseProbe();
+                            pool.Release(l.Key, label);
                         }
                     }));
 
@@ -1125,6 +1368,15 @@ namespace WhisperSubs.Controller
                 // Wait for every dispatched job to finish before returning, so the caller (and _isDraining)
                 // only sees "drained" once the pool is truly idle. Individual job errors are handled above.
                 try { await Task.WhenAll(running); } catch { /* per-job exceptions already handled */ }
+
+                // Every job has finished, so nothing can park another one now.
+                if (!parked.IsEmpty)
+                {
+                    logger.LogWarning("[Dispatch] Paused with {Count} translate job(s) kept for the next run — no worker that makes their language is available",
+                        parked.Count);
+                    while (parked.TryDequeue(out var held)) RequeueWithoutRetry(held);
+                    paused = true;
+                }
             }
 
             logger.LogInformation("[Dispatch] Drain complete. Processed {Count} items total ({Failed} failed).",
