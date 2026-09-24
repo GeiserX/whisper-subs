@@ -257,4 +257,26 @@ public class RequestStoreTests
         var translate = CreateTranslate(store, "alice", "item2", "es").Request!;
         Assert.Contains("\"Target\":\"es\"", System.Text.Json.JsonSerializer.Serialize(translate));
     }
+    // requests.json is read from disk and an approved translation request's target ends up in a file name,
+    // so it is re-checked on restore the way queue.json's is. A legacy request (no Target) is unchanged.
+    [Fact]
+    public void Restore_ReChecksTheTargetOfEveryTranslationRequest()
+    {
+        const string json = """
+            [
+              { "Id": "a", "ItemId": "i1", "Language": "auto", "State": "Pending", "Target": "../x" },
+              { "Id": "b", "ItemId": "i2", "Language": "auto", "State": "Pending", "Target": "ES" },
+              { "Id": "c", "ItemId": "i3", "Language": "auto", "State": "Pending" },
+              { "Id": "d", "ItemId": "i4", "Language": "auto", "State": "Pending", "Target": " " },
+              null
+            ]
+            """;
+        var loaded = System.Text.Json.JsonSerializer.Deserialize<List<SubtitleRequest?>>(json)!;
+
+        var kept = SubtitleRequestStore.KeepRestorable(loaded);
+
+        Assert.Equal(new[] { "b", "c" }, kept.Select(r => r.Id));
+        Assert.Equal("es", kept[0].Target);
+        Assert.Null(kept[1].Target);
+    }
 }

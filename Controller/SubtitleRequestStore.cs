@@ -287,6 +287,29 @@ namespace WhisperSubs.Controller
             }
         }
 
+        /// <summary>
+        /// The requests read back from requests.json that may be kept. A translation request's target ends
+        /// up in a file name once it is approved, and the file is read from disk, so the target is re-checked
+        /// against the catalog here, as queue.json's is on restore: a request naming anything else is dropped,
+        /// and a valid one keeps the catalog's own code. Pure.
+        /// </summary>
+        internal static List<SubtitleRequest> KeepRestorable(IEnumerable<SubtitleRequest?> loaded)
+        {
+            var kept = new List<SubtitleRequest>();
+            foreach (var request in loaded)
+            {
+                if (request == null) continue;
+                if (request.Target != null)
+                {
+                    var target = RequestValidation.NormalizeTranslationTarget(request.Target);
+                    if (target == null) continue;
+                    request.Target = target;
+                }
+                kept.Add(request);
+            }
+            return kept;
+        }
+
         // Lazily loads the persisted store on first access — callers already hold _gate. Skipped entirely
         // when there is no data path (unit tests), so the in-memory logic stays testable without disk.
         [ExcludeFromCodeCoverage(Justification = "Reads request store from disk; no-op without a data path")]
@@ -299,11 +322,11 @@ namespace WhisperSubs.Controller
             if (string.IsNullOrEmpty(path) || !File.Exists(path)) return;
             try
             {
-                var loaded = JsonSerializer.Deserialize<List<SubtitleRequest>>(File.ReadAllText(path));
+                var loaded = JsonSerializer.Deserialize<List<SubtitleRequest?>>(File.ReadAllText(path));
                 if (loaded != null)
                 {
                     _requests.Clear();
-                    _requests.AddRange(loaded);
+                    _requests.AddRange(KeepRestorable(loaded));
                 }
             }
             catch
