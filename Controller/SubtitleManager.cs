@@ -288,9 +288,11 @@ namespace WhisperSubs.Controller
                 Record(outcome, error);
 
                 // Then each configured non-English target (none by default, which skips this entirely).
+                // The list is read now, when this pass starts, not from the snapshot taken before the long
+                // transcription: a target ticked meanwhile is picked up by this item too.
                 foreach (var (targetOutcome, targetError) in await GenerateTargetTranslationsAsync(
                     item, provider, mediaPath, language, languages, force, probe, targetEngines,
-                    NormalizeTranslationTargets(config?.TranslationTargetLanguages), explicitRequest: false, cancellationToken))
+                    NormalizeTranslationTargets(Plugin.Instance?.Configuration?.TranslationTargetLanguages), explicitRequest: false, cancellationToken))
                 {
                     Record(targetOutcome, targetError);
                 }
