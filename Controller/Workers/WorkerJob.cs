@@ -38,5 +38,18 @@ namespace WhisperSubs.Controller.Workers
         /// </summary>
         public static JobRequirements ForTarget(string target)
             => new JobRequirements((target ?? "").Trim().ToLowerInvariant(), null, TargetOnly: true);
+
+        /// <summary>Any worker at all: no translation target, and a worker that takes no whole items counts.</summary>
+        public static readonly JobRequirements AnyWorker = new(null, null, TargetOnly: true);
+
+        /// <summary>
+        /// The lease the dispatcher takes before it knows which job comes next. While the pool can run
+        /// whole items (<paramref name="poolServesItems"/>) that is <paramref name="itemRequirements"/>, as it
+        /// always was. When it cannot, every generate job fails fast, and only translate jobs are left: each
+        /// one moves to a worker that lists its target, so any worker will do as its first lease, and the
+        /// generation settings behind <paramref name="itemRequirements"/> no longer decide its fate.
+        /// </summary>
+        public static JobRequirements DispatchLease(JobRequirements itemRequirements, bool poolServesItems)
+            => poolServesItems ? itemRequirements : AnyWorker;
     }
 }

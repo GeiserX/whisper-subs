@@ -10,6 +10,7 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using WhisperSubs.Configuration;
+using WhisperSubs.Controller.Workers;
 using WhisperSubs.Providers;
 using WhisperSubs.Setup;
 using MediaBrowser.Controller.Entities;
@@ -367,12 +368,14 @@ namespace WhisperSubs.Controller
 
         /// <summary>
         /// What a translate job throws for its one result: nothing unless it failed; a
-        /// <see cref="TranslationNotPossibleException"/> as it is, so the dispatcher sees it is final; any
-        /// other failure wrapped with the item and the target, the cause kept as the inner exception. Pure.
+        /// <see cref="TranslationNotPossibleException"/> as it is, so the dispatcher sees it is final; a
+        /// <see cref="NoAvailableWorkerException"/> as it is, so the dispatcher keeps the job for the next
+        /// drain without spending a retry (the worker that makes the target is out of rotation, issue #185);
+        /// any other failure wrapped with the item and the target, the cause kept as the inner exception. Pure.
         /// </summary>
         internal static Exception? TranslationJobFailure(GenerationOutcome outcome, Exception? error, string? itemName, string target)
             => outcome != GenerationOutcome.Failed ? null
-             : error is TranslationNotPossibleException ? error
+             : error is TranslationNotPossibleException or NoAvailableWorkerException ? error
              : new InvalidOperationException($"Translating \"{itemName}\" into '{target}' failed: {error?.Message}", error);
 
         /// <summary>

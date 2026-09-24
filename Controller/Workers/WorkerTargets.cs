@@ -140,6 +140,13 @@ namespace WhisperSubs.Controller.Workers
         /// is free right now, never wait.
         /// </summary>
         TakeFreeAnotherOnly,
+
+        /// <summary>
+        /// A translate job, whose one target is all it makes: hand its own slot back, then wait for a worker
+        /// that lists the target. It holds nothing while it waits, so it cannot be part of a wait cycle, and
+        /// a busy target worker delays the job instead of failing it.
+        /// </summary>
+        ReleaseOwnAndWait,
     }
 
     /// <summary>Pure routing rule for a Canary target inside an item that already holds a worker slot.</summary>
@@ -150,11 +157,14 @@ namespace WhisperSubs.Controller.Workers
         /// worker that serves no Canary target: then every worker a waiter needs is held by an item that
         /// never waits (it serves its targets itself) or by a single-target job, so each wait ends. Two
         /// items on workers with different partial target sets could otherwise each wait for the other's
-        /// worker forever, so that case only takes a worker that is free right now.
+        /// worker forever, so that case only takes a worker that is free right now. A job that can give its
+        /// own slot back first (<paramref name="canReleaseOwn"/>: a translate job, which needs its worker for
+        /// nothing but the target) always waits, because it waits holding nothing.
         /// </summary>
-        public static TargetLeasePolicy Decide(IReadOnlySet<string> ownTargets, string target)
+        public static TargetLeasePolicy Decide(IReadOnlySet<string> ownTargets, string target, bool canReleaseOwn = false)
         {
             if (ownTargets.Contains(target)) return TargetLeasePolicy.UseOwnWorker;
+            if (canReleaseOwn) return TargetLeasePolicy.ReleaseOwnAndWait;
             return ownTargets.Any(t => !string.Equals(t, "en", StringComparison.OrdinalIgnoreCase))
                 ? TargetLeasePolicy.TakeFreeAnotherOnly
                 : TargetLeasePolicy.WaitForAnother;

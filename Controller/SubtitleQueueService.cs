@@ -1030,7 +1030,8 @@ namespace WhisperSubs.Controller
         /// <para>
         /// Returns true when the drain PAUSED: every worker that could run the queued items is out of
         /// rotation (issue #185 — the host's whisper-cli cannot launch), so the items are still queued with
-        /// their retry budgets intact and the caller must not immediately re-fire.
+        /// their retry budgets intact and the caller must not immediately re-fire. The same holds when a
+        /// translate job was kept back because every worker that makes its target is out of rotation.
         /// </para>
         /// </summary>
         [ExcludeFromCodeCoverage(Justification = "Orchestrates concurrent async transcription with external processes")]
@@ -1043,30 +1044,46 @@ namespace WhisperSubs.Controller
             ILogger logger,
             CancellationToken cancellationToken)
         {
+            void FailUnservable(SubtitleWorkItem unservable)
+            {
+                // Match the old counting: the background loop counted a failure toward `processed`,
+                // the scheduled task's priority drain did not (countProcessed distinguishes them).
+                if (countProcessed) Interlocked.Increment(ref _processedCount);
+                Interlocked.Increment(ref _failedCount);
+                _lastError = $"{unservable.Item.Name}: no configured worker can serve this job";
+                unservable.Completion?.TrySetException(
+                    new System.InvalidOperationException("No configured worker can serve this job"));
+                // Deterministic fail-fast (broken config), NOT a transient kill — do not retry, just
+                // drop it. Release AND persist so the interrupted-in-flight snapshot on disk no longer
+                // lists it (otherwise it would restore as pending and re-fail every startup).
+                ReleaseInFlightAndPersist(IdentityKey(unservable));
+                logger.LogError("[Dispatch] No capable worker for {ItemName} — skipping", unservable.Item.Name);
+            }
+
             // The job requirements are uniform across a drain session, so feasibility is decided once: if no
             // worker can EVER serve them (e.g. translation enabled but every configured worker is
-            // transcribe-only) fail the whole queue fast rather than block a slot forever. A misconfig then
+            // transcribe-only) fail the queue fast rather than block a slot forever. A misconfig then
             // surfaces loudly (every item errors with a clear message) instead of the queue hanging.
-            if (!pool.HasCapableWorker(requirements))
+            // Translate jobs are not judged by these requirements: each one runs on a worker that lists its
+            // own target, and fails with the target's own reason when there is none. So they stay queued,
+            // in their order, and this drain runs them with any worker as their first lease.
+            var poolServesItems = pool.HasCapableWorker(requirements);
+            if (!poolServesItems)
             {
+                var translateJobs = new List<SubtitleWorkItem>();
                 while (TryDequeuePriority(out var unservable) && unservable != null)
                 {
-                    // Match the old counting: the background loop counted a failure toward `processed`,
-                    // the scheduled task's priority drain did not (countProcessed distinguishes them).
-                    if (countProcessed) Interlocked.Increment(ref _processedCount);
-                    Interlocked.Increment(ref _failedCount);
-                    _lastError = $"{unservable.Item.Name}: no configured worker can serve this job";
-                    unservable.Completion?.TrySetException(
-                        new System.InvalidOperationException("No configured worker can serve this job"));
-                    // Deterministic fail-fast (broken config), NOT a transient kill — do not retry, just
-                    // drop it. Release AND persist so the interrupted-in-flight snapshot on disk no longer
-                    // lists it (otherwise it would restore as pending and re-fail every startup).
-                    ReleaseInFlightAndPersist(IdentityKey(unservable));
-                    logger.LogError("[Dispatch] No capable worker for {ItemName} — skipping", unservable.Item.Name);
+                    if (unservable.Target != null) translateJobs.Add(unservable);
+                    else FailUnservable(unservable);
                 }
-                _currentItemName = null;
-                return false;
+                foreach (var job in translateJobs) RequeueWithoutRetry(job);
+                if (translateJobs.Count == 0)
+                {
+                    _currentItemName = null;
+                    return false;
+                }
             }
+            var leaseRequirements = WorkerJob.DispatchLease(requirements, poolServesItems);
 
             // "The binary is on disk" is not "the binary runs": a CUDA build outlives the container it was
             // downloaded in and then exits 127 on every chunk. Settle that ONCE per drain, before anything is
@@ -1083,6 +1100,10 @@ namespace WhisperSubs.Controller
 
             var running = new List<Task>();
             var paused = false;
+            // Translate jobs whose target's only workers are out of rotation (issue #185). Each keeps its
+            // retries and is held back until this drain ends, then re-queued: re-queuing at once would put
+            // it straight back on a worker that cannot run it, round after round.
+            var parked = new ConcurrentQueue<SubtitleWorkItem>();
             try
             {
                 while (!_lanes.IsEmpty)
@@ -1096,7 +1117,7 @@ namespace WhisperSubs.Controller
                     WorkerLease lease;
                     try
                     {
-                        lease = await pool.AcquireAsync(requirements, cancellationToken);
+                        lease = await pool.AcquireAsync(leaseRequirements, cancellationToken);
                     }
                     catch (NoAvailableWorkerException ex)
                     {
@@ -1117,6 +1138,14 @@ namespace WhisperSubs.Controller
                         continue;
                     }
 
+                    if (workItem.Target == null && !poolServesItems)
+                    {
+                        // A generate job queued while this drain runs only translate jobs.
+                        pool.Release(lease.Key);
+                        FailUnservable(workItem);
+                        continue;
+                    }
+
                     var wi = workItem;
                     var l = lease;
                     // A translate job shows its target, so two jobs for one title can be told apart. SetCurrent
@@ -1133,6 +1162,13 @@ namespace WhisperSubs.Controller
                     running.Add(Task.Run(async () =>
                     {
                         var key = IdentityKey(wi);
+                        // A translate job may hand its slot back early, to wait for the worker that makes its
+                        // target; the finally below must then not release it a second time.
+                        var slotReleased = 0;
+                        void ReleaseSlot()
+                        {
+                            if (Interlocked.Exchange(ref slotReleased, 1) == 0) pool.Release(l.Key, label);
+                        }
                         try
                         {
                             if (wi.Target != null)
@@ -1140,7 +1176,7 @@ namespace WhisperSubs.Controller
                                 // A translate job: only the translation pass, for its one target.
                                 await manager.TranslateSubtitleAsync(
                                     wi.Item, l.Worker.Provider, wi.Target, wi.Force,
-                                    new PoolTargetEngines(pool, l), cancellationToken);
+                                    new PoolTargetEngines(pool, l, releaseOwnLease: ReleaseSlot), cancellationToken);
                             }
                             else
                             {
@@ -1167,6 +1203,17 @@ namespace WhisperSubs.Controller
                             else
                                 logger.LogWarning("[Dispatch] Giving up on {ItemName} after {Attempts} attempt(s) — cancelled and out of retries",
                                     wi.Item.Name, wi.RetryCount + 1);
+                        }
+                        catch (NoAvailableWorkerException ex) when (wi.Target != null)
+                        {
+                            // Every worker that makes this target is out of rotation. Nothing is wrong with the
+                            // job, so like a whole item in a paused drain it keeps its retries: it waits for
+                            // the next drain, which re-checks the local engine first.
+                            _lastError = ex.Message;
+                            wi.Completion?.TrySetException(ex);
+                            parked.Enqueue(wi);
+                            logger.LogWarning("[Dispatch] {ItemName} waits for the next run: no worker that makes '{Target}' is available — {Reason}",
+                                wi.Item.Name, wi.Target, ex.Message);
                         }
                         catch (TranslationNotPossibleException ex)
                         {
@@ -1231,7 +1278,7 @@ namespace WhisperSubs.Controller
                             // reservation is released along the success/retry/drop paths above — NOT here —
                             // so a re-queued item that was already re-dequeued+reserved by another slot is
                             // not wrongly un-reserved (which would let it dispatch twice).
-                            pool.Release(l.Key, label);
+                            ReleaseSlot();
                         }
                     }));
 
@@ -1244,6 +1291,15 @@ namespace WhisperSubs.Controller
                 // Wait for every dispatched job to finish before returning, so the caller (and _isDraining)
                 // only sees "drained" once the pool is truly idle. Individual job errors are handled above.
                 try { await Task.WhenAll(running); } catch { /* per-job exceptions already handled */ }
+
+                // Every job has finished, so nothing can park another one now.
+                if (!parked.IsEmpty)
+                {
+                    logger.LogWarning("[Dispatch] Paused with {Count} translate job(s) kept for the next run — no worker that makes their language is available",
+                        parked.Count);
+                    while (parked.TryDequeue(out var held)) RequeueWithoutRetry(held);
+                    paused = true;
+                }
             }
 
             logger.LogInformation("[Dispatch] Drain complete. Processed {Count} items total ({Failed} failed).",
