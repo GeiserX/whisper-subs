@@ -10,7 +10,7 @@ Everything the settings page does, it does over HTTP. This page lists those endp
 
 ## The REST API {#rest-api}
 
-All 36 endpoints live under `/Plugins/WhisperSubs`. Two controllers share that prefix: 32 admin endpoints and 4 user-facing ones.
+All 44 endpoints live under `/Plugins/WhisperSubs`. Two controllers share that prefix: 39 admin endpoints and 5 user-facing ones.
 
 Every admin endpoint needs an administrator token. [Diagnostics](/diagnostics) covers creating an API key and which header to send. A browser tab sends no credentials, so opening any of these URLs directly returns 401.
 
@@ -28,8 +28,9 @@ The whole controller carries `[Authorize(Policy = "RequiresElevation")]`, so **a
 | GET | `Items/{itemId}/Status` | Whether a plugin-generated full or forced subtitle exists for the item, plus the path. Query: `language`, defaulting to the configured one. `auto` checks any language. |
 | POST | `Items/{itemId}/Generate` | 202. Queues one item at the admin tier, forced, so it regenerates even when a usable subtitle already exists. Query: `language`. |
 | POST | `Items/{itemId}/GenerateAll` | 202. Expands a series, season or album to its media items and queues each one. Unlike `Generate` this does not force, so it fills gaps rather than redoing work. Query: `language`. |
+| POST | `Items/{itemId}/Translate` | 202. Queues a translation into one language for a movie, episode, other video, series or season, one job per video. A single video is forced, a series or season is not; an existing translated file is kept either way. 400 for a target other than `en` or the 24 Canary codes, or for another item type; 404 for an unknown item; 409 with the reason when no engine can make the target. Query: `target`. |
 
-`GenerateAll` only accepts a movie, episode, audio track, series, season or album. A library root, a collection or a plain folder is rejected with 400, so a single call cannot sweep the whole library.
+`GenerateAll` only accepts a movie, episode, audio track, series, season or album. A library root, a collection or a plain folder is rejected with 400, so a single call cannot sweep the whole library. `Translate` applies the same rule without audio tracks and albums.
 
 **Queue and workers**
 
@@ -81,11 +82,11 @@ These mirror the whisper endpoints for the BSRoformer.cpp binary and model. They
 
 ### User endpoints {#user-endpoints}
 
-Four endpoints let a signed-in user ask for subtitles instead of waiting for an admin. They live in their own controller with a plain `[Authorize]`, so **any authenticated user** can reach them. That is deliberate: opening one method on the admin controller would have meant dropping its class-level elevation, and an un-attributed method in Jellyfin becomes public.
+Five endpoints let a signed-in user ask for subtitles or a translation instead of waiting for an admin. They live in their own controller with a plain `[Authorize]`, so **any authenticated user** can reach them. That is deliberate: opening one method on the admin controller would have meant dropping its class-level elevation, and an un-attributed method in Jellyfin becomes public.
 
-The gates are not the same on all four.
+The gates are not the same on all five.
 
-`Requests/Capabilities` answers for any authenticated user whether the feature is on, because the client script needs that answer either way to decide whether to show the request entry at all. It returns 200 with `enabled: false` when requests are switched off.
+`Requests/Capabilities` answers for any authenticated user whether the feature is on, because the client script needs that answer either way to decide whether to show the request entry at all. It returns 200 with `enabled: false` when requests are switched off. `TranslationTargets` is static catalog data and answers any authenticated user whatever the setting.
 
 The other three apply two gates:
 
@@ -97,7 +98,8 @@ One further gate applies only to `Items/{itemId}/Request`: the item must be visi
 | Method | Path | Returns |
 |---|---|---|
 | GET | `Requests/Capabilities` | Whether requests are enabled, whether they auto-approve, the user tier, and the daily and active limits. Drives the client script showing or hiding the request entry. |
-| POST | `Items/{itemId}/Request` | 202 when the request is created, 200 when it duplicates an active one. 429 over the daily quota or the per-user active cap, 503 when the global queue cap is full, 400 for an unsupported item type or language. Query: `language`. |
+| GET | `TranslationTargets` | The languages a title can be translated into, as `[{ code, name }]`: English first, then the 24 Canary languages. The item page's **Translate into…** list reads it. |
+| POST | `Items/{itemId}/Request` | 202 when the request is created, 200 when it duplicates an active one. 429 over the daily quota or the per-user active cap, 503 when the global queue cap is full, 400 for an unsupported item type or language. Query: `language`, plus `target` for a translation request. With a target, `language` must be `auto` or absent and the target must be `en` or a Canary code. 409 means no engine can make the target, and it comes back before any quota is spent. |
 | GET | `Requests/Mine` | That user's own requests only. Never anyone else's, never a file path. |
 | GET | `Items/{itemId}/RequestStatus` | That user's active request state for one item, which is what the item-page badge reads. |
 

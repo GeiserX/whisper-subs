@@ -116,7 +116,7 @@ This applies only when Subtitle Mode includes Full subtitles. It does nothing in
 
 Whisper translates only into English. For a title whose audio is English, the plugin can also write a subtitle in any of 24 European languages with [NVIDIA Canary](https://huggingface.co/nvidia/canary-1b-v2), which [CrispASR](https://github.com/CrispStrobe/CrispASR) runs. The [design doc](https://github.com/GeiserX/whisper-subs/blob/main/docs/design/crispasr-translation-engine.md) has the reasoning and the test results.
 
-The section sits under Translation on the settings page and needs **Also create an English subtitle when a title has none** turned on. Nothing changes until you pick a language.
+The section sits under Translation on the settings page. The checkboxes drive the automatic run and need **Also create an English subtitle when a title has none** turned on; nothing changes until you tick a language. Translating a single title needs neither. See [Translate one title](#translate-one-title).
 
 | Setting | Default | What it does |
 |---|---|---|
@@ -137,6 +137,19 @@ Per title and per language, the pass skips instead of translating when:
 If the audio is English and no engine can make the language, a title you generate by hand fails that language with an error that says why: nothing is installed, **Also use this server as a worker** is off, or a single Remote API URL keeps this server out of the pool. An engine is the local crispasr binary and Canary model together, or a worker that lists the language, as described in [Remote workers](./remote-workers.md#crispasr-server-workers). No file is written for a language that fails or skips.
 
 The scheduled task treats an English title as finished only when every checked language has its subtitle, so adding a language gets picked up by the next automatic run. Changing the list also clears the skip cache. A checked language that no engine can make is left out of each automatic run, with one warning in the log naming it, so it never fails your English titles. Installing the engine clears the skip cache and the next run picks those titles up.
+
+### Translate one title
+
+On a movie, episode, season or series page, **Translate into…** sits next to the Subtitles button. Pick a language and the plugin queues a translation into that language for that title, or for every episode of the season or series. It works with no checkbox ticked and with **Also create an English subtitle when a title has none** off.
+
+- English comes from Whisper and works from any audio language.
+- The other 24 languages come from Canary and need English audio.
+- If no engine can make the language, the plugin refuses the pick at once, says why, and queues nothing. An engine is the crispasr binary and Canary model on this server, or a worker that lists the language.
+- If a title's audio is not English and you picked a Canary language, that title fails with the reason. It is not retried and gets no file. The queue panel shows the reason as the last error.
+- A title that already has the translation, or whose audio is already in that language, is skipped.
+- A single movie or episode is translated even when it has a subtitle in that language from another source. A season or series respects **Skip media that already has subtitles**.
+
+For admins, the translation goes straight to the queue at the admin priority. When **Allow users to request subtitles** is on, other users see the same list. Their pick becomes a request with the usual approval, quota and caps, and a translation request counts toward them like any other. Collections and folders cannot be translated in one go, for the same reason they cannot be generated in one go.
 
 Canary output is experimental. [Limitations](./limitations.md#translation) explains what it cannot do.
 

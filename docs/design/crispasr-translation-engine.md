@@ -181,7 +181,7 @@ after a compatibility run, exactly like BSRoformer's `Version`.
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `TranslationTargetLanguages` | `List<string>` | `[]` | Extra targets besides English. Empty keeps today's behaviour. |
+| `TranslationTargetLanguages` | `List<string>` | `[]` | Targets the nightly run adds. Optional: per-title translation does not need it. |
 | `CrispAsrBinaryPath` | `string` | `""` | Set by the setup service after a validated install; manual override allowed. |
 | `CrispAsrBinaryVariant` | `string` | `""` | Installed variant, re-offered on the setup page. |
 | `CrispAsrBinaryVersion` | `string` | `""` | Pinned upstream tag the install came from. |
@@ -244,6 +244,34 @@ The ordered target list is part of the skip-cache signature, appended only when 
 install without targets keeps its cache on upgrade. The unserved targets are appended too, only
 when there are any, so installing the engine drops the entries cached while a target was unserved.
 
+### Per-title action
+
+The nightly list applies to every English-audio title in the library. To translate one title
+instead, an admin calls `POST Items/{id}/Translate?target=<code>`, and a viewer calls
+`Items/{id}/Request?language=auto&target=<code>` under the usual approval, quota and caps. The item
+page offers both as a **Translate into…** list, read from `GET TranslationTargets` (English plus
+the 24 Canary codes). A movie, episode or other video is one job. A season or series becomes one job
+per episode. Collections and folders are refused, as for `GenerateAll`.
+
+Each job is a translate job with the queue identity `(item, "auto", target)`, next to the generate
+identity `(item, language)`, so both can be queued or running for the same title at once.
+`Target` is written to `queue.json` and `requests.json` only when set, so existing files and every
+generate job's bytes are unchanged. The job runs only the translation pass for its one target. For
+`en` that is the English pass, for the rest the Canary pass. It reads none of the generation or translation
+settings, and neither the nightly list nor `EnableTranslation` has to be set.
+
+An explicit request changes one rule. The nightly run skips a Canary target when the audio is not
+English, because that is most of a library. A translate job asked for that target, so it fails
+with the route's reason and writes nothing. That failure, a missing engine, an unsupported target
+and a missing video file are all final. The job throws `TranslationNotPossibleException`, and the
+dispatcher records it without spending retries on an answer that cannot change. Skips still win. An
+existing translated file, audio already in the target, or a usable subtitle on an unforced job all
+skip the target.
+
+Both endpoints refuse a target no engine can make with 409 and the same wording the job would
+record (`TranslationRoute.EngineMissingReason`). The check reads the live pool without building it;
+before any pool exists it answers from the settings.
+
 ### Worker pool
 
 [`WorkerCapabilities.CanTranslate`](../../Controller/Workers/WorkerModel.cs) (bool) becomes `TranslateTargets` (set of language codes;
@@ -258,11 +286,13 @@ As shipped:
   empty list falls back to `CanTranslate`, meaning `{"en"}` or nothing, and the settings page writes both
   fields together, with `CanTranslate` false for a transcribe-only row.
 - An OpenAI-dialect row never advertises a Canary target, even if a hand-edited config lists one.
-- The local worker advertises `{"en"}` plus the configured targets when crispasr and the Canary
-  model are installed, and carries a `CanaryProvider` next to its whisper provider for them. Both
-  are live, not fixed when the pool is built: the targets come from the current configuration and a
+- The local worker advertises `{"en"}` plus all 24 Canary targets while crispasr and the Canary
+  model are installed, ticked or not, and carries a `CanaryProvider` next to its whisper provider
+  for them. Per-title translation needs every target with the nightly list empty; the nightly run
+  only asks about the ticked ones. Both are live, not fixed when the pool is built: they come from a
   cached install check each time the pool asks, because the pool is rebuilt only at an idle session
-  start, and a long sweep kept a freshly installed engine unusable for hours.
+  start, and a long sweep kept a freshly installed engine unusable for hours. An `en` target lease
+  always uses the worker's whisper provider, never its Canary one.
 - A CrispASR row whose targets do not list `en` never takes a whole-item job, with translation on
   or off, in any mode. It serves only the Canary-target jobs it lists. The first version filtered
   on `en` only when translation was possible, so with translation off such a row took ordinary
