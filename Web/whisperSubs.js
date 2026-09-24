@@ -1,13 +1,16 @@
 // WhisperSubs -- context menu integration
 // Admins get "Generate Subtitles"; non-admins get "Request Subtitles" when the admin has enabled user
-// requests (issue #112). Loaded via script injection into Jellyfin's index.html. This script is served
-// anonymously and is trusted for NOTHING — every check (who you are, what you can see, quota) is enforced
-// server-side; the UI here only decides which label to show.
+// requests (issue #112). On the item detail page both also get a "Translate into…" list: an admin queues
+// the translation directly, a viewer submits it as a request. Loaded via script injection into
+// Jellyfin's index.html. This script is served anonymously and is trusted for NOTHING — every check (who
+// you are, what you can see, quota, which languages exist) is enforced server-side; the UI here only
+// decides which controls to show. Every server string reaches the page through textContent.
 (function () {
     'use strict';
 
     var isAdmin = null;
     var caps = null;          // { enabled, autoApprove } from Requests/Capabilities (non-admins only)
+    var translationTargets = null;   // [{ code, name }] from TranslationTargets, cached
     var pendingItemId = null;
     var menuObserver = null;
 
@@ -30,6 +33,22 @@
         } catch (e) {
             caps = { enabled: false };
             return Promise.resolve(caps);
+        }
+    }
+
+    // The languages a title can be translated into. The server's list is the only source, so the page
+    // never offers a code the server refuses. Any error gives [] and the control is simply not added.
+    function getTranslationTargets() {
+        if (translationTargets !== null) return Promise.resolve(translationTargets);
+        try {
+            var url = ApiClient.getUrl('Plugins/WhisperSubs/TranslationTargets');
+            return ApiClient.ajax({ type: 'GET', url: url }).then(function (resp) {
+                var list = typeof resp === 'string' ? JSON.parse(resp) : resp;
+                translationTargets = Array.isArray(list) ? list : [];
+                return translationTargets;
+            }).catch(function () { return []; });
+        } catch (e) {
+            return Promise.resolve([]);
         }
     }
 
@@ -72,6 +91,105 @@
     function requestSubtitles(itemId) {
         var url = ApiClient.getUrl('Plugins/WhisperSubs/Items/' + itemId + '/Request', { language: 'auto' });
         return ApiClient.ajax({ type: 'POST', url: url });
+    }
+
+    function translateItem(itemId, target) {
+        var url = ApiClient.getUrl('Plugins/WhisperSubs/Items/' + itemId + '/Translate', { target: target });
+        return ApiClient.ajax({ type: 'POST', url: url });
+    }
+
+    function requestTranslation(itemId, target) {
+        var url = ApiClient.getUrl('Plugins/WhisperSubs/Items/' + itemId + '/Request', { language: 'auto', target: target });
+        return ApiClient.ajax({ type: 'POST', url: url });
+    }
+
+    // A viewer's translation errors map to fixed text by status only: no server text reaches a viewer.
+    function userTranslateErrorText(xhr) {
+        var status = xhr && xhr.status;
+        if (status === 409) return 'WhisperSubs: That language cannot be made on this server right now';
+        if (status === 400) return 'WhisperSubs: This title cannot be translated';
+        return userRequestErrorText(xhr);
+    }
+
+    // An admin sees the server's reason when the rejection carries a JSON body; otherwise the status.
+    function adminTranslateErrorText(xhr) {
+        var fallback = 'WhisperSubs: Could not queue the translation (HTTP ' + ((xhr && xhr.status) || '?') + ')';
+        if (!xhr || typeof xhr.json !== 'function') return Promise.resolve(fallback);
+        return xhr.json().then(function (body) {
+            return body && typeof body.error === 'string' && body.error ? 'WhisperSubs: ' + body.error : fallback;
+        }).catch(function () { return fallback; });
+    }
+
+    function runTranslate(mode, itemId, target, name, setStatus) {
+        if (mode === 'admin') {
+            setStatus('WhisperSubs: Queuing translation...');
+            return translateItem(itemId, target).then(function (response) {
+                var data = typeof response === 'string' ? JSON.parse(response) : response;
+                var count = data && data.queued != null ? data.queued : 0;
+                setStatus('WhisperSubs: Queued ' + count + ' title(s) for ' + name +
+                    '. Titles that already have it, or whose audio is already ' + name + ', are skipped.');
+            }).catch(function (xhr) {
+                return adminTranslateErrorText(xhr).then(setStatus);
+            });
+        }
+        setStatus('WhisperSubs: Requesting translation...');
+        return requestTranslation(itemId, target).then(function (response) {
+            var data = typeof response === 'string' ? JSON.parse(response) : response;
+            setStatus(userRequestResultText(data));
+        }).catch(function (xhr) {
+            setStatus(userTranslateErrorText(xhr));
+        });
+    }
+
+    // "Translate into…" next to the Subtitles button. Native <select>; option labels and every status
+    // message go through textContent.
+    function injectTranslateControl(row, anchor, mode, itemId) {
+        getTranslationTargets().then(function (targets) {
+            if (!targets || targets.length === 0) return;
+            if (row.querySelector('.btnWhisperSubsTranslate')) return; // guard against a double inject
+
+            var select = document.createElement('select');
+            select.className = 'btnWhisperSubsTranslate detailButton';
+            select.setAttribute('aria-label', 'Translate into');
+
+            var placeholder = document.createElement('option');
+            placeholder.value = '';
+            placeholder.textContent = 'Translate into\u2026';
+            select.appendChild(placeholder);
+
+            var names = {};
+            for (var i = 0; i < targets.length; i++) {
+                var t = targets[i];
+                if (!t || typeof t.code !== 'string') continue;
+                var opt = document.createElement('option');
+                opt.value = t.code;
+                opt.textContent = typeof t.name === 'string' ? t.name : t.code;
+                names[t.code] = opt.textContent;
+                select.appendChild(opt);
+            }
+
+            var status = document.createElement('span');
+            status.className = 'whisperSubsTranslateStatus';
+            status.setAttribute('role', 'status');
+            function setStatus(text) { status.textContent = text; }
+
+            select.addEventListener('change', function () {
+                var code = select.value;
+                if (!code) return;
+                select.disabled = true;
+                runTranslate(mode, itemId, code, names[code] || code, setStatus).then(function () {
+                    select.value = '';
+                    setTimeout(function () { select.disabled = false; }, 3000); // debounce repeat picks
+                });
+            });
+
+            if (anchor && anchor.parentNode === row) {
+                anchor.insertAdjacentElement('afterend', select);
+            } else {
+                row.appendChild(select);
+            }
+            select.insertAdjacentElement('afterend', status);
+        });
     }
 
     function getItemRequestStatus(itemId) {
@@ -285,6 +403,7 @@
                 });
 
                 row.appendChild(btn);
+                injectTranslateControl(row, btn, info.mode, itemId);
 
                 // For a user, reflect any existing active request on the button (persistent feedback).
                 if (info.mode === 'user') {
@@ -324,9 +443,9 @@
     console.log('[WhisperSubs] client script loaded');
     resolveMode().then(function (info) {
         if (info.mode === 'admin') {
-            console.log('[WhisperSubs] administrator — "Generate Subtitles" button + menu enabled');
+            console.log('[WhisperSubs] administrator — "Generate Subtitles" button + menu and "Translate into" list enabled');
         } else if (info.mode === 'user') {
-            console.log('[WhisperSubs] user requests enabled — "Request Subtitles" button + menu enabled');
+            console.log('[WhisperSubs] user requests enabled — "Request Subtitles" button + menu and "Translate into" list enabled');
         } else {
             console.log('[WhisperSubs] no WhisperSubs entry: you are not an administrator and user requests are disabled by the admin');
         }
