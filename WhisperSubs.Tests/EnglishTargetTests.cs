@@ -88,18 +88,18 @@ public class EnglishTargetTests
     }
 
     [Fact]
-    public async Task EnglishJobOnTheLocalWorker_WithATurboModel_MovesToAWorkerThatTranslates()
+    public async Task EnglishJob_WithATurboModel_IsPlacedOnAWorkerThatTranslates()
     {
         var pool = new WorkerPool(new[] { Local(), Remote("remote", "en") });
-        var own = pool.TryAcquire(new JobRequirements(null, null))!.Value;
-        Assert.Equal("local", own.Worker.Id);   // cost 0 and first: the dispatcher's usual pick
+        // Cost 0 and first, this server's worker would be the usual pick; the job's requirement rules it out.
+        var needs = DispatchPlacement.RequirementsOf("en", WorkerJob.Requirements(SubtitleMode.Full, true),
+            poolServesItems: true, localWhisperTranslates: false, pool.HasCapableWorker)!.Value;
+        var lease = pool.TryAcquire(needs)!.Value;
+        Assert.Equal("remote", lease.Worker.Id);
 
-        var released = 0;
-        var engines = new PoolTargetEngines(pool, own, releaseOwnLease: () => { released++; pool.Release(own.Key); },
-            localWhisperTranslates: false);
-        using var engine = await engines.AcquireAsync("en", "Film", CancellationToken.None);
+        using var engine = await new PoolTargetEngines(pool, lease, localWhisperTranslates: false).AcquireAsync("en", "Film", CancellationToken.None);
         Assert.Equal("remote", engine.WorkerName);
-        Assert.Equal(1, released);
+        Assert.Equal(1, pool.ActiveJobs);
     }
 
     // ── The reason, for the 409 and the job ────────────────────────────────

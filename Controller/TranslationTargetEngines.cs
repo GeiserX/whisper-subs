@@ -60,27 +60,24 @@ namespace WhisperSubs.Controller
     /// Routes Canary targets through the worker pool from inside an item that already holds a lease. The
     /// item's own worker is used when it lists the target; otherwise the pool is asked for a worker whose
     /// targets contain it, following <see cref="TargetLeaseRouting"/> so two items never wait on each other.
-    /// A translate job passes <c>releaseOwnLease</c>: it gives its own slot back before it waits, so a
-    /// busy or parked target worker makes it wait (or wait for the next drain) rather than fail.
+    /// A translate job is placed on a worker that lists its target (<see cref="DispatchPlacement"/>), so it
+    /// uses its own worker and never waits here.
     /// </summary>
     [ExcludeFromCodeCoverage(Justification = "Orchestration over the live pool; TargetLeaseRouting, WorkerScheduling and TryAcquire are unit-tested")]
     internal sealed class PoolTargetEngines : ITranslationTargetEngines
     {
         private readonly WorkerPool _pool;
         private readonly WorkerLease _lease;
-        private readonly Action? _releaseOwnLease;
         private readonly bool _localWhisperTranslates;
-        private bool _ownReleased;
 
         /// <param name="localWhisperTranslates">False keeps English off this server's own worker: its
         /// Whisper model is a turbo model, which cannot translate. Only a translate job asks for English here.</param>
-        public PoolTargetEngines(WorkerPool pool, WorkerLease lease, bool skipUnservedTargets = false, Action? releaseOwnLease = null,
+        public PoolTargetEngines(WorkerPool pool, WorkerLease lease, bool skipUnservedTargets = false,
             bool localWhisperTranslates = true)
         {
             _pool = pool;
             _lease = lease;
             SkipUnservedTargets = skipUnservedTargets;
-            _releaseOwnLease = releaseOwnLease;
             _localWhisperTranslates = localWhisperTranslates;
         }
 
@@ -99,27 +96,13 @@ namespace WhisperSubs.Controller
             var ownTargets = job.RemoteOnly && own.Capabilities.IsLocal
                 ? WorkerTargets.Set(own.Capabilities.TranslateTargets.Where(t => !string.Equals(t, job.TranslateTarget, StringComparison.OrdinalIgnoreCase)).ToArray())
                 : own.Capabilities.TranslateTargets;
-            // Once the own slot is handed back, the own worker is no longer this job's to use.
-            var policy = _ownReleased
-                ? TargetLeasePolicy.ReleaseOwnAndWait
-                : TargetLeaseRouting.Decide(ownTargets, job.TranslateTarget!, canReleaseOwn: _releaseOwnLease != null);
-            switch (policy)
+            switch (TargetLeaseRouting.Decide(ownTargets, job.TranslateTarget!))
             {
                 case TargetLeasePolicy.UseOwnWorker:
                     return new TargetEngineLease(TargetProviders.For(own, job.TranslateTarget!), own.Name, null);
                 case TargetLeasePolicy.TakeFreeAnotherOnly:
                     sub = _pool.TryAcquire(job) ?? throw new InvalidOperationException(
                         $"No worker that translates into '{job.TranslateTarget}' was free while this item ran on {own.Name}, which does not list it. The next run tries again.");
-                    break;
-                case TargetLeasePolicy.ReleaseOwnAndWait:
-                    if (!_ownReleased)
-                    {
-                        _ownReleased = true;
-                        _releaseOwnLease!();
-                    }
-                    // Holding nothing now. A NoAvailableWorkerException (every worker that lists the target
-                    // is out of rotation) reaches the dispatcher, which keeps the job for the next drain.
-                    sub = await _pool.AcquireAsync(job, cancellationToken).ConfigureAwait(false);
                     break;
                 default:
                     sub = await _pool.AcquireAsync(job, cancellationToken).ConfigureAwait(false);

@@ -23,6 +23,14 @@ namespace WhisperSubs.Controller
     /// the stored value via a caller-supplied function. This is the pure ordering + de-dup engine behind
     /// the subtitle queue, deliberately free of Jellyfin types so it is fully unit-testable. (Issue #112.)
     /// </summary>
+    /// <summary>What <see cref="PriorityLanes{T}.TryTakeFirst"/> does with the entry it is looking at.</summary>
+    internal enum LaneVisit
+    {
+        Skip,
+        Take,
+        Stop,
+    }
+
     internal sealed class PriorityLanes<T>
     {
         private readonly object _gate = new();
@@ -110,6 +118,37 @@ namespace WhisperSubs.Controller
         }
 
         /// <summary>Removes a specific key if queued. Returns true if it was present.</summary>
+        /// <summary>
+        /// Walks the entries in dispatch order (strongest tier first, FIFO within a tier) and removes the first
+        /// one <paramref name="visit"/> takes; <see cref="LaneVisit.Stop"/> ends the walk with nothing taken.
+        /// Lazy and without a copy, so a long backlog costs only the entries actually looked at.
+        /// </summary>
+        public bool TryTakeFirst(Func<T, LaneVisit> visit, out T value)
+        {
+            lock (_gate)
+            {
+                foreach (var lane in _lanes.Values)
+                {
+                    for (var node = lane.First; node != null; node = node.Next)
+                    {
+                        switch (visit(node.Value.Value))
+                        {
+                            case LaneVisit.Take:
+                                value = node.Value.Value;
+                                RemoveNode(node);
+                                return true;
+                            case LaneVisit.Stop:
+                                value = default!;
+                                return false;
+                        }
+                    }
+                }
+
+                value = default!;
+                return false;
+            }
+        }
+
         public bool Remove(string key)
         {
             lock (_gate)

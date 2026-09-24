@@ -268,11 +268,21 @@ title. It also ignores `Target` in `requests.json`, so approving a pending trans
 queues a generate job for every episode. It re-saves both files without `Target`, so upgrading again
 does not bring the target back.
 
-The dispatcher leases a worker before it knows the next job, so a translate job can land on a worker
-that does not list its target. It then hands that slot back and waits for a worker that does, holding
-nothing while it waits, so it cannot join a wait cycle and a busy worker delays it rather than failing
-it. When every worker that lists the target is out of rotation, the job keeps its retries and waits for
-the next drain, as a whole item does in a paused drain.
+The dispatcher chooses the job and its worker together. It walks the queue in priority order and takes
+the first job that a free worker can serve right now, leased on that worker, so a job leaves `queue.json`
+only with a worker ready for it. A translate job needs a worker that lists its target, so it always starts
+on one and never waits for a second worker. The first version leased a worker before it knew the job: a
+translate job that landed on the wrong worker handed the slot back and waited, the dispatcher then
+dequeued the next job into the same wait, and one series could turn the whole queue into in-flight
+waiters that held no slot. Now a burst of translate jobs for one busy worker stays queued in order, while
+jobs behind it run on other free workers; when that worker frees, the first of them takes it. With
+nothing placeable, the dispatcher waits for a slot release (at most a second, then it looks again). When
+every queued job waits only for workers out of rotation, the drain pauses and every job keeps its place and
+its retries. A job that no worker can ever serve keeps the fail-fast: a generate job fails when the pool
+takes no whole item, and a translate job for a target nobody lists runs on any worker so the pass fails it
+with the target's reason. When the placed worker takes no whole titles (a target-only CrispASR server),
+the whisper language probe for untagged audio runs on a worker that does, because Canary cannot tell
+languages apart.
 
 English needs a worker that translates into it. This server's own worker counts only while its
 Whisper model can translate. A turbo model, the one the catalog recommends, was not trained to

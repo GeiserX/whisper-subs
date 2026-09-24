@@ -14,6 +14,30 @@ public class PriorityLanesTests
     // Tier ints mirror PriorityTier: Critical=0 … Background=4 (lower = higher priority).
     private const int Critical = 0, High = 1, Medium = 2, Low = 3, Background = 4;
 
+    // The dispatcher's walk: strongest tier first, FIFO within a tier, takes the first entry it accepts,
+    // leaves the rest in place, and Stop ends the walk with nothing taken.
+    [Fact]
+    public void TryTakeFirst_TakesTheFirstAcceptedEntryInDispatchOrder()
+    {
+        var lanes = new PriorityLanes<string>();
+        lanes.Enqueue("a", 3, "low-a");
+        lanes.Enqueue("b", 1, "high-b");
+        lanes.Enqueue("c", 1, "high-c");
+        lanes.Enqueue("d", 3, "low-d");
+
+        var seen = new System.Collections.Generic.List<string>();
+        Assert.True(lanes.TryTakeFirst(v => { seen.Add(v); return v == "low-a" ? LaneVisit.Take : LaneVisit.Skip; }, out var taken));
+        Assert.Equal("low-a", taken);
+        Assert.Equal(new[] { "high-b", "high-c", "low-a" }, seen);
+        Assert.Equal(3, lanes.Count);
+        Assert.False(lanes.ContainsKey("a"));
+
+        Assert.False(lanes.TryTakeFirst(_ => LaneVisit.Stop, out _));
+        Assert.Equal(3, lanes.Count);
+        Assert.True(lanes.TryDequeue(out var first));
+        Assert.Equal("high-b", first);   // order untouched by the walks
+    }
+
     [Fact]
     public void Enqueue_NewKey_ReturnsAdded_AndCounts()
     {

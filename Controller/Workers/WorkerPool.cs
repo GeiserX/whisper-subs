@@ -49,6 +49,10 @@ namespace WhisperSubs.Controller.Workers
         // sees "what's running where" (a worker with MaxConcurrency > 1 can hold several). (v4.0.)
         private readonly Dictionary<string, List<string>> _current = new();
         private readonly SemaphoreSlim _slots;
+
+        // Completed and replaced whenever a slot or a worker really comes free (see SignalFreed), so a
+        // dispatcher with nothing it can place waits for a change instead of polling.
+        private TaskCompletionSource _freed = new(TaskCreationOptions.RunContinuationsAsynchronously);
         // Production passes a real logger (SubtitleQueueService.GetPool); the unit tests construct the pool
         // without one (NullLogger). Used for the diagnostic over-release tripwire and hot-add / removal logging.
         private readonly ILogger _logger;
@@ -260,9 +264,59 @@ namespace WhisperSubs.Controller.Workers
         /// <summary>Puts a worker back in rotation. Returns true when it had been out.</summary>
         public bool MarkAvailable(string leaseKey)
         {
+            bool changed;
             lock (_gate)
             {
-                return _unavailable.Remove(leaseKey);
+                changed = _unavailable.Remove(leaseKey);
+            }
+            if (changed) SignalFreed();
+            return changed;
+        }
+
+        /// <summary>Free slots right now across the pool (no worker chosen).</summary>
+        internal int FreeSlots => _slots.CurrentCount;
+
+        /// <summary>
+        /// A task that completes the next time a leased slot is released, a worker returns to rotation or
+        /// capacity grows. Take it BEFORE looking for placeable work, so a release that lands in between is
+        /// not missed. A lease handed back inside <see cref="TryAcquire"/> or <see cref="AcquireAsync"/>
+        /// because no capable worker was free does not count: nothing changed, and waking on it would spin.
+        /// </summary>
+        internal Task FreedSignal => Volatile.Read(ref _freed).Task;
+
+        private void SignalFreed()
+            => Interlocked.Exchange(ref _freed, new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)).TrySetResult();
+
+        /// <summary>
+        /// Why nothing can run <paramref name="job"/> although a worker could serve it, when every such worker
+        /// is out of rotation; null when one is in rotation (it may be busy).
+        /// </summary>
+        internal string? NoneAvailableReason(JobRequirements job)
+        {
+            if (HasAvailableWorker(job)) return null;
+            lock (_gate)
+            {
+                return _unavailable.Count > 0 ? System.Linq.Enumerable.First(_unavailable.Values) : "Every worker that could run this job is currently unavailable.";
+            }
+        }
+
+        /// <summary>
+        /// The cheapest worker that takes whole titles, whatever its load, or null. A translate job placed on a
+        /// target-only CrispASR worker uses it for the whisper language probe: Canary has no language
+        /// identification, and a wrong "English" there would mislabel the subtitle.
+        /// </summary>
+        internal ITranscriptionWorker? WholeItemWorker()
+        {
+            lock (_gate)
+            {
+                ITranscriptionWorker? best = null;
+                foreach (var key in _keys)
+                {
+                    var w = _byKey[key];
+                    if (!w.Capabilities.TranscribesItems) continue;
+                    if (best == null || w.Capabilities.CostWeight < best.Capabilities.CostWeight) best = w;
+                }
+                return best;
             }
         }
 
@@ -301,6 +355,7 @@ namespace WhisperSubs.Controller.Workers
                     }
                 }
             }
+            if (changed && launchError == null) SignalFreed();
             return changed;
         }
 
@@ -415,6 +470,7 @@ namespace WhisperSubs.Controller.Workers
                     _inFlight[leaseKey] = n - 1;
             }
             ReleaseSlots();
+            SignalFreed();
         }
 
         /// <summary>
@@ -472,7 +528,11 @@ namespace WhisperSubs.Controller.Workers
             // Release the added permits OUTSIDE _gate (never release inside a lock). The uncapped semaphore
             // makes Release(delta) legal; the map-add-BEFORE-release ordering means the woken waiter sees the
             // newly-added workers in PickLocked. Routed through ReleaseSlots so the over-release tripwire runs.
-            if (addedPermits > 0) ReleaseSlots(addedPermits);
+            if (addedPermits > 0)
+            {
+                ReleaseSlots(addedPermits);
+                SignalFreed();
+            }
 
             // Surface the reconcile outcome (whisper-subs-9gq hardening): a hot-add is expected; a removal or
             // re-key is a known foot-gun (grow-only leaves it live until the next idle rebuild), so warn on it.
