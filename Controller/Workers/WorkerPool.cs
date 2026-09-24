@@ -301,23 +301,18 @@ namespace WhisperSubs.Controller.Workers
         }
 
         /// <summary>
-        /// The cheapest worker that takes whole titles, whatever its load, or null. A translate job placed on a
-        /// target-only CrispASR worker uses it for the whisper language probe: Canary has no language
-        /// identification, and a wrong "English" there would mislabel the subtitle.
+        /// Hands back a lease that was never used, without waking a dispatcher waiting on
+        /// <see cref="FreedSignal"/>: the slot was free a moment ago and nothing changed, so a wake-up would
+        /// only repeat the same walk. Every lease that ran a job goes through <see cref="Release"/>.
         /// </summary>
-        internal ITranscriptionWorker? WholeItemWorker()
+        internal void GiveBack(WorkerLease lease)
         {
             lock (_gate)
             {
-                ITranscriptionWorker? best = null;
-                foreach (var key in _keys)
-                {
-                    var w = _byKey[key];
-                    if (!w.Capabilities.TranscribesItems) continue;
-                    if (best == null || w.Capabilities.CostWeight < best.Capabilities.CostWeight) best = w;
-                }
-                return best;
+                if (_inFlight.TryGetValue(lease.Key, out var n) && n > 0)
+                    _inFlight[lease.Key] = n - 1;
             }
+            ReleaseSlots();
         }
 
         /// <summary>Why <paramref name="leaseKey"/> is out of rotation, or null when it is available.</summary>

@@ -740,7 +740,7 @@ namespace WhisperSubs.Controller
         [ExcludeFromCodeCoverage(Justification = "Requires Plugin.Instance for persistence; the walk (TryTakeFirst) and the choice (DispatchScan) are unit-tested")]
         internal bool TryDequeuePlaceable(
             WorkerPool pool, Func<SubtitleWorkItem, JobRequirements?> requirementsOf,
-            out SubtitleWorkItem? item, out WorkerLease? lease, out DispatchScan scan)
+            out SubtitleWorkItem? item, out WorkerLease? lease, out WorkerLease? probeLease, out DispatchScan scan)
         {
             scan = new DispatchScan(pool);
             var walk = scan;
@@ -754,14 +754,17 @@ namespace WhisperSubs.Controller
                     {
                         item = taken;
                         lease = walk.Lease;
+                        probeLease = walk.ProbeLease;
                         return true;
                     }
                     // Cannot happen under _dispatchGate (see TryDequeuePriority); never double-dispatch.
                     if (walk.Lease is { } orphan) pool.Release(orphan.Key);
+                    if (walk.ProbeLease is { } orphanProbe) pool.Release(orphanProbe.Key);
                 }
             }
             item = null;
             lease = null;
+            probeLease = null;
             return false;
         }
 
@@ -1180,7 +1183,7 @@ namespace WhisperSubs.Controller
                     // burst of translate jobs for one busy worker stays queued, in order, instead of becoming
                     // in-flight waiters that hold no slot while later jobs pile up behind them.
                     var freed = pool.FreedSignal;   // taken before the walk, so a release during it is not missed
-                    if (!TryDequeuePlaceable(pool, RequirementsOf, out var workItem, out var placed, out var scan) || workItem == null)
+                    if (!TryDequeuePlaceable(pool, RequirementsOf, out var workItem, out var placed, out var probePlaced, out var scan) || workItem == null)
                     {
                         if (scan.BlockedOnlyByUnavailable)
                         {
@@ -1210,6 +1213,11 @@ namespace WhisperSubs.Controller
 
                     var wi = workItem;
                     var l = lease;
+                    var probeLease = probePlaced;
+                    // Who runs the language probe: the probe lease, else the job's own worker when it runs
+                    // Whisper, else nobody (no worker in the pool runs Whisper), and the check says so.
+                    var probeProvider = probeLease?.Worker.Provider
+                        ?? (scan.NoProbeWorkerInPool ? NoLanguageProbeProvider.Instance : l.Worker.Provider);
                     // A translate job shows its target, so two jobs for one title can be told apart. SetCurrent
                     // and Release below must use this same string.
                     var label = wi.Target == null ? wi.Item.Name : $"{wi.Item.Name} ({wi.Target})";
@@ -1221,6 +1229,16 @@ namespace WhisperSubs.Controller
                     // Fire the job WITHOUT gating Task.Run on the token: a cancelled token must not skip the
                     // delegate, or the finally (which frees the slot + reservation) would never run and leak
                     // the slot. Cancellation is observed INSIDE, via the token passed to the transcription.
+                    // A translate job on a worker that runs no Whisper also holds a whole-title worker, for the
+                    // language probe only. Released when the job asks for its Canary engine, or when it ends.
+                    var probeLabel = $"{label} (language check)";
+                    if (probeLease is { } heldProbe) pool.SetCurrent(heldProbe.Key, probeLabel);
+                    var probeReleased = 0;
+                    void ReleaseProbe()
+                    {
+                        if (probeLease is { } p && Interlocked.Exchange(ref probeReleased, 1) == 0) pool.Release(p.Key, probeLabel);
+                    }
+
                     running.Add(Task.Run(async () =>
                     {
                         var key = IdentityKey(wi);
@@ -1229,14 +1247,11 @@ namespace WhisperSubs.Controller
                             if (wi.Target != null)
                             {
                                 // A translate job: only the translation pass, for its one target, on a worker
-                                // that lists it. The whisper language probe needs a worker that transcribes:
-                                // a target-only CrispASR worker runs Canary, which cannot tell languages apart.
-                                var probeProvider = l.Worker.Capabilities.TranscribesItems
-                                    ? l.Worker.Provider
-                                    : pool.WholeItemWorker()?.Provider ?? l.Worker.Provider;
+                                // that lists it. The whisper language probe runs on a worker that transcribes,
+                                // under a lease: the job's own, or the probe lease taken with it.
                                 await manager.TranslateSubtitleAsync(
                                     wi.Item, probeProvider, wi.Target, wi.Force,
-                                    new PoolTargetEngines(pool, l, localWhisperTranslates: localWhisperTranslates),
+                                    new PoolTargetEngines(pool, l, localWhisperTranslates: localWhisperTranslates, beforeTargetEngine: ReleaseProbe),
                                     cancellationToken);
                             }
                             else
@@ -1339,6 +1354,7 @@ namespace WhisperSubs.Controller
                             // reservation is released along the success/retry/drop paths above — NOT here —
                             // so a re-queued item that was already re-dequeued+reserved by another slot is
                             // not wrongly un-reserved (which would let it dispatch twice).
+                            ReleaseProbe();
                             pool.Release(l.Key, label);
                         }
                     }));

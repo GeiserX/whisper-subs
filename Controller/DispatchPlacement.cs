@@ -45,6 +45,27 @@ namespace WhisperSubs.Controller
         /// <summary>The lease for the job the walk took; null when it took a job no worker can ever serve.</summary>
         public WorkerLease? Lease { get; private set; }
 
+        /// <summary>
+        /// A second lease, on a worker that takes whole titles, when the job's own worker does not
+        /// (<see cref="NeedsProbeWorker"/>). The job runs the whisper language probe under it and releases it
+        /// before its Canary engine starts. Null otherwise.
+        /// </summary>
+        public WorkerLease? ProbeLease { get; private set; }
+
+        /// <summary>
+        /// The job needs a probe worker but no worker in the pool runs Whisper at all, so it was placed
+        /// without one: tagged audio needs no probe, and untagged audio must fail with "language unknown"
+        /// rather than be guessed by Canary, which cannot identify languages.
+        /// </summary>
+        public bool NoProbeWorkerInPool { get; private set; }
+
+        /// <summary>
+        /// Whether a job placed on <paramref name="worker"/> also needs a whole-title worker for the language
+        /// probe: a translate job (target-only requirement) on a worker that runs no Whisper. Pure.
+        /// </summary>
+        public static bool NeedsProbeWorker(JobRequirements job, WorkerCapabilities worker)
+            => job.TargetOnly && !worker.TranscribesItems;
+
         /// <summary>A requirement whose every capable worker is out of rotation, for the pause reason.</summary>
         public JobRequirements? UnavailableRequirement { get; private set; }
 
@@ -72,15 +93,59 @@ namespace WhisperSubs.Controller
             if (!_tried.Add(job)) return LaneVisit.Skip;
 
             var lease = _pool.TryAcquire(job);
-            if (lease != null)
+            if (lease is { } placed)
             {
-                Lease = lease;
-                return LaneVisit.Take;
+                if (!NeedsProbeWorker(job, placed.Worker.Capabilities))
+                {
+                    Lease = placed;
+                    return LaneVisit.Take;
+                }
+
+                if (!_pool.HasCapableWorker(WorkerJob.LanguageProbe))
+                {
+                    Lease = placed;
+                    NoProbeWorkerInPool = true;
+                    return LaneVisit.Take;
+                }
+
+                // The probe must run under a real lease, never on a worker that may be busy or out of
+                // rotation: that would put two Whisper processes on one GPU, or fail on a busy remote and
+                // leave the job with an unknown language. No whole-title worker free: leave the job queued.
+                var probe = _pool.TryAcquire(WorkerJob.LanguageProbe);
+                if (probe != null)
+                {
+                    Lease = placed;
+                    ProbeLease = probe;
+                    return LaneVisit.Take;
+                }
+                _pool.GiveBack(placed);
+                job = WorkerJob.LanguageProbe;   // what the job waits for
             }
 
             if (_pool.HasAvailableWorker(job)) _waitsForBusyWorker = true;
             else UnavailableRequirement ??= job;
             return LaneVisit.Skip;
         }
+    }
+
+    /// <summary>
+    /// The language-probe provider for a translate job when no worker in the pool runs Whisper. It never
+    /// guesses: the check fails with the reason, the pass records the language as unknown, and an untagged
+    /// title is refused instead of being sent to Canary as English.
+    /// </summary>
+    internal sealed class NoLanguageProbeProvider : Providers.ISubtitleProvider
+    {
+        public static readonly NoLanguageProbeProvider Instance = new();
+
+        public string Name => "No language probe";
+
+        public bool RequiresSpeechAlignmentOptIn => false;
+
+        public System.Threading.Tasks.Task<string> TranscribeAsync(string audioPath, string language, System.Threading.CancellationToken ct, bool translate = false, string? targetLanguage = null)
+            => System.Threading.Tasks.Task.FromException<string>(new NotSupportedException("This provider only answers the language check."));
+
+        public System.Threading.Tasks.Task<(string Language, float Probability)> DetectLanguageAsync(string audioPath, System.Threading.CancellationToken ct)
+            => System.Threading.Tasks.Task.FromException<(string, float)>(
+                new InvalidOperationException("No worker in the pool runs Whisper, so the language of audio without language tags cannot be checked."));
     }
 }

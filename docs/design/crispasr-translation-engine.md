@@ -281,8 +281,12 @@ every queued job waits only for workers out of rotation, the drain pauses and ev
 its retries. A job that no worker can ever serve keeps the fail-fast: a generate job fails when the pool
 takes no whole item, and a translate job for a target nobody lists runs on any worker so the pass fails it
 with the target's reason. When the placed worker takes no whole titles (a target-only CrispASR server),
-the whisper language probe for untagged audio runs on a worker that does, because Canary cannot tell
-languages apart.
+the whisper language probe cannot run there, because Canary cannot tell languages apart. The job is then
+placed only together with a second lease on a worker that takes whole titles, runs the probe under it, and
+releases it before its Canary engine starts. With no such worker free, the job stays queued; running the
+probe unleased would put two Whisper processes on one GPU, or fail on a busy remote and leave the language
+unknown. When no worker in the pool runs Whisper at all, the job runs without a probe: tagged audio needs
+none, and untagged audio fails with "language unknown" instead of being guessed.
 
 English needs a worker that translates into it. This server's own worker counts only while its
 Whisper model can translate. A turbo model, the one the catalog recommends, was not trained to

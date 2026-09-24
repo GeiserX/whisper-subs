@@ -69,16 +69,20 @@ namespace WhisperSubs.Controller
         private readonly WorkerPool _pool;
         private readonly WorkerLease _lease;
         private readonly bool _localWhisperTranslates;
+        private readonly Action? _beforeTargetEngine;
 
         /// <param name="localWhisperTranslates">False keeps English off this server's own worker: its
         /// Whisper model is a turbo model, which cannot translate. Only a translate job asks for English here.</param>
+        /// <param name="beforeTargetEngine">Runs before the first target engine is handed out: the dispatcher
+        /// releases the language-probe lease there, since the probe is over by then.</param>
         public PoolTargetEngines(WorkerPool pool, WorkerLease lease, bool skipUnservedTargets = false,
-            bool localWhisperTranslates = true)
+            bool localWhisperTranslates = true, Action? beforeTargetEngine = null)
         {
             _pool = pool;
             _lease = lease;
             SkipUnservedTargets = skipUnservedTargets;
             _localWhisperTranslates = localWhisperTranslates;
+            _beforeTargetEngine = beforeTargetEngine;
         }
 
         public bool SkipUnservedTargets { get; }
@@ -89,6 +93,7 @@ namespace WhisperSubs.Controller
 
         public async Task<TargetEngineLease> AcquireAsync(string target, string itemName, CancellationToken cancellationToken)
         {
+            _beforeTargetEngine?.Invoke();
             var job = WorkerJob.ForTarget(target, _localWhisperTranslates);
             var own = _lease.Worker;
             WorkerLease sub;

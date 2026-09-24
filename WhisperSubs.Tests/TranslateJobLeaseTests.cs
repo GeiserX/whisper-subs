@@ -58,6 +58,12 @@ public class TranslateJobLeaseTests
         return (null, null, scan);
     }
 
+    private static ITranscriptionWorker TargetOnly(string id, params string[] targets)
+        => new TranscriptionWorker(id, id, new FakeProvider(), new WorkerCapabilities
+        {
+            IsLocal = false, TranslateTargets = WorkerTargets.Set(targets), TranscribesItems = false,
+        });
+
     // ── The dispatcher's placement ─────────────────────────────────────────
 
     // A series-sized burst of translate jobs for a target only this server makes, generate jobs behind
@@ -165,7 +171,7 @@ public class TranslateJobLeaseTests
     }
 
     [Fact]
-    public void GenerateJob_WhenThePoolTakesNoWholeItem_IsTakenWithoutALeaseToFail()
+    public async Task GenerateJob_WhenThePoolTakesNoWholeItem_IsTakenWithoutALeaseToFail()
     {
         var crispEs = new TranscriptionWorker("crisp", "crisp", new FakeProvider(), new WorkerCapabilities
         {
@@ -182,6 +188,10 @@ public class TranslateJobLeaseTests
 
         var second = PlaceNext(queue, pool, poolServesItems: false);
         Assert.Equal("crisp", second.Lease!.Value.Worker.Id);   // a target-only worker takes its translate job
+        // Nothing in this pool runs Whisper: placed without a probe lease, and the probe says so, never guesses.
+        Assert.Null(second.Scan.ProbeLease);
+        Assert.True(second.Scan.NoProbeWorkerInPool);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => NoLanguageProbeProvider.Instance.DetectLanguageAsync("a.wav", CancellationToken.None));
     }
 
     // ── What a job needs ───────────────────────────────────────────────────
@@ -256,17 +266,73 @@ public class TranslateJobLeaseTests
         Assert.Equal(1, pool.ActiveJobs);   // no second slot
     }
 
+    // ── The language probe for a job on a worker that runs no Whisper ──────
+
+    // The target's only worker is a CrispASR server that runs Canary, which cannot identify languages. The
+    // probe needs Whisper, so the job takes a real lease on a whole-title worker as well, or waits queued.
     [Fact]
-    public void WholeItemWorker_IsTheCheapestWorkerThatTranscribes()
+    public async Task TranslateJobOnATargetOnlyWorker_WaitsForAProbeLease_AndReleasesItBeforeCanary()
     {
-        var crispEs = new TranscriptionWorker("crisp", "crisp", new FakeProvider(), new WorkerCapabilities
+        var pool = new WorkerPool(new[] { TargetOnly("crisp", "es"), Worker("local", true, "en") });
+        var busy = pool.TryAcquire(WorkerJob.LanguageProbe)!.Value;   // the only whole-title worker is busy
+        Assert.Equal("local", busy.Worker.Id);
+        var queue = new List<Job> { new("Episode 1", "es") };
+
+        // Nothing is placed and nothing is held: no probe on a busy worker, no idle lease on crisp.
+        var freed = pool.FreedSignal;
+        var waiting = PlaceNext(queue, pool);
+        Assert.Null(waiting.Job);
+        Assert.False(waiting.Scan.BlockedOnlyByUnavailable);   // busy, so the dispatcher waits for a release
+        Assert.Single(queue);
+        Assert.Equal(1, pool.ActiveJobs);
+        Assert.False(freed.IsCompleted);   // handing crisp's unused lease back must not wake the dispatcher
+
+        // The whole-title worker frees: the job is placed with both leases.
+        pool.Release(busy.Key);
+        var placed = PlaceNext(queue, pool);
+        Assert.Equal("Episode 1", placed.Job!.Name);
+        Assert.Equal("crisp", placed.Lease!.Value.Worker.Id);
+        Assert.Equal("local", placed.Scan.ProbeLease!.Value.Worker.Id);
+        Assert.Equal(2, pool.ActiveJobs);
+
+        // The probe lease goes back before the Canary engine is handed out.
+        var events = new List<string>();
+        var probe = placed.Scan.ProbeLease!.Value;
+        var engines = new PoolTargetEngines(pool, placed.Lease.Value, beforeTargetEngine: () =>
         {
-            IsLocal = false, TranslateTargets = WorkerTargets.Set("es"), TranscribesItems = false,
+            pool.Release(probe.Key);
+            events.Add($"probe released, active={pool.ActiveJobs}");
         });
-        var paid = new TranscriptionWorker("paid", "paid", new FakeProvider(), new WorkerCapabilities { IsLocal = false, CostWeight = 2 });
-        Assert.Equal("local", new WorkerPool(new ITranscriptionWorker[] { crispEs, paid, Worker("local", true, "en") }).WholeItemWorker()!.Id);
-        Assert.Equal("paid", new WorkerPool(new ITranscriptionWorker[] { crispEs, paid }).WholeItemWorker()!.Id);
-        Assert.Null(new WorkerPool(new ITranscriptionWorker[] { crispEs }).WholeItemWorker());
+        using var engine = await engines.AcquireAsync("es", "Episode 1", CancellationToken.None);
+        events.Add($"canary on {engine.WorkerName}");
+        Assert.Equal(new[] { "probe released, active=1", "canary on crisp" }, events);
+    }
+
+    [Fact]
+    public void TranslateJobOnATargetOnlyWorker_ProbeWorkerOutOfRotation_Pauses()
+    {
+        var pool = new WorkerPool(new[] { TargetOnly("crisp", "es"), Worker("local", true, "en") });
+        pool.SetLocalAvailability("whisper-cli cannot start");
+        var queue = new List<Job> { new("Episode 1", "es") };
+
+        var result = PlaceNext(queue, pool);
+
+        Assert.Null(result.Job);
+        Assert.True(result.Scan.BlockedOnlyByUnavailable);
+        Assert.Equal("whisper-cli cannot start", pool.NoneAvailableReason(result.Scan.UnavailableRequirement!.Value));
+        Assert.Equal(0, pool.ActiveJobs);
+    }
+
+    // A worker that transcribes runs the probe itself: no second lease.
+    [Fact]
+    public void TranslateJobOnAWholeTitleWorker_TakesNoProbeLease()
+    {
+        var pool = new WorkerPool(new[] { Worker("local", true, "en", "es") });
+        var placed = PlaceNext(new List<Job> { new("Episode 1", "es") }, pool);
+        Assert.Equal("local", placed.Lease!.Value.Worker.Id);
+        Assert.Null(placed.Scan.ProbeLease);
+        Assert.Equal(1, pool.ActiveJobs);
+        Assert.False(DispatchScan.NeedsProbeWorker(ItemRequirements, TargetOnly("x", "es").Capabilities));   // generate jobs never
     }
 
     // ── How a job's failure reaches the dispatcher ─────────────────────────

@@ -45,6 +45,12 @@ namespace WhisperSubs.Controller.Workers
             return new JobRequirements(code, null, TargetOnly: true, RemoteOnly: code == "en" && !localWhisperTranslates);
         }
 
+        /// <summary>
+        /// A worker for the whisper language probe: one that takes whole titles, so it runs Whisper. A
+        /// target-only CrispASR worker runs Canary, which cannot tell languages apart.
+        /// </summary>
+        public static readonly JobRequirements LanguageProbe = new(null, null);
+
         /// <summary>Any worker at all: no translation target, and a worker that takes no whole items counts.</summary>
         public static readonly JobRequirements AnyWorker = new(null, null, TargetOnly: true);
     }
