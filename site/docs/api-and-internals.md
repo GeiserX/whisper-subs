@@ -80,6 +80,19 @@ These mirror the whisper endpoints for the BSRoformer.cpp binary and model. They
 | POST | `Setup/VocalSeparation/DownloadBinary` | 202. Query: `variant`, defaulting to `cpu`. |
 | POST | `Setup/VocalSeparation/DownloadModel` | 202. Query: `quant`, a catalogue key such as `q8_0`. |
 
+**Setup: CrispASR and Canary**
+
+These install the engine for the [extra target languages](./configuration.md#more-target-languages-experimental): the `crispasr` binary and the NVIDIA Canary model. They use their own download lock, separate from the whisper and vocal-separation downloads.
+
+| Method | Path | Returns |
+|---|---|---|
+| GET | `Setup/CrispAsr/Status` | Whether `crispasr` and a Canary model are configured and present. |
+| GET | `Setup/CrispAsr/Progress` | Progress of the running CrispASR or Canary download. |
+| GET | `Setup/CrispAsr/AvailableModels` | The Canary GGUF quantizations offered for download. |
+| GET | `Setup/CrispAsr/BinaryVariants` | The `crispasr` variants published for this platform. |
+| POST | `Setup/CrispAsr/DownloadBinary` | 202. Query: `variant`, defaulting to `cpu`. 400 for a variant this platform lacks, 409 while a download runs. |
+| POST | `Setup/CrispAsr/DownloadModel` | 202. Query: `quant`, a catalogue key such as `q8_0`. 400 for an unknown key, 409 while a download runs. |
+
 ### User endpoints {#user-endpoints}
 
 Five endpoints let a signed-in user ask for subtitles or a translation instead of waiting for an admin. They live in their own controller with a plain `[Authorize]`, so **any authenticated user** can reach them. That is deliberate: opening one method on the admin controller would have meant dropping its class-level elevation, and an un-attributed method in Jellyfin becomes public.
