@@ -133,6 +133,17 @@ namespace WhisperSubs.Controller
         }
 
         /// <summary>
+        /// Why no engine can make <paramref name="target"/> at all, whatever the audio: the same wording a
+        /// translate job would fail with for English audio, so refusing a request up front and failing the
+        /// job read alike. Null when an engine can serve it, and always for "en" (Whisper). Pure.
+        /// </summary>
+        public static string? EngineMissingReason(string target, bool canaryAvailable, LocalCanaryState localCanary)
+        {
+            var d = Decide("en", target, canaryAvailable, localCanary);
+            return d.Engine is TranslationEngine.EngineMissing or TranslationEngine.Unsupported ? d.Reason : null;
+        }
+
+        /// <summary>
         /// The state that picks the <see cref="TranslationEngine.EngineMissing"/> wording: missing files
         /// first, then whether the running pool holds this server (<paramref name="localWorkerInPool"/>,
         /// its real composition). Only when it does not do the current settings explain why, through

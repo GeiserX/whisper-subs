@@ -287,7 +287,9 @@ namespace WhisperSubs.Controller
                 Record(outcome, error);
 
                 // Then each configured non-English target (none by default, which skips this entirely).
-                foreach (var (targetOutcome, targetError) in await GenerateTargetTranslationsAsync(item, provider, mediaPath, language, languages, force, probe, targetEngines, cancellationToken))
+                foreach (var (targetOutcome, targetError) in await GenerateTargetTranslationsAsync(
+                    item, provider, mediaPath, language, languages, force, probe, targetEngines,
+                    NormalizeTranslationTargets(config?.TranslationTargetLanguages), explicitRequest: false, cancellationToken))
                 {
                     Record(targetOutcome, targetError);
                 }
@@ -305,6 +307,73 @@ namespace WhisperSubs.Controller
 
             await item.RefreshMetadata(cancellationToken);
         }
+
+        /// <summary>
+        /// A translate job: makes one translated subtitle, into <paramref name="target"/>, for one title, and
+        /// nothing else. "en" runs the Whisper English pass; any other target runs the Canary target pass.
+        /// Reads none of SubtitleMode, EnableTranslation, GenerateOriginalLanguageSubtitles or
+        /// TranslationTargetLanguages: the admin or viewer asked for this one target. The audio language comes
+        /// from the audio, never from the language setting. Throws <see cref="TranslationNotPossibleException"/>
+        /// when the answer can never change (the dispatcher does not retry it), and a plain exception for a run
+        /// that failed. A job whose target is already there, or whose audio is already in it, skips.
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Orchestrates FFmpeg + whisper/crispasr through the existing passes; planning, route and outcome rules are unit-tested")]
+        public async Task TranslateSubtitleAsync(BaseItem item, ISubtitleProvider provider, string target, bool force,
+            ITranslationTargetEngines engines, CancellationToken cancellationToken)
+        {
+            if (item is MediaBrowser.Controller.Entities.Audio.Audio)
+            {
+                throw new TranslationNotPossibleException($"\"{item.Name}\" is audio; translation applies to video only.");
+            }
+
+            var mediaPath = ResolveMediaPath(item)
+                ?? throw new TranslationNotPossibleException($"The media file for \"{item.Name}\" was not found.");
+
+            // From the audio, never the language setting.
+            var languages = await ResolveLanguagesAsync(mediaPath, "auto", cancellationToken);
+            var probe = new AudioLanguageProbe();
+            (GenerationOutcome Outcome, Exception? Error) result;
+            if (string.Equals(target, "en", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!engines.CanServe("en"))
+                {
+                    throw new TranslationNotPossibleException(
+                        $"Cannot create an 'en' subtitle for \"{item.Name}\": no worker in the pool translates into English.");
+                }
+
+                // Routed like a Canary target, so it never runs on a transcribe-only worker and always uses
+                // the Whisper provider (TargetProviders), never this server's Canary one.
+                using var engine = await engines.AcquireAsync("en", item.Name ?? string.Empty, cancellationToken);
+                result = await GenerateTranslatedSubtitleAsync(item, engine.Provider, mediaPath, languages, force, probe, cancellationToken);
+            }
+            else
+            {
+                var results = await GenerateTargetTranslationsAsync(item, provider, mediaPath, "auto", languages, force,
+                    probe, engines, new[] { target }, explicitRequest: true, cancellationToken);
+                result = results.Count > 0 ? results[0] : (GenerationOutcome.Skipped, null);
+            }
+
+            if (TranslationJobFailure(result.Outcome, result.Error, item.Name, target) is { } failure) throw failure;
+
+            if (result.Outcome == GenerationOutcome.Succeeded)
+            {
+                await item.RefreshMetadata(cancellationToken);
+            }
+            else
+            {
+                _logger.LogInformation("Translate job for {ItemName} into {Target} made nothing: the subtitle is already there or not needed", item.Name, target);
+            }
+        }
+
+        /// <summary>
+        /// What a translate job throws for its one result: nothing unless it failed; a
+        /// <see cref="TranslationNotPossibleException"/> as it is, so the dispatcher sees it is final; any
+        /// other failure wrapped with the item and the target, the cause kept as the inner exception. Pure.
+        /// </summary>
+        internal static Exception? TranslationJobFailure(GenerationOutcome outcome, Exception? error, string? itemName, string target)
+            => outcome != GenerationOutcome.Failed ? null
+             : error is TranslationNotPossibleException ? error
+             : new InvalidOperationException($"Translating \"{itemName}\" into '{target}' failed: {error?.Message}", error);
 
         /// <summary>
         /// Whether an item failed as a whole: at least one pass did real work and every one of those
@@ -877,9 +946,11 @@ namespace WhisperSubs.Controller
                 .ToList();
 
         /// <summary>
-        /// Produces one translated subtitle per configured non-English target (the English one is
-        /// <see cref="GenerateTranslatedSubtitleAsync"/>). Returns nothing, and touches nothing, when
-        /// no targets are configured. Each target is planned by the pure
+        /// Produces one translated subtitle per non-English target in <paramref name="targets"/> (the English
+        /// one is <see cref="GenerateTranslatedSubtitleAsync"/>): the nightly list for a generate job, or the
+        /// one target of a translate job (<paramref name="explicitRequest"/>, where audio that is not English
+        /// fails the target instead of skipping it). Returns nothing, and touches nothing, when
+        /// there are no targets. Each target is planned by the pure
         /// <see cref="PlanTranslationTargets"/>: skipped when already satisfied, failed with the route's
         /// reason when no engine can honour it (no file is written), otherwise run through Canary on
         /// the English audio track. The audio is extracted once and shared by every Canary target.
@@ -888,11 +959,10 @@ namespace WhisperSubs.Controller
         private async Task<List<(GenerationOutcome Outcome, Exception? Error)>> GenerateTargetTranslationsAsync(
             BaseItem item, ISubtitleProvider provider, string mediaPath, string requestedLanguage,
             List<string> resolvedLanguages, bool force, AudioLanguageProbe probe, ITranslationTargetEngines? engines,
-            CancellationToken cancellationToken)
+            IReadOnlyList<string> targets, bool explicitRequest, CancellationToken cancellationToken)
         {
             var results = new List<(GenerationOutcome Outcome, Exception? Error)>();
             var config = Plugin.Instance?.Configuration;
-            var targets = NormalizeTranslationTargets(config?.TranslationTargetLanguages);
             if (config == null || targets.Count == 0) return results;
 
             // Route the targets from what the audio really is. With a specific language setting,
@@ -952,7 +1022,8 @@ namespace WhisperSubs.Controller
                     config.Workers?.Count(w => w.Enabled && !string.IsNullOrWhiteSpace(w.ApiUrl)) ?? 0,
                     !string.IsNullOrWhiteSpace(config.RemoteWhisperApiUrl),
                     config.EnableLocalWorker),
-                skipUnserved: engines.SkipUnservedTargets);
+                skipUnserved: engines.SkipUnservedTargets,
+                failSourceNotEnglish: explicitRequest);
 
             // englishAudioPath is set only once a complete extraction exists, so every target reuses it.
             // tempAudioPath is named before FFmpeg starts, so the finally below also deletes a partial
@@ -973,7 +1044,7 @@ namespace WhisperSubs.Controller
                             continue;
                         case GenerationOutcome.Failed:
                             // A mislabelled subtitle is worse than none: fail the target, write nothing.
-                            var cannot = new InvalidOperationException(TargetFailureMessage(plan, item.Name));
+                            var cannot = new TranslationNotPossibleException(TargetFailureMessage(plan, item.Name));
                             _logger.LogError("{Message}", cannot.Message);
                             results.Add((GenerationOutcome.Failed, cannot));
                             continue;
@@ -1167,7 +1238,9 @@ namespace WhisperSubs.Controller
         /// skip when the audio is already in the target, when the plugin already made a translated
         /// subtitle in it (kept even under <paramref name="force"/>, like the English pass), or when a
         /// usable subtitle in it exists (bypassed by <paramref name="force"/>), or when the audio is not
-        /// English (<see cref="TranslationEngine.SkipSourceNotEnglish"/>); otherwise the target carries its
+        /// English (<see cref="TranslationEngine.SkipSourceNotEnglish"/>, unless
+        /// <paramref name="failSourceNotEnglish"/>: an explicit translate job asked for this target, so audio
+        /// that is not English, or cannot be determined, fails it with the route's reason); otherwise the target carries its
         /// <see cref="TranslationRoute"/> decision, and an EngineMissing or Unsupported route fails.
         /// With <paramref name="skipUnserved"/> (the scheduled sweep) an EngineMissing target is skipped
         /// instead: the sweep warns about it once per run, and failing it would fail every English title on
@@ -1183,7 +1256,8 @@ namespace WhisperSubs.Controller
             Func<string, bool> hasUsableSubtitle,
             bool force,
             LocalCanaryState localCanary = LocalCanaryState.NotInstalled,
-            bool skipUnserved = false)
+            bool skipUnserved = false,
+            bool failSourceNotEnglish = false)
         {
             var plans = new List<TranslationTargetPlan>(targets.Count);
             foreach (var target in targets)
@@ -1202,7 +1276,7 @@ namespace WhisperSubs.Controller
                 {
                     skip = $"a usable '{target}' subtitle is already present";
                 }
-                else if (route.Engine == TranslationEngine.SkipSourceNotEnglish)
+                else if (route.Engine == TranslationEngine.SkipSourceNotEnglish && !failSourceNotEnglish)
                 {
                     // Most of a library is not English audio. That is not a fault: skip, never fail.
                     skip = route.Reason;

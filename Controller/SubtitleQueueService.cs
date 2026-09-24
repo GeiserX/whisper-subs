@@ -189,6 +189,39 @@ namespace WhisperSubs.Controller
         }
 
         /// <summary>
+        /// The live pool, or null when nothing has built one yet. Read-only: unlike <see cref="GetPool"/> it
+        /// never builds or rebuilds, so a controller can ask it between two jobs of a running drain without
+        /// swapping the pool under the dispatcher.
+        /// </summary>
+        internal WorkerPool? CurrentPool { get { lock (_poolGate) return _pool; } }
+
+        /// <summary>
+        /// Why no engine can make <paramref name="target"/> on this server right now, or null when one can
+        /// (always null for "en", which Whisper makes). Asks the live pool when there is one, otherwise what
+        /// the settings would build. The wording is the one a translate job fails with, so refusing up front
+        /// (HTTP 409) and failing later read the same.
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Reads the live pool and the filesystem; the rules are the unit-tested TranslationRoute.EngineMissingReason and WorkerTargets.ServedByConfig")]
+        public string? TargetEngineUnavailableReason(PluginConfiguration config, string target)
+        {
+            if (string.Equals(target, "en", System.StringComparison.OrdinalIgnoreCase)) return null;
+            var installed = SubtitleProviderFactory.IsCanaryInstalled(config.CrispAsrBinaryPath, config.CanaryModelPath, File.Exists);
+            var rows = config.Workers ?? new List<WhisperWorker>();
+            var usable = rows.Count(w => w.Enabled && !string.IsNullOrWhiteSpace(w.ApiUrl));
+            var legacy = !string.IsNullOrWhiteSpace(config.RemoteWhisperApiUrl);
+            var hostsLocal = WorkerPlan.HostsLocal(rows.Count, usable, legacy, config.EnableLocalWorker);
+            var pool = CurrentPool;
+            var available = pool != null
+                ? pool.HasCapableWorker(WorkerJob.ForTarget(target))
+                : WorkerTargets.ServedByConfig(target, installed, hostsLocal, rows);
+            // Without a pool, what the pool WOULD hold (hostsLocal), not null: null maps to the
+            // "not installed" wording, which is false for an installed engine with the local worker off.
+            var state = TranslationRoute.LocalCanary(installed, pool?.HasLocalWorker ?? hostsLocal,
+                rows.Count, usable, legacy, config.EnableLocalWorker);
+            return TranslationRoute.EngineMissingReason(target, available, state);
+        }
+
+        /// <summary>
         /// Hot-applies a Workers-config change to the LIVE pool without a Jellyfin restart (whisper-subs-9gq).
         /// Under <see cref="_poolGate"/> (the lock guarding <see cref="_pool"/>): when a pool exists and the
         /// configured workers actually changed, it rebuilds the desired worker set from <paramref name="config"/>
@@ -1086,10 +1119,13 @@ namespace WhisperSubs.Controller
 
                     var wi = workItem;
                     var l = lease;
-                    _currentItemName = wi.Item.Name;
-                    pool.SetCurrent(l.Key, wi.Item.Name);   // "what's running where" — surfaced in the status panel
+                    // A translate job shows its target, so two jobs for one title can be told apart. SetCurrent
+                    // and Release below must use this same string.
+                    var label = wi.Target == null ? wi.Item.Name : $"{wi.Item.Name} ({wi.Target})";
+                    _currentItemName = label;
+                    pool.SetCurrent(l.Key, label);   // "what's running where" — surfaced in the status panel
                     logger.LogInformation("[Dispatch] Processing {ItemName} [{Tier}] on {Worker} ({Remaining} remaining)",
-                        wi.Item.Name, wi.Tier, l.Worker.Name, _lanes.Count);
+                        label, wi.Tier, l.Worker.Name, _lanes.Count);
 
                     // Fire the job WITHOUT gating Task.Run on the token: a cancelled token must not skip the
                     // delegate, or the finally (which frees the slot + reservation) would never run and leak
@@ -1099,9 +1135,19 @@ namespace WhisperSubs.Controller
                         var key = IdentityKey(wi);
                         try
                         {
-                            await manager.GenerateSubtitleAsync(
-                                wi.Item, l.Worker.Provider, wi.Language, cancellationToken, wi.Force,
-                                new PoolTargetEngines(pool, l));
+                            if (wi.Target != null)
+                            {
+                                // A translate job: only the translation pass, for its one target.
+                                await manager.TranslateSubtitleAsync(
+                                    wi.Item, l.Worker.Provider, wi.Target, wi.Force,
+                                    new PoolTargetEngines(pool, l), cancellationToken);
+                            }
+                            else
+                            {
+                                await manager.GenerateSubtitleAsync(
+                                    wi.Item, l.Worker.Provider, wi.Language, cancellationToken, wi.Force,
+                                    new PoolTargetEngines(pool, l));
+                            }
                             if (countProcessed) Interlocked.Increment(ref _processedCount);
                             wi.Completion?.TrySetResult(true);
                             // Completed — release the in-flight lease and persist so a crash can't restore
@@ -1121,6 +1167,18 @@ namespace WhisperSubs.Controller
                             else
                                 logger.LogWarning("[Dispatch] Giving up on {ItemName} after {Attempts} attempt(s) — cancelled and out of retries",
                                     wi.Item.Name, wi.RetryCount + 1);
+                        }
+                        catch (TranslationNotPossibleException ex)
+                        {
+                            // The audio is not English, no engine serves the target, or the item has no video
+                            // file: every attempt would give the same answer. Final, like the unservable
+                            // fail-fast above: record it and drop the job, no retry.
+                            _lastError = ex.Message;
+                            wi.Completion?.TrySetException(ex);
+                            if (countProcessed) Interlocked.Increment(ref _processedCount);
+                            Interlocked.Increment(ref _failedCount);
+                            logger.LogWarning("[Dispatch] {Message}", ex.Message);
+                            ReleaseInFlightAndPersist(key);
                         }
                         catch (System.Exception ex) when (l.Worker.Capabilities.IsLocal
                                                           && WhisperLaunchException.Find(ex) != null)
@@ -1173,7 +1231,7 @@ namespace WhisperSubs.Controller
                             // reservation is released along the success/retry/drop paths above — NOT here —
                             // so a re-queued item that was already re-dequeued+reserved by another slot is
                             // not wrongly un-reserved (which would let it dispatch twice).
-                            pool.Release(l.Key, wi.Item.Name);
+                            pool.Release(l.Key, label);
                         }
                     }));
 

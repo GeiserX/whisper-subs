@@ -190,4 +190,25 @@ public class TranslationRouteTests
     {
         Assert.Equal(TranslationEngine.Unsupported, TranslationRoute.Decide("en", target, canaryAvailable: true).Engine);
     }
+
+    // The 409 a request gets up front reads exactly like the failure the job would record.
+    [Fact]
+    public void EngineMissingReason_MatchesTheJobsWording_ForEveryState()
+    {
+        foreach (var state in Enum.GetValues<LocalCanaryState>())
+        {
+            var reason = TranslationRoute.EngineMissingReason("es", canaryAvailable: false, state);
+            Assert.NotNull(reason);
+            Assert.Equal(TranslationRoute.Decide("en", "es", false, state).Reason, reason);
+        }
+    }
+
+    [Fact]
+    public void EngineMissingReason_NullWhenServed_OrEnglish_UnsupportedForUnknown()
+    {
+        Assert.Null(TranslationRoute.EngineMissingReason("es", canaryAvailable: true, LocalCanaryState.NotInstalled));
+        Assert.Null(TranslationRoute.EngineMissingReason("en", canaryAvailable: false, LocalCanaryState.NotInstalled));
+        Assert.Equal(TranslationRoute.Decide("en", "xx", true).Reason,
+            TranslationRoute.EngineMissingReason("xx", canaryAvailable: true, LocalCanaryState.InPool));
+    }
 }
