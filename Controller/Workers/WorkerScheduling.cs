@@ -17,6 +17,7 @@ namespace WhisperSubs.Controller.Workers
             => s.Healthy
                && s.InFlight < s.Capabilities.MaxConcurrency
                && (job.TargetOnly || s.Capabilities.TranscribesItems)
+               && (!job.RemoteOnly || !s.Capabilities.IsLocal)
                && (job.TranslateTarget is null || s.Capabilities.TranslateTargets.Contains(job.TranslateTarget))
                && (job.RequiredModel is null
                    || s.Capabilities.Models.Count == 0            // empty = serves any model

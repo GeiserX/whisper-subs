@@ -111,13 +111,20 @@ namespace WhisperSubs.Controller.Workers
 
         /// <summary>
         /// Whether the configuration, read without a running pool, gives <paramref name="target"/> an engine:
-        /// this server's install while the pool would hold this server (<paramref name="hostsLocal"/>), or an
-        /// enabled row with a URL that lists the target. The same rows the registry builds from. Pure.
+        /// this server's own worker while the pool would hold it (<paramref name="hostsLocal"/>), which makes
+        /// what <see cref="ForLocal"/> lists (English only while its Whisper model can translate,
+        /// <paramref name="localWhisperTranslates"/>); the single legacy remote server, which makes English;
+        /// or an enabled row with a URL that lists the target. The same rows the registry builds from. Pure.
         /// </summary>
-        public static bool ServedByConfig(string target, bool canaryInstalled, bool hostsLocal, IEnumerable<WhisperWorker>? rows)
-            => (canaryInstalled && hostsLocal)
-               || (rows ?? Enumerable.Empty<WhisperWorker>()).Any(w => w.Enabled && !string.IsNullOrWhiteSpace(w.ApiUrl)
-                                                                     && ForRow(w).Contains(target));
+        public static bool ServedByConfig(string target, bool canaryInstalled, bool hostsLocal, IEnumerable<WhisperWorker>? rows,
+            bool legacyRemote = false, bool localWhisperTranslates = true)
+        {
+            var english = string.Equals(target, "en", StringComparison.OrdinalIgnoreCase);
+            return (hostsLocal && ForLocal(canaryInstalled).Contains(target) && (!english || localWhisperTranslates))
+                   || (english && legacyRemote)
+                   || (rows ?? Enumerable.Empty<WhisperWorker>()).Any(w => w.Enabled && !string.IsNullOrWhiteSpace(w.ApiUrl)
+                                                                        && ForRow(w).Contains(target));
+        }
 
         /// <summary>
         /// A stable text form of a target set for the worker signature: sorted, comma-joined.

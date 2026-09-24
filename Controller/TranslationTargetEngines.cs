@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics.CodeAnalysis;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
@@ -68,31 +69,40 @@ namespace WhisperSubs.Controller
         private readonly WorkerPool _pool;
         private readonly WorkerLease _lease;
         private readonly Action? _releaseOwnLease;
+        private readonly bool _localWhisperTranslates;
         private bool _ownReleased;
 
-        public PoolTargetEngines(WorkerPool pool, WorkerLease lease, bool skipUnservedTargets = false, Action? releaseOwnLease = null)
+        /// <param name="localWhisperTranslates">False keeps English off this server's own worker: its
+        /// Whisper model is a turbo model, which cannot translate. Only a translate job asks for English here.</param>
+        public PoolTargetEngines(WorkerPool pool, WorkerLease lease, bool skipUnservedTargets = false, Action? releaseOwnLease = null,
+            bool localWhisperTranslates = true)
         {
             _pool = pool;
             _lease = lease;
             SkipUnservedTargets = skipUnservedTargets;
             _releaseOwnLease = releaseOwnLease;
+            _localWhisperTranslates = localWhisperTranslates;
         }
 
         public bool SkipUnservedTargets { get; }
 
         public bool? LocalWorkerInPool => _pool.HasLocalWorker;
 
-        public bool CanServe(string target) => _pool.HasCapableWorker(WorkerJob.ForTarget(target));
+        public bool CanServe(string target) => _pool.HasCapableWorker(WorkerJob.ForTarget(target, _localWhisperTranslates));
 
         public async Task<TargetEngineLease> AcquireAsync(string target, string itemName, CancellationToken cancellationToken)
         {
-            var job = WorkerJob.ForTarget(target);
+            var job = WorkerJob.ForTarget(target, _localWhisperTranslates);
             var own = _lease.Worker;
             WorkerLease sub;
+            // A job kept off this server's worker must not use it as its own either.
+            var ownTargets = job.RemoteOnly && own.Capabilities.IsLocal
+                ? WorkerTargets.Set(own.Capabilities.TranslateTargets.Where(t => !string.Equals(t, job.TranslateTarget, StringComparison.OrdinalIgnoreCase)).ToArray())
+                : own.Capabilities.TranslateTargets;
             // Once the own slot is handed back, the own worker is no longer this job's to use.
             var policy = _ownReleased
                 ? TargetLeasePolicy.ReleaseOwnAndWait
-                : TargetLeaseRouting.Decide(own.Capabilities.TranslateTargets, job.TranslateTarget!, canReleaseOwn: _releaseOwnLease != null);
+                : TargetLeaseRouting.Decide(ownTargets, job.TranslateTarget!, canReleaseOwn: _releaseOwnLease != null);
             switch (policy)
             {
                 case TargetLeasePolicy.UseOwnWorker:

@@ -59,7 +59,8 @@ namespace WhisperSubs.Controller.Workers
     /// the language the job translates into ("en" for Whisper's translate task, a Canary code otherwise), or
     /// null when it only transcribes. <c>TargetOnly</c> marks a single Canary-target job inside an item
     /// (<see cref="WorkerJob.ForTarget"/>); every other job is a whole item and needs
-    /// <see cref="WorkerCapabilities.TranscribesItems"/>.
+    /// <see cref="WorkerCapabilities.TranscribesItems"/>. <c>RemoteOnly</c> keeps the job off this server's
+    /// own worker: an English translate job while the local Whisper model cannot translate.
     /// </summary>
-    public readonly record struct JobRequirements(string? TranslateTarget, string? RequiredModel, bool TargetOnly = false);
+    public readonly record struct JobRequirements(string? TranslateTarget, string? RequiredModel, bool TargetOnly = false, bool RemoteOnly = false);
 }

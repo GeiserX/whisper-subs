@@ -144,6 +144,16 @@ namespace WhisperSubs.Controller
         }
 
         /// <summary>
+        /// Why no engine can make an English subtitle, for the 409 and for a translate job that fails: the
+        /// local Whisper model cannot translate (<paramref name="localInPool"/> and not
+        /// <paramref name="localWhisperTranslates"/>), or no worker in the pool translates into English. Pure.
+        /// </summary>
+        public static string EnglishMissingReason(bool localInPool, bool localWhisperTranslates, string? modelPath)
+            => localInPool && !localWhisperTranslates
+                ? $"An English subtitle comes from the Whisper model on this server, and the active model \"{System.IO.Path.GetFileName(modelPath)}\" is a turbo model, which was not trained to translate: it would write the audio's own language under an English name. Activate a model that is not turbo, such as Large V3 (Q5), on the setup page, or add a worker row that lists 'en' under Translation targets."
+                : "No worker in the pool translates into English. Turn on \"Also use this server as a worker\" under Worker Pool, or list 'en' under Translation targets on a worker row.";
+
+        /// <summary>
         /// The state that picks the <see cref="TranslationEngine.EngineMissing"/> wording: missing files
         /// first, then whether the running pool holds this server (<paramref name="localWorkerInPool"/>,
         /// its real composition). Only when it does not do the current settings explain why, through

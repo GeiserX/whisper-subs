@@ -196,24 +196,35 @@ namespace WhisperSubs.Controller
         internal WorkerPool? CurrentPool { get { lock (_poolGate) return _pool; } }
 
         /// <summary>
-        /// Why no engine can make <paramref name="target"/> on this server right now, or null when one can
-        /// (always null for "en", which Whisper makes). Asks the live pool when there is one, otherwise what
-        /// the settings would build. The wording is the one a translate job fails with, so refusing up front
-        /// (HTTP 409) and failing later read the same.
+        /// Why no engine can make <paramref name="target"/> on this server right now, or null when one can.
+        /// English needs a worker that translates into it, and this server's own worker counts only while its
+        /// Whisper model can translate. Asks the live pool when there is one, otherwise what the settings
+        /// would build. The wording is the one a translate job fails with, so refusing up front (HTTP 409)
+        /// and failing later read the same.
         /// </summary>
-        [ExcludeFromCodeCoverage(Justification = "Reads the live pool and the filesystem; the rules are the unit-tested TranslationRoute.EngineMissingReason and WorkerTargets.ServedByConfig")]
+        [ExcludeFromCodeCoverage(Justification = "Reads the live pool and the filesystem; the rules are the unit-tested TranslationRoute.EngineMissingReason, TranslationRoute.EnglishMissingReason and WorkerTargets.ServedByConfig")]
         public string? TargetEngineUnavailableReason(PluginConfiguration config, string target)
         {
-            if (string.Equals(target, "en", System.StringComparison.OrdinalIgnoreCase)) return null;
             var installed = SubtitleProviderFactory.IsCanaryInstalled(config.CrispAsrBinaryPath, config.CanaryModelPath, File.Exists);
             var rows = config.Workers ?? new List<WhisperWorker>();
             var usable = rows.Count(w => w.Enabled && !string.IsNullOrWhiteSpace(w.ApiUrl));
             var legacy = !string.IsNullOrWhiteSpace(config.RemoteWhisperApiUrl);
             var hostsLocal = WorkerPlan.HostsLocal(rows.Count, usable, legacy, config.EnableLocalWorker);
+            var legacyRemote = WorkerPlan.Decide(rows.Count, legacy, config.EnableLocalWorker).Source == WorkerSource.LegacyRemote;
             var pool = CurrentPool;
+
+            if (string.Equals(target, "en", System.StringComparison.OrdinalIgnoreCase))
+            {
+                var translates = ModelCatalog.IsTranslationCapable(config.WhisperModelPath);
+                var english = pool != null
+                    ? pool.HasCapableWorker(WorkerJob.ForTarget("en", translates))
+                    : WorkerTargets.ServedByConfig("en", installed, hostsLocal, rows, legacyRemote, translates);
+                return english ? null : TranslationRoute.EnglishMissingReason(pool?.HasLocalWorker ?? hostsLocal, translates, config.WhisperModelPath);
+            }
+
             var available = pool != null
                 ? pool.HasCapableWorker(WorkerJob.ForTarget(target))
-                : WorkerTargets.ServedByConfig(target, installed, hostsLocal, rows);
+                : WorkerTargets.ServedByConfig(target, installed, hostsLocal, rows, legacyRemote);
             // Without a pool, what the pool WOULD hold (hostsLocal), not null: null maps to the
             // "not installed" wording, which is false for an installed engine with the local worker off.
             var state = TranslationRoute.LocalCanary(installed, pool?.HasLocalWorker ?? hostsLocal,
@@ -1176,7 +1187,9 @@ namespace WhisperSubs.Controller
                                 // A translate job: only the translation pass, for its one target.
                                 await manager.TranslateSubtitleAsync(
                                     wi.Item, l.Worker.Provider, wi.Target, wi.Force,
-                                    new PoolTargetEngines(pool, l, releaseOwnLease: ReleaseSlot), cancellationToken);
+                                    new PoolTargetEngines(pool, l, releaseOwnLease: ReleaseSlot,
+                                        localWhisperTranslates: ModelCatalog.IsTranslationCapable(Plugin.Instance?.Configuration?.WhisperModelPath)),
+                                    cancellationToken);
                             }
                             else
                             {

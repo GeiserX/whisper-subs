@@ -346,8 +346,10 @@ namespace WhisperSubs.Controller
                 {
                     if (!engines.CanServe("en"))
                     {
+                        var model = Plugin.Instance?.Configuration?.WhisperModelPath;
                         throw new TranslationNotPossibleException(
-                            $"Cannot create an 'en' subtitle for \"{item.Name}\": no worker in the pool translates into English.");
+                            $"Cannot create an 'en' subtitle for \"{item.Name}\": " +
+                            TranslationRoute.EnglishMissingReason(engines.LocalWorkerInPool == true, ModelCatalog.IsTranslationCapable(model), model));
                     }
 
                     // Routed like a Canary target, so it never runs on a transcribe-only worker and always uses

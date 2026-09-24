@@ -33,11 +33,17 @@ namespace WhisperSubs.Controller.Workers
             => new JobRequirements(TranslationPossible(mode, enableTranslation) ? "en" : null, null);
 
         /// <summary>
-        /// The requirement for one Canary translation target inside an item: a worker whose
-        /// <see cref="WorkerCapabilities.TranslateTargets"/> contains <paramref name="target"/>.
+        /// The requirement for one translation target: a worker whose
+        /// <see cref="WorkerCapabilities.TranslateTargets"/> contains <paramref name="target"/>. For "en" with
+        /// <paramref name="localWhisperTranslates"/> false (the local model is a turbo model, which was not
+        /// trained to translate and would write the source language under an English name) this server's own
+        /// worker is left out. Only a translate job passes that flag; the nightly run never asks for "en" here.
         /// </summary>
-        public static JobRequirements ForTarget(string target)
-            => new JobRequirements((target ?? "").Trim().ToLowerInvariant(), null, TargetOnly: true);
+        public static JobRequirements ForTarget(string target, bool localWhisperTranslates = true)
+        {
+            var code = (target ?? "").Trim().ToLowerInvariant();
+            return new JobRequirements(code, null, TargetOnly: true, RemoteOnly: code == "en" && !localWhisperTranslates);
+        }
 
         /// <summary>Any worker at all: no translation target, and a worker that takes no whole items counts.</summary>
         public static readonly JobRequirements AnyWorker = new(null, null, TargetOnly: true);
