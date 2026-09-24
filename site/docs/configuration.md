@@ -142,9 +142,10 @@ The scheduled task treats an English title as finished only when every checked l
 
 On a movie, episode, season or series page, **Translate into…** sits next to the Subtitles button. Pick a language and the plugin queues a translation into that language for that title, or for every episode of the season or series. It works with no checkbox ticked and with **Also create an English subtitle when a title has none** off.
 
-- English comes from Whisper and works from any audio language.
+- English comes from Whisper and works from any audio language. It needs a model that can translate. With a turbo model active on this server, English comes only from a worker that lists `en`, and without one the pick is refused.
 - The other 24 languages come from Canary and need English audio.
-- If no engine can make the language, the plugin refuses the pick at once, says why, and queues nothing. An engine is the crispasr binary and Canary model on this server, or a worker that lists the language.
+- If no engine can make the language, the plugin refuses the pick at once and queues nothing. Admins see why; other users see that the language cannot be made right now, and the reason goes to the log. An engine is the crispasr binary and Canary model on this server, or a worker that lists the language.
+- If the worker that makes the language is busy, the translation waits for it. If that worker cannot start at all, the translation stays queued and runs once it can.
 - If a title's audio is not English and you picked a Canary language, that title fails with the reason. It is not retried and gets no file. The queue panel shows the reason as the last error.
 - A title that already has the translation, or whose audio is already in that language, is skipped.
 - A single movie or episode is translated even when it has a subtitle in that language from another source. A season or series respects **Skip media that already has subtitles**.

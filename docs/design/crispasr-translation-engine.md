@@ -257,8 +257,27 @@ Each job is a translate job with the queue identity `(item, "auto", target)`, ne
 identity `(item, language)`, so both can be queued or running for the same title at once.
 `Target` is written to `queue.json` and `requests.json` only when set, so existing files and every
 generate job's bytes are unchanged. The job runs only the translation pass for its one target. For
-`en` that is the English pass, for the rest the Canary pass. It reads none of the generation or translation
-settings, and neither the nightly list nor `EnableTranslation` has to be set.
+`en` that is the English pass, for the rest the Canary pass. It reads none of `SubtitleMode`,
+`EnableTranslation`, `GenerateOriginalLanguageSubtitles` or the nightly list, and none of them has to be
+set. An unforced job still honours **Skip media that already has subtitles**. When the pool can take no
+whole item under the generation settings, only the generate jobs fail fast; the translate jobs still run.
+
+Downgrading to a 4.9.x build loses the target in both files. That build ignores `Target` in `queue.json`,
+so a queued translate job restores as an ordinary `(item, "auto")` generate job, forced for a single
+title. It also ignores `Target` in `requests.json`, so approving a pending translation request there
+queues a generate job for every episode. It re-saves both files without `Target`, so upgrading again
+does not bring the target back.
+
+The dispatcher leases a worker before it knows the next job, so a translate job can land on a worker
+that does not list its target. It then hands that slot back and waits for a worker that does, holding
+nothing while it waits, so it cannot join a wait cycle and a busy worker delays it rather than failing
+it. When every worker that lists the target is out of rotation, the job keeps its retries and waits for
+the next drain, as a whole item does in a paused drain.
+
+English needs a worker that translates into it. This server's own worker counts only while its
+Whisper model can translate. A turbo model, the one the catalog recommends, was not trained to
+translate and writes the audio's own language under an English name. A job that lands on this server then moves to
+another worker that lists `en`, and fails with that reason when there is none.
 
 An explicit request changes one rule. The nightly run skips a Canary target when the audio is not
 English, because that is most of a library. A translate job asked for that target, so it fails
@@ -268,9 +287,11 @@ dispatcher records it without spending retries on an answer that cannot change. 
 existing translated file, audio already in the target, or a usable subtitle on an unforced job all
 skip the target.
 
-Both endpoints refuse a target no engine can make with 409 and the same wording the job would
-record (`TranslationRoute.EngineMissingReason`). The check reads the live pool without building it;
-before any pool exists it answers from the settings.
+Both endpoints refuse a target no engine can make with 409. The admin endpoint returns the wording
+the job would record (`TranslationRoute.EngineMissingReason`, or `EnglishMissingReason` for `en`). That
+wording names server settings, so the viewer endpoint returns a fixed sentence and logs the reason for
+the admin. The check reads the live pool without building it; before any pool exists it answers from
+the settings.
 
 ### Worker pool
 
