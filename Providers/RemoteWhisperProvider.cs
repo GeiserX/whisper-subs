@@ -847,18 +847,74 @@ namespace WhisperSubs.Providers
             var endpoint = $"{_apiUrl}/v1/audio/transcriptions";
             var json = await PostAudioAsync(endpoint, content, sourceAudioBytes, cancellationToken).ConfigureAwait(false);
 
+            var (language, probability) = ParseDetectionResponse(json);
+
+            _logger.LogInformation("Remote language detection: {Language} (p={Probability:F3})", language, probability);
+
+            return (language, probability);
+        }
+
+        /// <summary>
+        /// Probability reported when the server gives none. Same value the local parser uses when
+        /// whisper-cli prints a language without "(p = ...)" (WhisperProvider.DetectLanguageInternalAsync),
+        /// so a remote and a local probe clear the callers' p >= 0.3 threshold alike.
+        /// </summary>
+        internal const float UnknownDetectionProbability = 0.5f;
+
+        /// <summary>
+        /// Reads the language and its probability from a verbose_json detection response.
+        /// whisper-server (whisper.cpp v1.8.4, examples/server/server.cpp:1058-1059) adds
+        /// <c>detected_language</c> and <c>detected_language_probability</c> unless it runs with
+        /// --no-language-probabilities; OpenAI-style servers send only <c>language</c>. A probability
+        /// that is missing, not a number, outside [0, 1], or that belongs to a different language than
+        /// <c>language</c> falls back to <see cref="UnknownDetectionProbability"/>.
+        /// </summary>
+        internal static (string Language, float Probability) ParseDetectionResponse(string json)
+        {
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
 
-            var language = root.TryGetProperty("language", out var langProp)
-                ? (langProp.GetString() ?? "auto")
-                : "auto";
+            var language = NormalizeLangName(ReadString(root, "language") ?? "auto");
 
-            language = NormalizeLangName(language);
+            var detected = ReadString(root, "detected_language");
+            var sameLanguage = detected == null
+                || string.Equals(NormalizeLangName(detected), language, StringComparison.OrdinalIgnoreCase);
 
-            _logger.LogInformation("Remote language detection: {Language}", language);
+            var probability = sameLanguage && TryReadProbability(root, out var p)
+                ? p
+                : UnknownDetectionProbability;
 
-            return (language, 0.0f);
+            return (language, probability);
+        }
+
+        private static string? ReadString(JsonElement root, string propertyName)
+            => root.TryGetProperty(propertyName, out var property) && property.ValueKind == JsonValueKind.String
+                ? property.GetString()
+                : null;
+
+        private static bool TryReadProbability(JsonElement root, out float probability)
+        {
+            probability = 0;
+            if (!root.TryGetProperty("detected_language_probability", out var property))
+            {
+                return false;
+            }
+
+            double value = 0;
+            var parsed = property.ValueKind switch
+            {
+                JsonValueKind.Number => property.TryGetDouble(out value),
+                JsonValueKind.String => double.TryParse(
+                    property.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out value),
+                _ => false,
+            };
+            if (!parsed || !double.IsFinite(value) || value < 0 || value > 1)
+            {
+                return false;
+            }
+
+            probability = (float)value;
+            return true;
         }
 
         /// <summary>
