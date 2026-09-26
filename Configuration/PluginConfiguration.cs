@@ -122,7 +122,8 @@ namespace WhisperSubs.Configuration
         /// </para>
         /// A <c>--max-len</c> in <see cref="CustomWhisperArgs"/> supersedes this (custom args are
         /// appended last and whisper-cli takes the last value), matching the VAD-tuning precedent.
-        /// Local whisper-cli only — a remote/worker endpoint owns its own segmentation.
+        /// Local whisper-cli and local crispasr only — a remote/worker endpoint, a CrispASR server included,
+        /// owns its own segmentation.
         /// </summary>
         public int SubtitleMaxLineLength { get; set; } = 0;
 
