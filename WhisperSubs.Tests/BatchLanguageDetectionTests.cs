@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using WhisperSubs.Controller;
 using WhisperSubs.Providers;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -85,7 +86,7 @@ public class BatchLanguageDetectionTests
             + Processing(Paths[2], "de", "0.983489")
             + Timings;
 
-        var r = WhisperProvider.ParseBatchDetection(stderr, Paths);
+        var r = WhisperProvider.ParseBatchDetection(stderr, Paths).Results;
 
         Assert.Equal(3, r.Count);
         Assert.Equal(("es", 0.996483f), r[0]);
@@ -102,7 +103,7 @@ public class BatchLanguageDetectionTests
             + Processing(Paths[2], "it", "0.986998")
             + Timings;
 
-        var r = WhisperProvider.ParseBatchDetection(stderr, Paths);
+        var r = WhisperProvider.ParseBatchDetection(stderr, Paths).Results;
 
         Assert.Equal(("en", 0.998014f), r[0]);
         Assert.Null(r[1]);
@@ -119,7 +120,7 @@ public class BatchLanguageDetectionTests
             + Processing(Paths[2], "es", "0.996483")
             + Timings;
 
-        var r = WhisperProvider.ParseBatchDetection(stderr, Paths);
+        var r = WhisperProvider.ParseBatchDetection(stderr, Paths).Results;
 
         Assert.Equal(("en", 0.998014f), r[0]);
         Assert.Null(r[1]);
@@ -137,7 +138,7 @@ public class BatchLanguageDetectionTests
             + $"\nsystem_info: n_threads = 4 / 14 | CPU : NEON = 1 | \n\nmain: processing '{paths[2]}' (171165 samples, 10.7 sec), 4 threads, 1 processors, 5 beams + best of 5, lang = auto, task = transcribe, timestamps = 1 ...\n"
             + "whisper-cli: failed to process audio\n";
 
-        var r = WhisperProvider.ParseBatchDetection(stderr, paths);
+        var r = WhisperProvider.ParseBatchDetection(stderr, paths).Results;
 
         Assert.Equal(("en", 0.998014f), r[0]);
         Assert.Equal(("es", 0.996483f), r[1]);
@@ -155,7 +156,7 @@ public class BatchLanguageDetectionTests
             + "whisper_full_with_state: auto-detected language: ja (p = 0.800000)\n"
             + Processing(Paths[1], "fr", "0.971321");
 
-        var r = WhisperProvider.ParseBatchDetection(stderr, Paths);
+        var r = WhisperProvider.ParseBatchDetection(stderr, Paths).Results;
 
         Assert.Equal(("en", 0.998014f), r[0]);
         Assert.Equal(("fr", 0.971321f), r[1]);
@@ -167,7 +168,7 @@ public class BatchLanguageDetectionTests
     {
         var stderr = Header + Processing(Paths[0], "spanish", "0.91") + Processing(Paths[1], "haitian creole", "0.5");
 
-        var r = WhisperProvider.ParseBatchDetection(stderr, Paths);
+        var r = WhisperProvider.ParseBatchDetection(stderr, Paths).Results;
 
         Assert.Equal(("es", 0.91f), r[0]);
         Assert.Equal(("ht", 0.5f), r[1]);
@@ -178,7 +179,7 @@ public class BatchLanguageDetectionTests
     [InlineData(null)]
     public void Parse_EmptyStderr_AllNullWithInputLength(string? stderr)
     {
-        var r = WhisperProvider.ParseBatchDetection(stderr, Paths);
+        var r = WhisperProvider.ParseBatchDetection(stderr, Paths).Results;
 
         Assert.Equal(3, r.Count);
         Assert.All(r, x => Assert.Null(x));
@@ -190,7 +191,7 @@ public class BatchLanguageDetectionTests
         var paths = new[] { "/tmp/my dir/l'été/chunk_0000.wav", "/tmp/it's here/chunk_0001.wav" };
         var stderr = Header + Processing(paths[0], "fr", "0.97") + Processing(paths[1], "it", "0.95");
 
-        var r = WhisperProvider.ParseBatchDetection(stderr, paths);
+        var r = WhisperProvider.ParseBatchDetection(stderr, paths).Results;
 
         Assert.Equal(("fr", 0.97f), r[0]);
         Assert.Equal(("it", 0.95f), r[1]);
@@ -201,7 +202,7 @@ public class BatchLanguageDetectionTests
     {
         var stderr = (Header + Processing(Paths[0], "de", "0.98")).Replace("\n", "\r\n");
 
-        var r = WhisperProvider.ParseBatchDetection(stderr, Paths);
+        var r = WhisperProvider.ParseBatchDetection(stderr, Paths).Results;
 
         Assert.Equal(("de", 0.98f), r[0]);
     }
@@ -212,10 +213,133 @@ public class BatchLanguageDetectionTests
         var paths = new[] { Paths[0], Paths[0] };
         var stderr = Header + Processing(Paths[0], "en", "0.9") + Processing(Paths[0], "es", "0.8");
 
-        var r = WhisperProvider.ParseBatchDetection(stderr, paths);
+        var r = WhisperProvider.ParseBatchDetection(stderr, paths).Results;
 
         Assert.Equal(("en", 0.9f), r[0]);
         Assert.Equal(("es", 0.8f), r[1]);
+    }
+
+    // ---- Pairing by order when the printed path does not round-trip ----
+
+    // A temp directory under a non-ASCII user name, and what whisper-cli prints for it when argv went
+    // through the ANSI code page and stderr was decoded differently: the directory is mangled, the
+    // ASCII file name survives.
+    private static readonly string[] WinPaths =
+    {
+        @"C:\Users\José\AppData\Local\Temp\whispersubs_x\chunk_0000.wav",
+        @"C:\Users\José\AppData\Local\Temp\whispersubs_x\chunk_0001.wav",
+        @"C:\Users\José\AppData\Local\Temp\whispersubs_x\chunk_0002.wav",
+    };
+
+    private static string Mangled(string path) => path.Replace("José", "JosÃ©");
+
+    [Fact]
+    public void Parse_DirectoryDoesNotRoundTrip_PairsByOrder()
+    {
+        var stderr = Header
+            + Processing(Mangled(WinPaths[0]), "es", "0.99")
+            + Processing(Mangled(WinPaths[1]), "fr", "0.98")
+            + Processing(Mangled(WinPaths[2]), "de", "0.97")
+            + Timings;
+
+        var r = WhisperProvider.ParseBatchDetection(stderr, WinPaths);
+
+        Assert.Equal(new (string, float)?[] { ("es", 0.99f), ("fr", 0.98f), ("de", 0.97f) }, r.Results);
+        Assert.Null(r.FirstMismatch);
+        Assert.Null(r.FirstUnanswered);
+    }
+
+    [Fact]
+    public void Parse_NothingOfThePathRoundTrips_StillPairsByOrder()
+    {
+        // Not even the file name matches (every candidate looks the same), so only the order can pair.
+        var stderr = Header
+            + Processing(@"C:\?\?.wav", "es", "0.99")
+            + Processing(@"C:\?\?.wav", "fr", "0.98")
+            + Processing(@"C:\?\?.wav", "de", "0.97");
+
+        var r = WhisperProvider.ParseBatchDetection(stderr, WinPaths);
+
+        Assert.Equal(new (string, float)?[] { ("es", 0.99f), ("fr", 0.98f), ("de", 0.97f) }, r.Results);
+    }
+
+    [Fact]
+    public void Parse_MangledPaths_UnreadableFile_DoesNotShiftTheNextResult()
+    {
+        // An unreadable file prints its own line in the loop instead of a processing line: it takes its
+        // turn in the order, so the next file's answer stays on the next file.
+        var stderr = Header
+            + Processing(@"C:\?\?.wav", "en", "0.99")
+            + "error: failed to read audio file 'C:\\?\\?.wav'\n"
+            + Processing(@"C:\?\?.wav", "es", "0.98");
+
+        var r = WhisperProvider.ParseBatchDetection(stderr, WinPaths);
+
+        Assert.Equal(("en", 0.99f), r.Results[0]);
+        Assert.Null(r.Results[1]);
+        Assert.Equal(("es", 0.98f), r.Results[2]);
+    }
+
+    [Fact]
+    public void Parse_MangledMissingFile_IsPlacedByItsFileName()
+    {
+        var stderr = $"error: input file not found '{Mangled(WinPaths[0])}'\n" + Header
+            + Processing(Mangled(WinPaths[1]), "fr", "0.98")
+            + Processing(Mangled(WinPaths[2]), "de", "0.97");
+
+        var r = WhisperProvider.ParseBatchDetection(stderr, WinPaths);
+
+        Assert.Null(r.Results[0]);
+        Assert.Equal(("fr", 0.98f), r.Results[1]);
+        Assert.Equal(("de", 0.97f), r.Results[2]);
+    }
+
+    [Fact]
+    public void Parse_MissingFileThatCannotBePlaced_AnswersNothingRatherThanGuess()
+    {
+        // Some file was dropped up front, but nothing says which, so no order-based pairing is safe.
+        var stderr = "error: input file not found 'C:\\?\\?.wav'\n" + Header
+            + Processing(@"C:\?\?.wav", "fr", "0.98")
+            + Processing(@"C:\?\?.wav", "de", "0.97");
+
+        var r = WhisperProvider.ParseBatchDetection(stderr, WinPaths);
+
+        Assert.All(r.Results, x => Assert.Null(x));
+        Assert.StartsWith("main: processing 'C:\\?\\?.wav'", r.FirstUnanswered);
+    }
+
+    [Fact]
+    public void Parse_PathAndOrderDisagree_PathWins_ThenOrderIsNoLongerTrusted()
+    {
+        // File 1 vanished without a line we know. The exact path of file 2 proves where the run really is;
+        // after that a line whose path matches nothing is not paired by an order already shown wrong.
+        var paths = Paths.Concat(new[] { "/tmp/whispersubs_x/chunk_0003.wav" }).ToArray();
+        var stderr = Header
+            + Processing(paths[0], "en", "0.99")
+            + Processing(paths[2], "es", "0.98")
+            + Processing("/tmp/whispersubs_?/?.wav", "fr", "0.97");
+
+        var r = WhisperProvider.ParseBatchDetection(stderr, paths);
+
+        Assert.Equal(new (string, float)?[] { ("en", 0.99f), null, ("es", 0.98f), null }, r.Results);
+        Assert.Contains(paths[1], r.FirstMismatch);
+        Assert.Contains(paths[2], r.FirstMismatch);
+        Assert.StartsWith("main: processing '/tmp/whispersubs_?/?.wav'", r.FirstUnanswered);
+    }
+
+    [Fact]
+    public void Parse_PartialAnswer_KeepsTheAnswers_AndNamesTheFirstUnansweredLine()
+    {
+        var stderr = Header
+            + Processing(Paths[0], "en", "0.99")
+            + $"\nmain: processing '{Paths[1]}' (1 samples, 0.1 sec), 4 threads ...\n"
+            + Processing(Paths[2], "es", "0.98");
+
+        var r = WhisperProvider.ParseBatchDetection(stderr, Paths);
+
+        Assert.Equal(new (string, float)?[] { ("en", 0.99f), null, ("es", 0.98f) }, r.Results);
+        Assert.Equal($"main: processing '{Paths[1]}' (1 samples, 0.1 sec), 4 threads ...", r.FirstUnanswered);
+        Assert.Null(r.FirstMismatch);
     }
 
     [Fact]
@@ -248,12 +372,12 @@ public class BatchLanguageDetectionTests
 
     // ---- DetectBatchOrNullsAsync: the fallback contract ----
 
-    private static Func<IReadOnlyList<string>, CancellationToken, Task<IReadOnlyList<(string Language, float Probability)?>>> Detector(
+    private static Func<IReadOnlyList<string>, CancellationToken, Task<BatchDetectionResult>> Detector(
         Func<IReadOnlyList<string>, IReadOnlyList<(string Language, float Probability)?>> answer, List<IReadOnlyList<string>>? calls = null)
         => (paths, _) =>
         {
             calls?.Add(paths);
-            return Task.FromResult(answer(paths));
+            return Task.FromResult(new BatchDetectionResult(answer(paths)));
         };
 
     [Fact]
@@ -262,9 +386,9 @@ public class BatchLanguageDetectionTests
         var calls = new List<IReadOnlyList<string>>();
         var chunkPaths = new string?[] { "a.wav", null, "c.wav" };
 
-        var r = await SubtitleManager.DetectBatchOrNullsAsync(
+        var r = (await SubtitleManager.DetectBatchOrNullsAsync(
             Detector(p => p.Select(x => ((string, float)?)(x == "a.wav" ? ("en", 0.9f) : ("es", 0.8f))).ToList(), calls),
-            chunkPaths, NullLogger.Instance, "item", CancellationToken.None);
+            chunkPaths, NullLogger.Instance, "item", CancellationToken.None)).Results;
 
         Assert.Single(calls);
         Assert.Equal(new[] { "a.wav", "c.wav" }, calls[0]);
@@ -276,8 +400,8 @@ public class BatchLanguageDetectionTests
     [Fact]
     public async Task Batch_NoDetector_AllNull_SoEveryChunkFallsBack()
     {
-        var r = await SubtitleManager.DetectBatchOrNullsAsync(
-            null, new string?[] { "a.wav", "b.wav" }, NullLogger.Instance, "item", CancellationToken.None);
+        var r = (await SubtitleManager.DetectBatchOrNullsAsync(
+            null, new string?[] { "a.wav", "b.wav" }, NullLogger.Instance, "item", CancellationToken.None)).Results;
 
         Assert.Equal(2, r.Length);
         Assert.All(r, x => Assert.Null(x));
@@ -287,9 +411,9 @@ public class BatchLanguageDetectionTests
     public async Task Batch_NothingExtracted_DoesNotCallDetector()
     {
         var calls = new List<IReadOnlyList<string>>();
-        var r = await SubtitleManager.DetectBatchOrNullsAsync(
+        var r = (await SubtitleManager.DetectBatchOrNullsAsync(
             Detector(p => p.Select(_ => ((string, float)?)("en", 1f)).ToList(), calls),
-            new string?[] { null, null }, NullLogger.Instance, "item", CancellationToken.None);
+            new string?[] { null, null }, NullLogger.Instance, "item", CancellationToken.None)).Results;
 
         Assert.Empty(calls);
         Assert.All(r, x => Assert.Null(x));
@@ -298,9 +422,9 @@ public class BatchLanguageDetectionTests
     [Fact]
     public async Task Batch_DetectorThrows_AllNull_SoEveryChunkFallsBack()
     {
-        var r = await SubtitleManager.DetectBatchOrNullsAsync(
+        var r = (await SubtitleManager.DetectBatchOrNullsAsync(
             (_, _) => throw new WhisperLaunchException(132, "illegal instruction"),
-            new string?[] { "a.wav", "b.wav" }, NullLogger.Instance, "item", CancellationToken.None);
+            new string?[] { "a.wav", "b.wav" }, NullLogger.Instance, "item", CancellationToken.None)).Results;
 
         Assert.All(r, x => Assert.Null(x));
     }
@@ -310,9 +434,9 @@ public class BatchLanguageDetectionTests
     {
         // The batch's own timeout surfaces as an OperationCanceledException while the caller's token is
         // still live: that is a batch failure (fall back), not a caller cancellation.
-        var r = await SubtitleManager.DetectBatchOrNullsAsync(
+        var r = (await SubtitleManager.DetectBatchOrNullsAsync(
             (_, _) => throw new OperationCanceledException(),
-            new string?[] { "a.wav" }, NullLogger.Instance, "item", CancellationToken.None);
+            new string?[] { "a.wav" }, NullLogger.Instance, "item", CancellationToken.None)).Results;
 
         Assert.Null(r[0]);
     }
@@ -324,16 +448,16 @@ public class BatchLanguageDetectionTests
         cts.Cancel();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => SubtitleManager.DetectBatchOrNullsAsync(
-            (_, ct) => { ct.ThrowIfCancellationRequested(); return Task.FromResult<IReadOnlyList<(string Language, float Probability)?>>(new (string, float)?[1]); },
+            (_, ct) => { ct.ThrowIfCancellationRequested(); return Task.FromResult(new BatchDetectionResult(new (string, float)?[1])); },
             new string?[] { "a.wav" }, NullLogger.Instance, "item", cts.Token));
     }
 
     [Fact]
     public async Task Batch_ShortOrPartialAnswer_LeavesTheRestNull()
     {
-        var r = await SubtitleManager.DetectBatchOrNullsAsync(
+        var r = (await SubtitleManager.DetectBatchOrNullsAsync(
             Detector(_ => new (string, float)?[] { ("fr", 0.7f) }),
-            new string?[] { "a.wav", "b.wav", "c.wav" }, NullLogger.Instance, "item", CancellationToken.None);
+            new string?[] { "a.wav", "b.wav", "c.wav" }, NullLogger.Instance, "item", CancellationToken.None)).Results;
 
         Assert.Equal(("fr", 0.7f), r[0]);
         Assert.Null(r[1]);
@@ -369,9 +493,9 @@ public class BatchLanguageDetectionTests
             {
                 batches.Add(paths);
                 // Leave every 7th chunk unanswered so it takes the single-file fallback.
-                return Task.FromResult<IReadOnlyList<(string Language, float Probability)?>>(paths
+                return Task.FromResult(new BatchDetectionResult(paths
                     .Select(p => IndexOf(p) % 7 == 0 ? null : ((string, float)?)(LanguageOf(IndexOf(p)), 0.9f))
-                    .ToList());
+                    .ToList()));
             },
             (path, _) => { singles.Add(path); return Task.FromResult((LanguageOf(IndexOf(path)), 0.9f)); },
             NullLogger.Instance, "item", CancellationToken.None);
@@ -417,8 +541,8 @@ public class BatchLanguageDetectionTests
         var r = await SubtitleManager.DetectForeignChunksAsync(
             chunks, "en",
             (i, _) => i is 30 or 31 ? throw new IOException($"extract {i}") : Task.FromResult(PathOf(i)),
-            (paths, _) => Task.FromResult<IReadOnlyList<(string Language, float Probability)?>>(paths
-                .Select(p => IndexOf(p) == 32 ? null : ((string, float)?)("en", 0.9f)).ToList()),
+            (paths, _) => Task.FromResult(new BatchDetectionResult(paths
+                .Select(p => IndexOf(p) == 32 ? null : ((string, float)?)("en", 0.9f)).ToList())),
             (path, _) =>
             {
                 singles.Add(path);
@@ -442,14 +566,85 @@ public class BatchLanguageDetectionTests
         var r = await SubtitleManager.DetectForeignChunksAsync(
             chunks, "en",
             (i, _) => failing.Contains(i) ? throw new IOException($"extract {i}") : Task.FromResult(PathOf(i)),
-            (paths, _) => Task.FromResult<IReadOnlyList<(string Language, float Probability)?>>(paths
-                .Select(p => ((string, float)?)(LanguageOf(IndexOf(p)), 0.9f)).ToList()),
+            (paths, _) => Task.FromResult(new BatchDetectionResult(paths
+                .Select(p => ((string, float)?)(LanguageOf(IndexOf(p)), 0.9f)).ToList())),
             (_, _) => throw new InvalidOperationException("no single run expected"),
             NullLogger.Instance, "item", CancellationToken.None);
 
         Assert.False(r.Aborted);
         Assert.Equal(60, r.SuccessfulDetections);
         Assert.Equal(Enumerable.Range(0, 64).Count(i => !failing.Contains(i) && LanguageOf(i) == "fr"), r.ForeignChunks.Count);
+    }
+
+    // ---- The latch: a batch that finishes but answers nothing turns batching off for the item ----
+
+    private sealed class ListLogger : ILogger
+    {
+        public List<(LogLevel Level, string Message)> Entries { get; } = new();
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+            => Entries.Add((logLevel, formatter(state, exception)));
+    }
+
+    private static async Task<(int BatchCalls, List<string> Singles, ListLogger Log, SubtitleManager.ForeignDetectionResult Result)> RunForeign(
+        int count, Func<IReadOnlyList<string>, BatchDetectionResult> batch)
+    {
+        var chunks = Enumerable.Range(0, count).Select(i => Chunk(i)).ToList();
+        var singles = new List<string>();
+        var log = new ListLogger();
+        int batchCalls = 0;
+
+        var r = await SubtitleManager.DetectForeignChunksAsync(
+            chunks, "en",
+            (i, _) => Task.FromResult(PathOf(i)),
+            (paths, _) => { batchCalls++; return Task.FromResult(batch(paths)); },
+            (path, _) => { singles.Add(path); return Task.FromResult((LanguageOf(IndexOf(path)), 0.9f)); },
+            log, "item", CancellationToken.None);
+        return (batchCalls, singles, log, r);
+    }
+
+    [Fact]
+    public async Task Foreign_BatchAnsweringNothing_TurnsBatchingOffForTheItem_AndLogsOnce()
+    {
+        const string line = "main: processing 'C:\\?\\chunk_0000.wav' (1 samples, 0.1 sec)";
+        var (batchCalls, singles, log, r) = await RunForeign(100,
+            paths => new BatchDetectionResult(new (string, float)?[paths.Count], FirstUnanswered: line));
+
+        Assert.Equal(1, batchCalls);
+        Assert.Equal(Enumerable.Range(0, 100).Select(PathOf), singles);
+        var error = Assert.Single(log.Entries, e => e.Level == LogLevel.Error);
+        Assert.Contains(line, error.Message);
+        Assert.False(r.Aborted);
+        Assert.Equal(100, r.SuccessfulDetections);
+    }
+
+    [Fact]
+    public async Task Foreign_TimedOutBatchAnsweringNothing_KeepsBatching()
+    {
+        // A stall is one slow file, not output that cannot be mapped: the next batch may well be fine.
+        var (batchCalls, singles, log, _) = await RunForeign(40,
+            paths => new BatchDetectionResult(new (string, float)?[paths.Count], TimedOut: true));
+
+        Assert.Equal(2, batchCalls);
+        Assert.Equal(40, singles.Count);
+        Assert.DoesNotContain(log.Entries, e => e.Level == LogLevel.Error);
+    }
+
+    [Fact]
+    public async Task Foreign_PartialAnswer_KeepsBatching_AndOnlyTheGapsRunAlone()
+    {
+        var (batchCalls, singles, log, r) = await RunForeign(40,
+            paths => new BatchDetectionResult(paths
+                .Select(p => IndexOf(p) % 2 == 0 ? ((string, float)?)(LanguageOf(IndexOf(p)), 0.9f) : null).ToList()));
+
+        Assert.Equal(2, batchCalls);
+        Assert.Equal(Enumerable.Range(0, 40).Where(i => i % 2 == 1).Select(PathOf), singles);
+        Assert.DoesNotContain(log.Entries, e => e.Level == LogLevel.Error);
+        Assert.Equal(40, r.SuccessfulDetections);
     }
 
     // ---- DetectLanguagesAsync against a fake whisper-cli: timeout and crash keep what was answered ----
@@ -482,13 +677,26 @@ public class BatchLanguageDetectionTests
             $"echo \"main: processing '{p4[2]}' (1 samples, 0.1 sec)\" >&2\nexec sleep 60\n", TimeSpan.FromSeconds(2));
 
         var clock = Stopwatch.StartNew();
-        var r = await provider.DetectLanguagesAsync(paths, CancellationToken.None);
+        var r = (await provider.DetectLanguagesAsync(paths, CancellationToken.None)).Results;
 
         Assert.True(clock.Elapsed < TimeSpan.FromSeconds(30), $"took {clock.Elapsed}");
         Assert.Equal(("es", 0.99f), r[0]);
         Assert.Equal(("fr", 0.99f), r[1]);
         Assert.Null(r[2]);
         Assert.Null(r[3]);
+    }
+
+    [Fact]
+    public async Task Fake_PrintedPathsDoNotRoundTrip_StillPairByOrder()
+    {
+        // whisper-cli prints each path as something that matches none of the argv paths.
+        if (OperatingSystem.IsWindows()) return;
+        var (provider, paths) = FakeWhisper(p4 =>
+            string.Concat(p4.Select((_, i) => FakeLine($"/t?mp/garbled_{i}", i % 2 == 0 ? "es" : "ru"))), TimeSpan.FromSeconds(30));
+
+        var r = (await provider.DetectLanguagesAsync(paths, CancellationToken.None)).Results;
+
+        Assert.Equal(new (string, float)?[] { ("es", 0.99f), ("ru", 0.99f), ("es", 0.99f), ("ru", 0.99f) }, r);
     }
 
     [Fact]
@@ -501,7 +709,7 @@ public class BatchLanguageDetectionTests
                 $"echo \"main: processing '{p}' (1 samples, 0.1 sec)\" >&2\nsleep 1.2\n" +
                 $"echo \"whisper_full_with_state: auto-detected language: {(i % 2 == 0 ? "de" : "it")} (p = 0.990000)\" >&2\n")), TimeSpan.FromSeconds(3));
 
-        var r = await provider.DetectLanguagesAsync(paths, CancellationToken.None);
+        var r = (await provider.DetectLanguagesAsync(paths, CancellationToken.None)).Results;
 
         Assert.Equal(new (string, float)?[] { ("de", 0.99f), ("it", 0.99f), ("de", 0.99f), ("it", 0.99f) }, r);
     }
@@ -513,7 +721,7 @@ public class BatchLanguageDetectionTests
         var (provider, paths) = FakeWhisper(p4 =>
             FakeLine(p4[0], "en") + FakeLine(p4[1], "ru") + "exit 134\n", TimeSpan.FromSeconds(30));
 
-        var r = await provider.DetectLanguagesAsync(paths, CancellationToken.None);
+        var r = (await provider.DetectLanguagesAsync(paths, CancellationToken.None)).Results;
 
         Assert.Equal(("en", 0.99f), r[0]);
         Assert.Equal(("ru", 0.99f), r[1]);

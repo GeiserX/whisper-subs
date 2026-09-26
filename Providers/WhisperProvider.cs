@@ -270,6 +270,12 @@ namespace WhisperSubs.Providers
         private static readonly Regex BatchProcessingLine =
             new(@"processing '(?<path>.+)' \(\d+ samples", RegexOptions.Compiled);
 
+        private static readonly Regex BatchFailedReadLine =
+            new(@"error: failed to read audio file '(?<path>.*)'", RegexOptions.Compiled);
+
+        private static readonly Regex BatchNotFoundLine =
+            new(@"error: input file not found '(?<path>.*)'", RegexOptions.Compiled);
+
         private static readonly Regex BatchDetectedLine =
             new(@"auto-detected language:\s*(?<lang>\w+(?:\s\w+)*)\s*\(p\s*=\s*(?<p>[\d.]+)\)", RegexOptions.Compiled);
 
@@ -281,33 +287,84 @@ namespace WhisperSubs.Providers
 
         /// <summary>
         /// Maps the stderr of one batched whisper-cli --detect-language run back to its input files.
-        /// The result is index-aligned with <paramref name="audioPaths"/>; an entry is null when that
-        /// file got no detection (missing, unreadable, or the run stopped before reaching it).
-        /// A detection line is only accepted right after a "processing '&lt;path&gt;'" line for a file
-        /// still waiting for its result, so one file's result can never land on another. Pure.
+        /// The results are index-aligned with <paramref name="audioPaths"/>; an entry is null when that
+        /// file got no detection (missing, unreadable, or the run stopped before reaching it). Pure.
+        /// <para>
+        /// Pairing follows whisper.cpp v1.8.4 examples/cli/cli.cpp. It drops every missing file in a
+        /// pre-pass, printing "input file not found" for each (lines 974-985). It then walks the rest in
+        /// argv order (line 1072). A file it cannot read prints "failed to read audio file" and is skipped
+        /// (1126-1129). Every other file prints "processing '&lt;path&gt;'" (1150-1151) and then its
+        /// detection. So the k-th file line is the k-th file still in the list, and each line is paired by
+        /// that order. The printed path is a cross-check: it only has to match when it can. A path that
+        /// does not round-trip (a non-ASCII temp directory decoded in another code page) still leaves the
+        /// ASCII file name, and a path that matches nothing does not stop the pairing.
+        /// </para>
+        /// <para>
+        /// When the path names a different file than the order, the path wins. whisper-cli prints the name
+        /// of the file it has open, so a match is proof. The order is our model of its loop, and a
+        /// disagreement shows the model missed a skip. After that the order is not trusted for the rest of
+        /// the run: a line whose path matches nothing gets no result and falls back to its own run. A
+        /// wrong language would put a chunk in or out of the forced subtitle silently; a missing one only
+        /// costs one more process.
+        /// </para>
         /// </summary>
-        internal static IReadOnlyList<(string Language, float Probability)?> ParseBatchDetection(string? stderr, IReadOnlyList<string> audioPaths)
+        internal static BatchDetectionResult ParseBatchDetection(string? stderr, IReadOnlyList<string> audioPaths)
         {
             var results = new (string Language, float Probability)?[audioPaths.Count];
-            if (string.IsNullOrEmpty(stderr)) return results;
+            if (string.IsNullOrEmpty(stderr)) return new BatchDetectionResult(results);
 
+            var settled = new bool[audioPaths.Count]; // dropped, skipped, or already paired with a line
+            int cursor = 0;                            // the next file whisper-cli reaches, in argv order
+            bool orderTrusted = true;
             int current = -1;
-            foreach (var line in stderr.Split('\n'))
+            string? currentLine = null, firstUnanswered = null, firstMismatch = null;
+
+            foreach (var raw in stderr.Split('\n'))
             {
-                var processing = BatchProcessingLine.Match(line);
-                if (processing.Success)
+                var line = raw.TrimEnd('\r');
+
+                var notFound = BatchNotFoundLine.Match(line);
+                if (notFound.Success)
                 {
-                    var path = processing.Groups["path"].Value;
-                    current = -1;
-                    for (int i = 0; i < audioPaths.Count; i++)
+                    // Printed before any file runs, so only its path says which file it was.
+                    var dropped = LocateBatchFile(notFound.Groups["path"].Value, audioPaths, settled);
+                    if (dropped >= 0) settled[dropped] = true;
+                    else orderTrusted = false;
+                    continue;
+                }
+
+                var processing = BatchProcessingLine.Match(line);
+                var fileLine = processing.Success ? processing : BatchFailedReadLine.Match(line);
+                if (fileLine.Success)
+                {
+                    if (current >= 0) firstUnanswered ??= currentLine;
+
+                    var printed = fileLine.Groups["path"].Value;
+                    var byPath = LocateBatchFile(printed, audioPaths, settled);
+                    var byOrder = -1;
+                    if (orderTrusted)
                     {
-                        if (results[i] == null && string.Equals(audioPaths[i], path, StringComparison.Ordinal))
-                        {
-                            current = i;
-                            break;
-                        }
+                        byOrder = cursor;
+                        while (byOrder < audioPaths.Count && settled[byOrder]) byOrder++;
+                        if (byOrder == audioPaths.Count) byOrder = -1;
                     }
 
+                    if (byPath >= 0 && byOrder >= 0 && byPath != byOrder)
+                    {
+                        firstMismatch ??= $"expected '{audioPaths[byOrder]}' by order, whisper-cli printed '{printed}'";
+                        orderTrusted = false;
+                    }
+
+                    var at = byPath >= 0 ? byPath : byOrder;
+                    if (at >= 0)
+                    {
+                        settled[at] = true;
+                        cursor = at + 1;
+                    }
+
+                    current = processing.Success ? at : -1;
+                    currentLine = line;
+                    if (processing.Success && at < 0) firstUnanswered ??= line;
                     continue;
                 }
 
@@ -320,8 +377,37 @@ namespace WhisperSubs.Providers
                 }
             }
 
-            return results;
+            if (current >= 0) firstUnanswered ??= currentLine;
+            return new BatchDetectionResult(results, FirstUnanswered: firstUnanswered, FirstMismatch: firstMismatch);
         }
+
+        /// <summary>
+        /// The input file a path printed by whisper-cli names, among those not yet settled: the first exact
+        /// match, else the only one with the same file name (the directory may not have round-tripped),
+        /// else -1. Pure.
+        /// </summary>
+        private static int LocateBatchFile(string printed, IReadOnlyList<string> audioPaths, bool[] settled)
+        {
+            for (int i = 0; i < audioPaths.Count; i++)
+            {
+                if (!settled[i] && string.Equals(audioPaths[i], printed, StringComparison.Ordinal)) return i;
+            }
+
+            var name = FileNamePart(printed);
+            if (name.Length == 0) return -1;
+            int found = -1;
+            for (int i = 0; i < audioPaths.Count; i++)
+            {
+                if (settled[i] || !string.Equals(FileNamePart(audioPaths[i]), name, StringComparison.Ordinal)) continue;
+                if (found >= 0) return -1; // two candidates: the name proves nothing
+                found = i;
+            }
+
+            return found;
+        }
+
+        // Splits on both separators so a Windows path parses the same on any host.
+        private static string FileNamePart(string path) => path.Substring(path.LastIndexOfAny(new[] { '/', '\\' }) + 1);
 
         /// <summary>
         /// Detects the language of several audio files in ONE whisper-cli run instead of one process
@@ -331,9 +417,9 @@ namespace WhisperSubs.Providers
         /// after answering some files keeps those answers. (Issue #5.)
         /// </summary>
         [ExcludeFromCodeCoverage(Justification = "Spawns whisper-cli process for batched language detection")]
-        public async Task<IReadOnlyList<(string Language, float Probability)?>> DetectLanguagesAsync(IReadOnlyList<string> audioPaths, CancellationToken cancellationToken)
+        public async Task<BatchDetectionResult> DetectLanguagesAsync(IReadOnlyList<string> audioPaths, CancellationToken cancellationToken)
         {
-            if (audioPaths.Count == 0) return Array.Empty<(string Language, float Probability)?>();
+            if (audioPaths.Count == 0) return new BatchDetectionResult(Array.Empty<(string Language, float Probability)?>());
 
             if (string.IsNullOrEmpty(_modelPath) || !File.Exists(_modelPath))
             {
@@ -347,13 +433,19 @@ namespace WhisperSubs.Providers
             // Parse even on a non-zero exit or a timeout: whisper-cli returns 10 when one file fails
             // mid-batch, and a run killed on its timeout has still answered the files before the stall.
             // The files without a result come back null and fall back per chunk.
-            var results = ParseBatchDetection(stderr, audioPaths);
-            var missing = results.Count(r => r == null);
+            var parsed = ParseBatchDetection(stderr, audioPaths);
+            var missing = parsed.Results.Count(r => r == null);
 
             // A crash before any answer is a launch failure (e.g. SIGILL on a no-AVX2 CPU). After some
             // answers it happened mid-batch: keep them, and let the rest fail on their own if it recurs.
             var exitFailure = timedOut ? null : DescribeWhisperExitFailure(exitCode, stderr);
             if (exitFailure != null && missing == audioPaths.Count) throw new WhisperLaunchException(exitCode, exitFailure);
+
+            if (parsed.FirstMismatch != null)
+            {
+                _logger.LogWarning("Batched language detection: file order and printed path disagree ({Mismatch}); paired by path, and stopped pairing by order for the rest of this run",
+                    parsed.FirstMismatch);
+            }
 
             if (missing > 0)
             {
@@ -361,7 +453,7 @@ namespace WhisperSubs.Providers
                     missing, audioPaths.Count, timedOut ? "timed out" : $"whisper-cli exit {exitCode}");
             }
 
-            return results;
+            return parsed with { TimedOut = timedOut };
         }
 
         [ExcludeFromCodeCoverage(Justification = "Spawns whisper-cli process for language detection")]
@@ -1131,4 +1223,16 @@ namespace WhisperSubs.Providers
             return null;
         }
     }
+
+    /// <summary>
+    /// What one batched whisper-cli --detect-language run answered. <see cref="Results"/> is index-aligned
+    /// with its input files; null means no answer for that file. <see cref="FirstUnanswered"/> is the first
+    /// "processing" line whose file got no answer, and <see cref="FirstMismatch"/> the first place where
+    /// the file order and the printed path disagreed, both for the logs. (Issue #5.)
+    /// </summary>
+    public sealed record BatchDetectionResult(
+        IReadOnlyList<(string Language, float Probability)?> Results,
+        bool TimedOut = false,
+        string? FirstUnanswered = null,
+        string? FirstMismatch = null);
 }

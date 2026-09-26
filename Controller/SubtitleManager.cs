@@ -1401,10 +1401,11 @@ namespace WhisperSubs.Controller
         /// results index-aligned with <paramref name="chunkPaths"/>. A null path (its extraction failed)
         /// is not sent. A null result means "detect this chunk on its own": the chunk was not sent, the
         /// batch gave no answer for it, there is no batch detector (remote workers), or the batch run
-        /// failed (logged). Only a caller cancellation propagates. (Issue #5.)
+        /// failed (logged). <c>Run</c> is what the batch run returned, or null when it did not run or
+        /// threw. Only a caller cancellation propagates. (Issue #5.)
         /// </summary>
-        internal static async Task<(string Language, float Probability)?[]> DetectBatchOrNullsAsync(
-            Func<IReadOnlyList<string>, CancellationToken, Task<IReadOnlyList<(string Language, float Probability)?>>>? batchDetect,
+        internal static async Task<((string Language, float Probability)?[] Results, BatchDetectionResult? Run)> DetectBatchOrNullsAsync(
+            Func<IReadOnlyList<string>, CancellationToken, Task<BatchDetectionResult>>? batchDetect,
             IReadOnlyList<string?> chunkPaths,
             ILogger logger,
             string itemName,
@@ -1412,14 +1413,15 @@ namespace WhisperSubs.Controller
         {
             var results = new (string Language, float Probability)?[chunkPaths.Count];
             var sent = Enumerable.Range(0, chunkPaths.Count).Where(k => chunkPaths[k] != null).ToList();
-            if (batchDetect == null || sent.Count == 0) return results;
+            if (batchDetect == null || sent.Count == 0) return (results, null);
 
+            BatchDetectionResult? run = null;
             try
             {
-                var found = await batchDetect(sent.Select(k => chunkPaths[k]!).ToList(), cancellationToken);
-                for (int j = 0; j < sent.Count && j < found.Count; j++)
+                run = await batchDetect(sent.Select(k => chunkPaths[k]!).ToList(), cancellationToken);
+                for (int j = 0; j < sent.Count && j < run.Results.Count; j++)
                 {
-                    results[sent[j]] = found[j];
+                    results[sent[j]] = run.Results[j];
                 }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -1432,7 +1434,7 @@ namespace WhisperSubs.Controller
                     sent.Count, itemName);
             }
 
-            return results;
+            return (results, run);
         }
 
         /// <summary>
@@ -1458,7 +1460,8 @@ namespace WhisperSubs.Controller
         /// Detects the language of every chunk of at least one second and collects the foreign ones.
         /// Chunks go in batches of <see cref="WhisperProvider.DetectionBatchSize"/>: each batch is
         /// extracted, detected in one <paramref name="batchDetect"/> call, and every chunk the batch
-        /// did not answer falls back to <paramref name="detectOne"/>. Results are handled in chunk
+        /// did not answer falls back to <paramref name="detectOne"/>. A batch that finishes without timing
+        /// out but answers nothing turns batching off for the rest of the item. Results are handled in chunk
         /// order, so the consecutive-failure count runs across batch boundaries exactly as it did
         /// when each chunk was detected on its own. Only a caller cancellation propagates. (Issue #5.)
         /// </summary>
@@ -1466,7 +1469,7 @@ namespace WhisperSubs.Controller
             IReadOnlyList<(double Start, double End)> chunks,
             string primaryLanguage,
             Func<int, CancellationToken, Task<string>> extractChunk,
-            Func<IReadOnlyList<string>, CancellationToken, Task<IReadOnlyList<(string Language, float Probability)?>>>? batchDetect,
+            Func<IReadOnlyList<string>, CancellationToken, Task<BatchDetectionResult>>? batchDetect,
             Func<string, CancellationToken, Task<(string Language, float Probability)>> detectOne,
             ILogger logger,
             string itemName,
@@ -1505,7 +1508,18 @@ namespace WhisperSubs.Controller
                     }
                 }
 
-                var batchResults = await DetectBatchOrNullsAsync(batchDetect, chunkPaths, logger, itemName, cancellationToken);
+                var (batchResults, run) = await DetectBatchOrNullsAsync(batchDetect, chunkPaths, logger, itemName, cancellationToken);
+
+                // A run that finished without timing out yet answered nothing means whisper-cli's output no
+                // longer maps back to our files. Every later batch would do the same and then detect each
+                // chunk on its own anyway, slower than not batching at all. So stop batching for the rest
+                // of this item, and say why once.
+                if (run is { TimedOut: false } && run.Results.Count > 0 && run.Results.All(r => r == null))
+                {
+                    logger.LogError("Batched language detection answered none of {Count} chunks of {ItemName}; detecting the rest of this item one chunk at a time. First unanswered whisper-cli line: {Line}",
+                        run.Results.Count, itemName, run.FirstUnanswered ?? "(no processing line)");
+                    batchDetect = null;
+                }
 
                 for (int k = 0; k < batch.Count; k++)
                 {
