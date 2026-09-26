@@ -112,7 +112,8 @@ namespace WhisperSubs.Configuration
         /// Maximum characters per subtitle cue, emitted as whisper-cli's <c>--max-len</c> (paired with
         /// <c>--split-on-word</c> so a cap never breaks mid-word). 0 (the default) leaves whisper.cpp's
         /// own default of 0 = unlimited, so existing installs are byte-identical. Canary translations
-        /// use 42 when this is 0 (<see cref="Providers.CanaryProvider.DefaultMaxLineLength"/>).
+        /// run by the local crispasr use 42 when this is 0, or 84 for Cyrillic and Greek targets because
+        /// crispasr counts bytes (<see cref="Providers.CanaryProvider.MaxLineLengthFor"/>).
         /// <para>
         /// Why this exists: whisper.cpp applies NO character cap of its own, so when the model fails to
         /// punctuate (the documented "no-punctuation mode"), a whole utterance lands in one enormous

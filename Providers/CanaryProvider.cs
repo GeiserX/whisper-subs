@@ -36,6 +36,12 @@ namespace WhisperSubs.Providers
         /// </summary>
         internal const int DefaultMaxLineLength = 42;
 
+        /// <summary>
+        /// Targets written in Cyrillic or Greek, two bytes per letter in UTF-8. crispasr counts
+        /// <c>--max-len</c> in bytes, so their default is doubled to hold the same number of letters.
+        /// </summary>
+        private static readonly HashSet<string> TwoByteScriptTargets = new(StringComparer.Ordinal) { "bg", "el", "ru", "uk" };
+
         public CanaryProvider(
             ILogger logger,
             string binaryPath,
@@ -145,8 +151,8 @@ namespace WhisperSubs.Providers
         /// <item><c>--vad</c>: without it Canary returns the whole file as one cue. The Whisper VAD
         /// tuning flags apply unchanged.</item>
         /// <item><c>--max-len N --split-on-word</c>: the same line-length knob as whisper-cli, except
-        /// that unset means <see cref="DefaultMaxLineLength"/> rather than unlimited: Canary's VAD cues
-        /// run 30 s or more without a cap.</item>
+        /// that unset means a default (<see cref="MaxLineLengthFor"/>) rather than unlimited: without a
+        /// cap Canary's VAD cues are very long (the spike measured cues up to 11 s).</item>
         /// <item>No <c>--prompt</c>: Canary ignores it.</item>
         /// </list>
         /// Pure so the exact vector is unit-testable.
@@ -184,7 +190,7 @@ namespace WhisperSubs.Providers
             args.Add(vadModelPath);
             WhisperProvider.AppendVadTuning(args, tuning ?? VadTuning.Unset);
             args.Add("--max-len");
-            args.Add((maxLineLength > 0 ? maxLineLength : DefaultMaxLineLength).ToString(CultureInfo.InvariantCulture));
+            args.Add(MaxLineLengthFor(targetLanguage, maxLineLength).ToString(CultureInfo.InvariantCulture));
             args.Add("--split-on-word");
             args.Add("--print-progress");
             args.Add("-osrt");
@@ -192,6 +198,15 @@ namespace WhisperSubs.Providers
             args.Add(outputPrefix);
             return args;
         }
+
+        /// <summary>
+        /// The <c>--max-len</c> for one target: an explicit setting as is, otherwise
+        /// <see cref="DefaultMaxLineLength"/>, doubled for a two-byte script. Pure.
+        /// </summary>
+        internal static int MaxLineLengthFor(string targetLanguage, int configured)
+            => configured > 0 ? configured
+                : TwoByteScriptTargets.Contains(targetLanguage) ? DefaultMaxLineLength * 2
+                : DefaultMaxLineLength;
 
         /// <summary>Canary has no language identification; detection stays on the Whisper base model.</summary>
         public Task<(string Language, float Probability)> DetectLanguageAsync(string audioPath, CancellationToken cancellationToken)

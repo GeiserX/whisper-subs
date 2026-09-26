@@ -118,7 +118,7 @@ A new `CanaryProvider : ISubtitleProvider` wraps the `crispasr` binary:
 ```
 crispasr --backend canary -m <canary.gguf> -f <wav> -l en -sl en -tl <target> -t <threads>
          --no-auto-aligner --cache-dir <data>/crispasr/cache
-         --vad --vad-model <silero> [--vad-* tuning] [--max-len N --split-on-word]
+         --vad --vad-model <silero> [--vad-* tuning] --max-len <N> --split-on-word
          --print-progress -osrt -of <prefix>
 ```
 
@@ -133,8 +133,9 @@ Every flag after the target is there because the spike showed what happens witho
   It does not. With `-l` left on its default of `auto`, crispasr still fetched Whisper tiny for
   language ID, so both flags are passed, in the provider and in the install validation run.
 - `--vad`: without VAD, Canary returns the whole file as one cue. The plugin's existing Silero
-  model and tuning flags apply unchanged. `--max-len` with `--split-on-word` is honoured too and
-  is the same knob as today's `SubtitleMaxLineLength`.
+  model and tuning flags apply unchanged. `--max-len` with `--split-on-word` is always passed.
+  `N` is `SubtitleMaxLineLength` when set; `0` means the Canary default of 42, or 84 for the
+  Cyrillic and Greek targets, because crispasr counts `--max-len` in bytes.
 - No `--prompt`: Canary ignores it.
 
 It reuses [`WhisperProvider`](../../Providers/WhisperProvider.cs)'s process handling and SRT read-back. `ProgressRegex` gains a second

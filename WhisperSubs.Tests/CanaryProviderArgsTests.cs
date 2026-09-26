@@ -88,8 +88,8 @@ public class CanaryProviderArgsTests
         Assert.DoesNotContain("--vad-samples-overlap", args);
     }
 
-    // Unset (0, or a stray negative) caps Canary at 42 characters: without a cap its VAD cues run
-    // 30 s or more.
+    // Unset (0, or a stray negative) caps Canary at 42 characters: without a cap its VAD cues are
+    // very long (the spike measured cues up to 11 s).
     [Theory]
     [InlineData(0)]
     [InlineData(-5)]
@@ -109,6 +109,27 @@ public class CanaryProviderArgsTests
     {
         var args = Build(maxLineLength: maxLen);
         Assert.Equal(maxLen.ToString(), args[IndexOf(args, "--max-len") + 1]);
+    }
+
+    // crispasr counts --max-len in bytes, and Cyrillic and Greek letters take two bytes each, so
+    // those targets default to 84 bytes, about 42 letters.
+    [Theory]
+    [InlineData("bg")]
+    [InlineData("el")]
+    [InlineData("ru")]
+    [InlineData("uk")]
+    public void BuildArguments_UnsetMaxLen_TwoByteScript_DefaultsTo84(string target)
+    {
+        var args = Build(maxLineLength: 0, target: target);
+        Assert.Equal("84", args[IndexOf(args, "--max-len") + 1]);
+    }
+
+    // An explicit value is the user's number: never rescaled for the script.
+    [Fact]
+    public void BuildArguments_ExplicitMaxLen_TwoByteScript_IsNotRescaled()
+    {
+        var args = Build(maxLineLength: 50, target: "ru");
+        Assert.Equal("50", args[IndexOf(args, "--max-len") + 1]);
     }
 
     // The Canary default must not leak into whisper-cli: the same unset value still leaves whisper.cpp
