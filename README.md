@@ -162,7 +162,7 @@ See [ROADMAP.md](ROADMAP.md) for planned features and design details.
 
 - [smart-covers](https://github.com/GeiserX/smart-covers): cover extraction for books, audiobooks, comics, magazines and music libraries, with online fallback
 - [quality-gate](https://github.com/GeiserX/quality-gate): restrict users to specific media versions based on configurable path-based policies
-- [jellyfin-encoder](https://github.com/GeiserX/jellyfin-encoder): automatic 720p HEVC/AV1 transcoding service with hardware acceleration
+- [quality-gate-encoder](https://github.com/GeiserX/quality-gate-encoder) (formerly jellyfin-encoder): automatic 720p HEVC/AV1 transcoding service with hardware acceleration
 - [jellyfin-telegram-channel-sync](https://github.com/GeiserX/jellyfin-telegram-channel-sync): sync Jellyfin access with Telegram channel membership
 
 ## Supporters
