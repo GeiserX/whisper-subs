@@ -255,17 +255,29 @@ namespace WhisperSubs.Providers
         }
 
         /// <summary>
-        /// Wall-clock cap for one detection run: the historical 300 s for a single file, plus 30 s for
-        /// each further file in the batch. Pure.
+        /// Generous per-file cap: with the small detection model this is reached only on a
+        /// pathologically slow host; it must not guillotine a legitimately slow detect. (#95)
         /// </summary>
-        internal static TimeSpan BatchDetectionTimeout(int count)
-            => TimeSpan.FromSeconds(300 + (30 * Math.Max(0, count - 1)));
+        internal static readonly TimeSpan DefaultDetectionFileTimeout = TimeSpan.FromSeconds(300);
+
+        /// <summary>
+        /// How long one file may take in a detection run. A single-file run gets this much in total, as
+        /// before batching. A batch restarts the timer each time whisper-cli moves on to the next file,
+        /// so every file keeps the same budget and a slow but moving batch is never killed. Tests shorten it.
+        /// </summary>
+        internal TimeSpan DetectionFileTimeout { get; set; } = DefaultDetectionFileTimeout;
 
         private static readonly Regex BatchProcessingLine =
             new(@"processing '(?<path>.+)' \(\d+ samples", RegexOptions.Compiled);
 
         private static readonly Regex BatchDetectedLine =
             new(@"auto-detected language:\s*(?<lang>\w+(?:\s\w+)*)\s*\(p\s*=\s*(?<p>[\d.]+)\)", RegexOptions.Compiled);
+
+        /// <summary>
+        /// True for the line whisper-cli prints as it starts on the next input file. Pure.
+        /// </summary>
+        internal static bool IsProcessingLine(string? line)
+            => line != null && BatchProcessingLine.IsMatch(line);
 
         /// <summary>
         /// Maps the stderr of one batched whisper-cli --detect-language run back to its input files.
@@ -315,7 +327,8 @@ namespace WhisperSubs.Providers
         /// Detects the language of several audio files in ONE whisper-cli run instead of one process
         /// each. Returns an index-aligned list; a null entry means the caller should fall back to
         /// <see cref="DetectLanguageAsync"/> for that file. Throws <see cref="WhisperLaunchException"/>
-        /// when whisper-cli cannot start, like the single-file path. (Issue #5.)
+        /// when whisper-cli cannot start, like the single-file path. A run that times out or crashes
+        /// after answering some files keeps those answers. (Issue #5.)
         /// </summary>
         [ExcludeFromCodeCoverage(Justification = "Spawns whisper-cli process for batched language detection")]
         public async Task<IReadOnlyList<(string Language, float Probability)?>> DetectLanguagesAsync(IReadOnlyList<string> audioPaths, CancellationToken cancellationToken)
@@ -329,19 +342,23 @@ namespace WhisperSubs.Providers
 
             _logger.LogInformation("Detecting language for {Count} chunks in one whisper-cli run", audioPaths.Count);
 
-            var (exitCode, _, stderr) = await RunDetectionProcessAsync(audioPaths, BatchDetectionTimeout(audioPaths.Count), cancellationToken);
+            var (exitCode, _, stderr, timedOut) = await RunDetectionProcessAsync(audioPaths, keepOutputOnTimeout: true, cancellationToken);
 
-            var exitFailure = DescribeWhisperExitFailure(exitCode, stderr);
-            if (exitFailure != null) throw new WhisperLaunchException(exitCode, exitFailure);
-
-            // Parse even on a non-zero exit: whisper-cli returns 10 when one file fails mid-batch and
-            // leaves the later files without a result. Those come back null and fall back per chunk.
+            // Parse even on a non-zero exit or a timeout: whisper-cli returns 10 when one file fails
+            // mid-batch, and a run killed on its timeout has still answered the files before the stall.
+            // The files without a result come back null and fall back per chunk.
             var results = ParseBatchDetection(stderr, audioPaths);
             var missing = results.Count(r => r == null);
+
+            // A crash before any answer is a launch failure (e.g. SIGILL on a no-AVX2 CPU). After some
+            // answers it happened mid-batch: keep them, and let the rest fail on their own if it recurs.
+            var exitFailure = timedOut ? null : DescribeWhisperExitFailure(exitCode, stderr);
+            if (exitFailure != null && missing == audioPaths.Count) throw new WhisperLaunchException(exitCode, exitFailure);
+
             if (missing > 0)
             {
-                _logger.LogWarning("Batched language detection returned no result for {Missing} of {Count} chunks (whisper-cli exit {ExitCode}); those fall back to one run each",
-                    missing, audioPaths.Count, exitCode);
+                _logger.LogWarning("Batched language detection returned no result for {Missing} of {Count} chunks ({Reason}); those fall back to one run each",
+                    missing, audioPaths.Count, timedOut ? "timed out" : $"whisper-cli exit {exitCode}");
             }
 
             return results;
@@ -350,9 +367,7 @@ namespace WhisperSubs.Providers
         [ExcludeFromCodeCoverage(Justification = "Spawns whisper-cli process for language detection")]
         private async Task<(string Language, float Probability)> DetectLanguageInternalAsync(string audioPath, CancellationToken cancellationToken)
         {
-            // Generous per-chunk cap: with the small detection model this is reached only on a
-            // pathologically slow host; it must not guillotine a legitimately slow detect. (#95)
-            var (exitCode, stdout, stderr) = await RunDetectionProcessAsync(new[] { audioPath }, BatchDetectionTimeout(1), cancellationToken);
+            var (exitCode, stdout, stderr, _) = await RunDetectionProcessAsync(new[] { audioPath }, keepOutputOnTimeout: false, cancellationToken);
 
             // A crash here (e.g. SIGILL/exit 132 on a non-AVX2 CPU running an AVX2 build) produces
             // truncated output and would otherwise be misreported as "could not detect language".
@@ -394,11 +409,14 @@ namespace WhisperSubs.Providers
 
         /// <summary>
         /// Runs whisper-cli --detect-language over <paramref name="audioPaths"/> and returns its exit code
-        /// and output. On cancellation or timeout the process tree is killed and the exception rethrown.
+        /// and output. Each file gets <see cref="DetectionFileTimeout"/>. On a caller cancellation the
+        /// process tree is killed and the exception rethrown. On a timeout it is killed too, and then
+        /// either rethrown or, with <paramref name="keepOutputOnTimeout"/>, returned with TimedOut set
+        /// and the output captured so far.
         /// </summary>
         [ExcludeFromCodeCoverage(Justification = "Spawns whisper-cli process for language detection")]
-        private async Task<(int ExitCode, string Stdout, string Stderr)> RunDetectionProcessAsync(
-            IReadOnlyList<string> audioPaths, TimeSpan timeout, CancellationToken cancellationToken)
+        private async Task<(int ExitCode, string Stdout, string Stderr, bool TimedOut)> RunDetectionProcessAsync(
+            IReadOnlyList<string> audioPaths, bool keepOutputOnTimeout, CancellationToken cancellationToken)
         {
             var whisperExecutable = FindWhisperExecutable();
             if (whisperExecutable == null)
@@ -434,30 +452,44 @@ namespace WhisperSubs.Providers
             using var process = new Process { StartInfo = startInfo };
             var outputBuilder = new StringBuilder();
             var errorBuilder = new StringBuilder();
+            var fileTimeout = DetectionFileTimeout;
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            int filesStarted = 0;
 
             process.OutputDataReceived += (_, e) => { if (e.Data != null) outputBuilder.AppendLine(e.Data); };
-            process.ErrorDataReceived += (_, e) => { if (e.Data != null) errorBuilder.AppendLine(e.Data); };
+            process.ErrorDataReceived += (_, e) =>
+            {
+                if (e.Data == null) return;
+                errorBuilder.AppendLine(e.Data);
+                // Each file after the first restarts the per-file timer, so a batch is only killed when
+                // one file stalls, never because the whole batch is slow. A single file keeps one timer.
+                if (IsProcessingLine(e.Data) && Interlocked.Increment(ref filesStarted) > 1)
+                {
+                    try { timeoutCts.CancelAfter(fileTimeout); } catch (ObjectDisposedException) { }
+                }
+            };
 
             process.Start();
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
 
+            var timedOut = false;
             try
             {
-                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                timeoutCts.CancelAfter(timeout);
+                timeoutCts.CancelAfter(fileTimeout);
                 await process.WaitForExitAsync(timeoutCts.Token);
             }
             catch (OperationCanceledException)
             {
                 try { process.Kill(entireProcessTree: true); } catch { }
-                throw;
+                if (cancellationToken.IsCancellationRequested || !keepOutputOnTimeout) throw;
+                timedOut = true;
             }
 
             // Flush async stdout/stderr pipe buffers
             process.WaitForExit();
 
-            return (process.ExitCode, outputBuilder.ToString(), errorBuilder.ToString());
+            return (process.ExitCode, outputBuilder.ToString(), errorBuilder.ToString(), timedOut);
         }
 
         /// <summary>

@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -217,12 +219,20 @@ public class BatchLanguageDetectionTests
     }
 
     [Fact]
-    public void BatchDetectionTimeout_KeepsSingleFileCap_AndGrowsWithCount()
+    public void DetectionFileTimeout_KeepsTheHistoricalPerFileCap()
     {
-        Assert.Equal(TimeSpan.FromSeconds(300), WhisperProvider.BatchDetectionTimeout(1));
-        Assert.Equal(TimeSpan.FromSeconds(300), WhisperProvider.BatchDetectionTimeout(0));
-        Assert.Equal(TimeSpan.FromSeconds(330), WhisperProvider.BatchDetectionTimeout(2));
-        Assert.Equal(TimeSpan.FromSeconds(300 + (30 * 31)), WhisperProvider.BatchDetectionTimeout(WhisperProvider.DetectionBatchSize));
+        Assert.Equal(TimeSpan.FromSeconds(300), WhisperProvider.DefaultDetectionFileTimeout);
+        Assert.Equal(TimeSpan.FromSeconds(300), new WhisperProvider(NullLogger<WhisperProvider>.Instance, "m.bin").DetectionFileTimeout);
+    }
+
+    [Theory]
+    [InlineData("main: processing '/tmp/a.wav' (226395 samples, 14.1 sec), 4 threads, 1 processors, 5 beams + best of 5, lang = auto, task = transcribe, timestamps = 1 ...", true)]
+    [InlineData("whisper_full_with_state: auto-detected language: en (p = 0.998014)", false)]
+    [InlineData("error: failed to read audio file '/tmp/a.wav'", false)]
+    [InlineData(null, false)]
+    public void IsProcessingLine_OnlyTheNextFileLine(string? line, bool expected)
+    {
+        Assert.Equal(expected, WhisperProvider.IsProcessingLine(line));
     }
 
     [Theory]
@@ -328,5 +338,209 @@ public class BatchLanguageDetectionTests
         Assert.Equal(("fr", 0.7f), r[0]);
         Assert.Null(r[1]);
         Assert.Null(r[2]);
+    }
+
+    // ---- DetectForeignChunksAsync: the batch loop that maps results back to chunk indices ----
+
+    private static (double Start, double End) Chunk(int i, bool shortChunk = false)
+        => (i * 10.0, (i * 10.0) + (shortChunk ? 0.5 : 5.0));
+
+    private static string PathOf(int i) => $"chunk_{i:D4}.wav";
+
+    private static int IndexOf(string path) => int.Parse(path.Substring(6, 4));
+
+    // Every third chunk is French, the rest English, so a result landing on the wrong chunk shows up.
+    private static string LanguageOf(int i) => i % 3 == 0 ? "fr" : "en";
+
+    [Fact]
+    public async Task Foreign_MoreThanOneBatch_EveryChunkGetsItsOwnLanguage()
+    {
+        const int count = 75; // three batches of 32
+        var shortOnes = new HashSet<int> { 5, 40, 41, 70 };
+        var chunks = Enumerable.Range(0, count).Select(i => Chunk(i, shortOnes.Contains(i))).ToList();
+        var extracted = new List<int>();
+        var batches = new List<IReadOnlyList<string>>();
+        var singles = new List<string>();
+
+        var r = await SubtitleManager.DetectForeignChunksAsync(
+            chunks, "en",
+            (i, _) => { extracted.Add(i); return Task.FromResult(PathOf(i)); },
+            (paths, _) =>
+            {
+                batches.Add(paths);
+                // Leave every 7th chunk unanswered so it takes the single-file fallback.
+                return Task.FromResult<IReadOnlyList<(string Language, float Probability)?>>(paths
+                    .Select(p => IndexOf(p) % 7 == 0 ? null : ((string, float)?)(LanguageOf(IndexOf(p)), 0.9f))
+                    .ToList());
+            },
+            (path, _) => { singles.Add(path); return Task.FromResult((LanguageOf(IndexOf(path)), 0.9f)); },
+            NullLogger.Instance, "item", CancellationToken.None);
+
+        var eligible = Enumerable.Range(0, count).Where(i => !shortOnes.Contains(i)).ToList();
+        Assert.Equal(eligible, extracted);
+        Assert.Equal(new[] { 32, 32, eligible.Count - 64 }, batches.Select(b => b.Count));
+        Assert.Equal(eligible.Select(PathOf), batches.SelectMany(b => b));
+        Assert.Equal(eligible.Where(i => i % 7 == 0).Select(PathOf), singles);
+
+        Assert.False(r.Aborted);
+        Assert.Equal(eligible.Count, r.SuccessfulDetections);
+        Assert.Equal(
+            eligible.Where(i => LanguageOf(i) == "fr").Select(i => (chunks[i].Start, chunks[i].End, "fr")),
+            r.ForeignChunks);
+    }
+
+    [Fact]
+    public async Task Foreign_NoBatchDetector_DetectsEachChunkOnItsOwn()
+    {
+        var chunks = Enumerable.Range(0, 40).Select(i => Chunk(i)).ToList();
+        var singles = new List<string>();
+
+        var r = await SubtitleManager.DetectForeignChunksAsync(
+            chunks, "en",
+            (i, _) => Task.FromResult(PathOf(i)),
+            null,
+            (path, _) => { singles.Add(path); return Task.FromResult((LanguageOf(IndexOf(path)), 0.9f)); },
+            NullLogger.Instance, "item", CancellationToken.None);
+
+        Assert.Equal(Enumerable.Range(0, 40).Select(PathOf), singles);
+        Assert.Equal(Enumerable.Range(0, 40).Count(i => LanguageOf(i) == "fr"), r.ForeignChunks.Count);
+    }
+
+    [Fact]
+    public async Task Foreign_ConsecutiveFailuresCarryAcrossTheBatchBoundary()
+    {
+        // Chunks 30 and 31 (end of batch one) fail to extract, chunk 32 (start of batch two) fails to
+        // detect: three in a row, so the item aborts on chunk 32 and nothing after it is looked at.
+        var chunks = Enumerable.Range(0, 64).Select(i => Chunk(i)).ToList();
+        var singles = new List<string>();
+
+        var r = await SubtitleManager.DetectForeignChunksAsync(
+            chunks, "en",
+            (i, _) => i is 30 or 31 ? throw new IOException($"extract {i}") : Task.FromResult(PathOf(i)),
+            (paths, _) => Task.FromResult<IReadOnlyList<(string Language, float Probability)?>>(paths
+                .Select(p => IndexOf(p) == 32 ? null : ((string, float)?)("en", 0.9f)).ToList()),
+            (path, _) =>
+            {
+                singles.Add(path);
+                return IndexOf(path) == 32 ? throw new InvalidOperationException("detect 32") : Task.FromResult(("en", 0.9f));
+            },
+            NullLogger.Instance, "item", CancellationToken.None);
+
+        Assert.True(r.Aborted);
+        Assert.Equal(3, r.ConsecutiveFailures);
+        Assert.Equal("detect 32", r.LastFailure!.Message);
+        Assert.Equal(30, r.SuccessfulDetections);
+        Assert.Equal(new[] { PathOf(32) }, singles);
+    }
+
+    [Fact]
+    public async Task Foreign_ASuccessAcrossTheBoundaryResetsTheCount()
+    {
+        var chunks = Enumerable.Range(0, 64).Select(i => Chunk(i)).ToList();
+        var failing = new HashSet<int> { 30, 31, 33, 34 };
+
+        var r = await SubtitleManager.DetectForeignChunksAsync(
+            chunks, "en",
+            (i, _) => failing.Contains(i) ? throw new IOException($"extract {i}") : Task.FromResult(PathOf(i)),
+            (paths, _) => Task.FromResult<IReadOnlyList<(string Language, float Probability)?>>(paths
+                .Select(p => ((string, float)?)(LanguageOf(IndexOf(p)), 0.9f)).ToList()),
+            (_, _) => throw new InvalidOperationException("no single run expected"),
+            NullLogger.Instance, "item", CancellationToken.None);
+
+        Assert.False(r.Aborted);
+        Assert.Equal(60, r.SuccessfulDetections);
+        Assert.Equal(Enumerable.Range(0, 64).Count(i => !failing.Contains(i) && LanguageOf(i) == "fr"), r.ForeignChunks.Count);
+    }
+
+    // ---- DetectLanguagesAsync against a fake whisper-cli: timeout and crash keep what was answered ----
+
+    private static string FakeLine(string path, string lang) =>
+        $"echo \"main: processing '{path}' (226395 samples, 14.1 sec), 4 threads, 1 processors, 5 beams + best of 5, lang = auto, task = transcribe, timestamps = 1 ...\" >&2\n" +
+        $"echo \"whisper_full_with_state: auto-detected language: {lang} (p = 0.990000)\" >&2\n";
+
+    private static (WhisperProvider Provider, string[] Paths) FakeWhisper(Func<string[], string> body, TimeSpan fileTimeout)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "whispersubs-batch-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var model = Path.Combine(root, "model.bin");
+        File.WriteAllText(model, "x");
+        var paths = Enumerable.Range(0, 4).Select(i => Path.Combine(root, $"chunk_{i:D4}.wav")).ToArray();
+        var script = Path.Combine(root, "fake-whisper-cli.sh");
+        File.WriteAllText(script, "#!/bin/sh\n" + body(paths));
+        File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+        var provider = new WhisperProvider(NullLogger<WhisperProvider>.Instance, model, script) { DetectionFileTimeout = fileTimeout };
+        return (provider, paths);
+    }
+
+    [Fact]
+    public async Task Fake_TimeoutAfterTwoAnswers_KeepsThemAndReturnsPromptly()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var (provider, paths) = FakeWhisper(p4 =>
+            FakeLine(p4[0], "es") + FakeLine(p4[1], "fr") +
+            $"echo \"main: processing '{p4[2]}' (1 samples, 0.1 sec)\" >&2\nexec sleep 60\n", TimeSpan.FromSeconds(2));
+
+        var clock = Stopwatch.StartNew();
+        var r = await provider.DetectLanguagesAsync(paths, CancellationToken.None);
+
+        Assert.True(clock.Elapsed < TimeSpan.FromSeconds(30), $"took {clock.Elapsed}");
+        Assert.Equal(("es", 0.99f), r[0]);
+        Assert.Equal(("fr", 0.99f), r[1]);
+        Assert.Null(r[2]);
+        Assert.Null(r[3]);
+    }
+
+    [Fact]
+    public async Task Fake_SlowButMovingBatch_IsNeverKilled()
+    {
+        // Each file takes 1.2 s and the per-file timer is 3 s, but the whole run takes almost 5 s.
+        if (OperatingSystem.IsWindows()) return;
+        var (provider, paths) = FakeWhisper(p4 =>
+            string.Concat(p4.Select((p, i) =>
+                $"echo \"main: processing '{p}' (1 samples, 0.1 sec)\" >&2\nsleep 1.2\n" +
+                $"echo \"whisper_full_with_state: auto-detected language: {(i % 2 == 0 ? "de" : "it")} (p = 0.990000)\" >&2\n")), TimeSpan.FromSeconds(3));
+
+        var r = await provider.DetectLanguagesAsync(paths, CancellationToken.None);
+
+        Assert.Equal(new (string, float)?[] { ("de", 0.99f), ("it", 0.99f), ("de", 0.99f), ("it", 0.99f) }, r);
+    }
+
+    [Fact]
+    public async Task Fake_CrashAfterAnswers_KeepsThem()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var (provider, paths) = FakeWhisper(p4 =>
+            FakeLine(p4[0], "en") + FakeLine(p4[1], "ru") + "exit 134\n", TimeSpan.FromSeconds(30));
+
+        var r = await provider.DetectLanguagesAsync(paths, CancellationToken.None);
+
+        Assert.Equal(("en", 0.99f), r[0]);
+        Assert.Equal(("ru", 0.99f), r[1]);
+        Assert.Null(r[2]);
+        Assert.Null(r[3]);
+    }
+
+    [Fact]
+    public async Task Fake_CrashBeforeAnyAnswer_IsALaunchFailure()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var (provider, paths) = FakeWhisper(_ => "echo 'Illegal instruction' >&2\nexit 132\n", TimeSpan.FromSeconds(30));
+
+        var ex = await Assert.ThrowsAsync<WhisperLaunchException>(() => provider.DetectLanguagesAsync(paths, CancellationToken.None));
+        Assert.Equal(132, ex.ExitCode);
+    }
+
+    [Fact]
+    public async Task Fake_CallerCancellation_StillThrows()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var (provider, paths) = FakeWhisper(p4 =>
+            FakeLine(p4[0], "en") + "exec sleep 60\n", TimeSpan.FromSeconds(30));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+
+        var clock = Stopwatch.StartNew();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => provider.DetectLanguagesAsync(paths, cts.Token));
+        Assert.True(clock.Elapsed < TimeSpan.FromSeconds(30), $"took {clock.Elapsed}");
     }
 }

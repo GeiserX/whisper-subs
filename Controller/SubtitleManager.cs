@@ -1436,6 +1436,125 @@ namespace WhisperSubs.Controller
         }
 
         /// <summary>
+        /// Consecutive chunk detection failures after which forced-subtitle detection gives up on the item.
+        /// </summary>
+        internal const int MaxConsecutiveDetectionFailures = 3;
+
+        /// <summary>
+        /// Outcome of the forced-subtitle detection pass. <see cref="Aborted"/> means
+        /// <see cref="MaxConsecutiveDetectionFailures"/> chunks failed in a row; <see cref="LastFailure"/>
+        /// is the last of those failures.
+        /// </summary>
+        internal sealed record ForeignDetectionResult(
+            List<(double Start, double End, string Language)> ForeignChunks,
+            int SuccessfulDetections,
+            int ConsecutiveFailures,
+            Exception? LastFailure)
+        {
+            public bool Aborted => ConsecutiveFailures >= MaxConsecutiveDetectionFailures;
+        }
+
+        /// <summary>
+        /// Detects the language of every chunk of at least one second and collects the foreign ones.
+        /// Chunks go in batches of <see cref="WhisperProvider.DetectionBatchSize"/>: each batch is
+        /// extracted, detected in one <paramref name="batchDetect"/> call, and every chunk the batch
+        /// did not answer falls back to <paramref name="detectOne"/>. Results are handled in chunk
+        /// order, so the consecutive-failure count runs across batch boundaries exactly as it did
+        /// when each chunk was detected on its own. Only a caller cancellation propagates. (Issue #5.)
+        /// </summary>
+        internal static async Task<ForeignDetectionResult> DetectForeignChunksAsync(
+            IReadOnlyList<(double Start, double End)> chunks,
+            string primaryLanguage,
+            Func<int, CancellationToken, Task<string>> extractChunk,
+            Func<IReadOnlyList<string>, CancellationToken, Task<IReadOnlyList<(string Language, float Probability)?>>>? batchDetect,
+            Func<string, CancellationToken, Task<(string Language, float Probability)>> detectOne,
+            ILogger logger,
+            string itemName,
+            CancellationToken cancellationToken)
+        {
+            var foreignChunks = new List<(double Start, double End, string Language)>();
+            int successfulDetections = 0;
+            int consecutiveFailures = 0;
+            Exception? lastFailure = null;
+
+            // Skip very short chunks (< 1s) — unreliable detection
+            var eligible = Enumerable.Range(0, chunks.Count).Where(i => chunks[i].End - chunks[i].Start >= 1.0).ToList();
+
+            for (int batchStart = 0; batchStart < eligible.Count; batchStart += WhisperProvider.DetectionBatchSize)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var batch = eligible.Skip(batchStart).Take(WhisperProvider.DetectionBatchSize).ToList();
+
+                // Extract the whole batch first. A failed extraction is recorded and counted as that
+                // chunk's failure, in order, below.
+                var chunkPaths = new string?[batch.Count];
+                var extractFailures = new Exception?[batch.Count];
+                for (int k = 0; k < batch.Count; k++)
+                {
+                    try
+                    {
+                        chunkPaths[k] = await extractChunk(batch[k], cancellationToken);
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        extractFailures[k] = ex;
+                    }
+                }
+
+                var batchResults = await DetectBatchOrNullsAsync(batchDetect, chunkPaths, logger, itemName, cancellationToken);
+
+                for (int k = 0; k < batch.Count; k++)
+                {
+                    var i = batch[k];
+                    var chunk = chunks[i];
+
+                    try
+                    {
+                        if (extractFailures[k] is { } extractFailure)
+                        {
+                            ExceptionDispatchInfo.Capture(extractFailure).Throw();
+                        }
+
+                        var (detectedLang, probability) = batchResults[k]
+                            ?? await detectOne(chunkPaths[k]!, cancellationToken);
+                        successfulDetections++;
+                        consecutiveFailures = 0;
+
+                        logger.LogDebug("Chunk {Index}/{Total}: {Start:F1}s-{End:F1}s → {Language} (p={Prob:F3})",
+                            i + 1, chunks.Count, chunk.Start, chunk.End, detectedLang, probability);
+
+                        if (IsForeignDetection(detectedLang, probability, primaryLanguage))
+                        {
+                            foreignChunks.Add((chunk.Start, chunk.End, detectedLang));
+                        }
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        throw; // a genuine caller cancellation must propagate, not count as a detection failure
+                    }
+                    catch (Exception ex)
+                    {
+                        consecutiveFailures++;
+                        lastFailure = ex;
+                        logger.LogWarning(ex, "Language detection failed for chunk {Index} ({Start:F1}s-{End:F1}s), skipping ({Consecutive}/{Max} consecutive)",
+                            i, chunk.Start, chunk.End, consecutiveFailures, MaxConsecutiveDetectionFailures);
+
+                        if (consecutiveFailures >= MaxConsecutiveDetectionFailures)
+                        {
+                            return new ForeignDetectionResult(foreignChunks, successfulDetections, consecutiveFailures, lastFailure);
+                        }
+                    }
+                }
+            }
+
+            return new ForeignDetectionResult(foreignChunks, successfulDetections, consecutiveFailures, lastFailure);
+        }
+
+        /// <summary>
         /// Generates a forced subtitle file containing only foreign-language segments.
         /// Uses VAD-based chunking, per-chunk language detection, and selective transcription.
         /// Output: Movie.{lang}.forced.generated.srt
@@ -1562,8 +1681,6 @@ namespace WhisperSubs.Controller
 
                 // Step 5: Language detection per chunk
                 SubtitleQueueService.Instance.ReportPhase("Detecting languages");
-                var foreignChunks = new List<(double Start, double End, string Language)>();
-                int successfulDetections = 0;
 
                 // First-run guarantee: the small detection model downloads in the background (kicked off
                 // at provider creation, usually landing during the audio extraction above). Give it a
@@ -1574,107 +1691,46 @@ namespace WhisperSubs.Controller
                     await whisperProvider.WaitForDetectionModelAsync(cancellationToken);
                 }
 
-                int consecutiveFailures = 0;
-                Exception? lastDetectionFailure = null;
-                const int maxConsecutiveDetectionFailures = 3;
                 var detectionSampleConfig = Plugin.Instance?.Configuration?.LanguageDetectionSampleSeconds ?? 15;
-                string ChunkPath(int index) => Path.Combine(tempDir, $"chunk_{index:D4}.wav");
-
-                // Skip very short chunks (< 1s) — unreliable detection
-                var eligible = Enumerable.Range(0, chunks.Count).Where(i => chunks[i].End - chunks[i].Start >= 1.0).ToList();
-
-                // Detection runs in batches: the local whisper-cli detects a whole batch in one process
-                // instead of one process per chunk (issue #5). Every chunk the batch did not answer falls
-                // back to its own DetectLanguageAsync call, so the per-chunk results and the fail-fast
-                // rules below are the same as detecting one chunk at a time.
-                for (int batchStart = 0; batchStart < eligible.Count; batchStart += WhisperProvider.DetectionBatchSize)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    var batch = eligible.Skip(batchStart).Take(WhisperProvider.DetectionBatchSize).ToList();
-
+                var detection = await DetectForeignChunksAsync(
+                    chunks,
+                    resolvedPrimary,
                     // Bound the audio sent for DETECTION to a short leading window (quality-neutral
                     // for detection; the later selective transcription of a confirmed-foreign segment
                     // still uses the full chunk — see the `mergedSegments` loop below). Avoids a long/
                     // noisy chunk driving a slow decode past its per-call deadline.
-                    var extractFailures = new Exception?[batch.Count];
-                    for (int k = 0; k < batch.Count; k++)
+                    async (i, ct) =>
                     {
-                        var chunk = chunks[batch[k]];
-                        try
-                        {
-                            var detectionSeconds = ClampDetectionSeconds(detectionSampleConfig, chunk.End - chunk.Start);
-                            await ExtractAudioChunkAsync(fullAudioPath, ChunkPath(batch[k]), chunk.Start, detectionSeconds, cancellationToken);
-                        }
-                        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                        {
-                            throw;
-                        }
-                        catch (Exception ex)
-                        {
-                            extractFailures[k] = ex; // counted as this chunk's failure, in order, below
-                        }
-                    }
-
+                        var chunkPath = Path.Combine(tempDir, $"chunk_{i:D4}.wav");
+                        var detectionSeconds = ClampDetectionSeconds(detectionSampleConfig, chunks[i].End - chunks[i].Start);
+                        await ExtractAudioChunkAsync(fullAudioPath, chunkPath, chunks[i].Start, detectionSeconds, ct);
+                        return chunkPath;
+                    },
                     // Only the local whisper-cli batches; a remote worker answers each chunk from a warm
-                    // server already, so it keeps one request per chunk (all-null batch results).
-                    var batchResults = await DetectBatchOrNullsAsync(
-                        provider is WhisperProvider batchProvider ? batchProvider.DetectLanguagesAsync : null,
-                        Enumerable.Range(0, batch.Count).Select(k => extractFailures[k] == null ? ChunkPath(batch[k]) : null).ToList(),
-                        _logger, item.Name, cancellationToken);
+                    // server already, so it keeps one request per chunk.
+                    provider is WhisperProvider batchProvider ? batchProvider.DetectLanguagesAsync : null,
+                    provider.DetectLanguageAsync,
+                    _logger,
+                    item.Name,
+                    cancellationToken);
 
-                    for (int k = 0; k < batch.Count; k++)
-                    {
-                        var i = batch[k];
-                        var chunk = chunks[i];
-
-                        try
-                        {
-                            if (extractFailures[k] is { } extractFailure)
-                            {
-                                ExceptionDispatchInfo.Capture(extractFailure).Throw();
-                            }
-
-                            var (detectedLang, probability) = batchResults[k]
-                                ?? await provider.DetectLanguageAsync(ChunkPath(i), cancellationToken);
-                            successfulDetections++;
-                            consecutiveFailures = 0;
-
-                            _logger.LogDebug("Chunk {Index}/{Total}: {Start:F1}s-{End:F1}s → {Language} (p={Prob:F3})",
-                                i + 1, chunks.Count, chunk.Start, chunk.End, detectedLang, probability);
-
-                            if (IsForeignDetection(detectedLang, probability, resolvedPrimary))
-                            {
-                                foreignChunks.Add((chunk.Start, chunk.End, detectedLang));
-                            }
-                        }
-                        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                        {
-                            throw; // a genuine caller cancellation must propagate, not count as a detection failure
-                        }
-                        catch (Exception ex)
-                        {
-                            consecutiveFailures++;
-                            lastDetectionFailure = ex;
-                            _logger.LogWarning(ex, "Language detection failed for chunk {Index} ({Start:F1}s-{End:F1}s), skipping ({Consecutive}/{Max} consecutive)",
-                                i, chunk.Start, chunk.End, consecutiveFailures, maxConsecutiveDetectionFailures);
-
-                            // Fail-fast: a worker/endpoint that fails this many chunks in a row is down. Abort the
-                            // whole item now instead of grinding every remaining chunk × its per-call deadline —
-                            // the behaviour that turned an unreachable endpoint into a multi-hour stuck task.
-                            if (consecutiveFailures >= maxConsecutiveDetectionFailures)
-                            {
-                                _logger.LogError("Aborting forced-subtitle detection for {ItemName}: {Count} consecutive language-detection failures (worker/endpoint likely down)",
-                                    item.Name, consecutiveFailures);
-                                // Keep the real cause as the inner exception: when it is whisper-cli failing to
-                                // LAUNCH, the dispatcher reads that off the chain to pause the local worker rather
-                                // than charge the item a retry. Discarding it made every cause look alike. (#185.)
-                                return (GenerationOutcome.Failed, new InvalidOperationException(
-                                    $"Aborted forced-subtitle detection for {item.Name} after {consecutiveFailures} consecutive language-detection failures (worker/endpoint likely down).",
-                                    lastDetectionFailure));
-                            }
-                        }
-                    }
+                if (detection.Aborted)
+                {
+                    // Fail-fast: a worker/endpoint that fails this many chunks in a row is down. Abort the
+                    // whole item now instead of grinding every remaining chunk × its per-call deadline —
+                    // the behaviour that turned an unreachable endpoint into a multi-hour stuck task.
+                    _logger.LogError("Aborting forced-subtitle detection for {ItemName}: {Count} consecutive language-detection failures (worker/endpoint likely down)",
+                        item.Name, detection.ConsecutiveFailures);
+                    // Keep the real cause as the inner exception: when it is whisper-cli failing to
+                    // LAUNCH, the dispatcher reads that off the chain to pause the local worker rather
+                    // than charge the item a retry. Discarding it made every cause look alike. (#185.)
+                    return (GenerationOutcome.Failed, new InvalidOperationException(
+                        $"Aborted forced-subtitle detection for {item.Name} after {detection.ConsecutiveFailures} consecutive language-detection failures (worker/endpoint likely down).",
+                        detection.LastFailure));
                 }
+
+                var foreignChunks = detection.ForeignChunks;
+                var successfulDetections = detection.SuccessfulDetections;
 
                 if (foreignChunks.Count == 0 && successfulDetections == 0)
                 {
