@@ -30,6 +30,12 @@ namespace WhisperSubs.Providers
         private readonly int _maxLineLength;
         private readonly string _cacheDirectory;
 
+        /// <summary>
+        /// Characters per cue when <c>SubtitleMaxLineLength</c> is unset (0): the common subtitle line
+        /// length. Whisper keeps unlimited as its unset value; Canary does not, see <see cref="BuildArguments"/>.
+        /// </summary>
+        internal const int DefaultMaxLineLength = 42;
+
         public CanaryProvider(
             ILogger logger,
             string binaryPath,
@@ -138,7 +144,9 @@ namespace WhisperSubs.Providers
         /// <item><c>--cache-dir</c>: keeps anything the binary fetches on its own inside the managed tree.</item>
         /// <item><c>--vad</c>: without it Canary returns the whole file as one cue. The Whisper VAD
         /// tuning flags apply unchanged.</item>
-        /// <item><c>--max-len N --split-on-word</c>: the same line-length knob as whisper-cli.</item>
+        /// <item><c>--max-len N --split-on-word</c>: the same line-length knob as whisper-cli, except
+        /// that unset means <see cref="DefaultMaxLineLength"/> rather than unlimited: Canary's VAD cues
+        /// run 30 s or more without a cap.</item>
         /// <item>No <c>--prompt</c>: Canary ignores it.</item>
         /// </list>
         /// Pure so the exact vector is unit-testable.
@@ -175,12 +183,9 @@ namespace WhisperSubs.Providers
             args.Add("--vad-model");
             args.Add(vadModelPath);
             WhisperProvider.AppendVadTuning(args, tuning ?? VadTuning.Unset);
-            if (maxLineLength > 0)
-            {
-                args.Add("--max-len");
-                args.Add(maxLineLength.ToString(CultureInfo.InvariantCulture));
-                args.Add("--split-on-word");
-            }
+            args.Add("--max-len");
+            args.Add((maxLineLength > 0 ? maxLineLength : DefaultMaxLineLength).ToString(CultureInfo.InvariantCulture));
+            args.Add("--split-on-word");
             args.Add("--print-progress");
             args.Add("-osrt");
             args.Add("-of");

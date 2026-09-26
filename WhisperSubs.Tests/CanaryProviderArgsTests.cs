@@ -37,6 +37,8 @@ public class CanaryProviderArgsTests
             "--cache-dir", "/data/crispasr/cache",
             "--vad",
             "--vad-model", "/vad/silero.bin",
+            "--max-len", "42",
+            "--split-on-word",
             "--print-progress",
             "-osrt",
             "-of", "/tmp/out",
@@ -86,14 +88,42 @@ public class CanaryProviderArgsTests
         Assert.DoesNotContain("--vad-samples-overlap", args);
     }
 
+    // Unset (0, or a stray negative) caps Canary at 42 characters: without a cap its VAD cues run
+    // 30 s or more.
     [Theory]
     [InlineData(0)]
     [InlineData(-5)]
-    public void BuildArguments_NonPositiveMaxLen_EmitsNeitherFlag(int maxLen)
+    public void BuildArguments_UnsetMaxLen_DefaultsTo42(int maxLen)
     {
         var args = Build(maxLineLength: maxLen);
-        Assert.DoesNotContain("--max-len", args);
-        Assert.DoesNotContain("--split-on-word", args);
+        var idx = IndexOf(args, "--max-len");
+        Assert.True(idx >= 0, $"--max-len missing from: {string.Join(" ", args)}");
+        Assert.Equal("42", args[idx + 1]);
+        Assert.Equal("--split-on-word", args[idx + 2]);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(80)]
+    public void BuildArguments_ExplicitMaxLen_WinsOverTheDefault(int maxLen)
+    {
+        var args = Build(maxLineLength: maxLen);
+        Assert.Equal(maxLen.ToString(), args[IndexOf(args, "--max-len") + 1]);
+    }
+
+    // The Canary default must not leak into whisper-cli: the same unset value still leaves whisper.cpp
+    // unlimited there, so existing Whisper subtitles are byte-identical.
+    [Fact]
+    public void UnsetMaxLen_CapsCanaryButLeavesWhisperUnchanged()
+    {
+        Assert.Contains("--max-len", Build(maxLineLength: 0));
+
+        var whisper = WhisperProvider.BuildTranscribeArguments(
+            "/m/model.bin", "/tmp/a.wav", "en", threadCount: 0, translate: true,
+            vadModelPath: "/vad/silero.bin", outputPrefix: "/tmp/out", langPrompt: null, tuning: null,
+            maxLineLength: 0);
+        Assert.DoesNotContain("--max-len", whisper);
+        Assert.DoesNotContain("--split-on-word", whisper);
     }
 
     [Fact]
