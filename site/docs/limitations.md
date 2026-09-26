@@ -50,11 +50,11 @@ whisper.cpp applies no cue-length cap of its own — `--max-len` defaults to `0`
 
 The fix is a setting. In **Dashboard → Plugins → WhisperSubs**, set **Maximum subtitle line length** to `47`. That passes `--max-len 47` together with `--split-on-word`, so a capped line breaks on a word boundary instead of mid-word. Broadcast subtitling caps a line near 42 characters.
 
-The default is `0`, so upgrading changes nothing and existing subtitles are untouched. Regenerate an item to see the difference.
+The default is `0`, so upgrading changes nothing for Whisper and existing subtitles are untouched. Regenerate an item to see the difference.
 
 Two scope notes:
 
-- The setting reaches the Jellyfin host's own `whisper-cli`, and its own `crispasr` for [Canary targets](./configuration.md#more-target-languages-experimental), where it matters most: an uncapped Canary cue can run for 30 seconds or more. A remote worker segments its own output, so set `WHISPER_MAX_LEN=47` on the worker as well. See [Remote workers and hosted providers](./remote-workers.md).
+- The setting reaches the Jellyfin host's own `whisper-cli`, and its own `crispasr` for [Canary targets](./configuration.md#more-target-languages-experimental). Canary is capped even at `0`: it uses `42`, or `84` for Bulgarian, Greek, Russian and Ukrainian, because `crispasr` counts bytes and those letters take two each. A remote worker, a CrispASR server included, segments its own output, so set `WHISPER_MAX_LEN=47` on a whisper worker as well. See [Remote workers and hosted providers](./remote-workers.md).
 - A `--max-len` placed in **Custom Whisper Arguments** wins, because custom arguments are appended last and `whisper-cli` takes the last value.
 
 This is a guard against the worst case, not a cure for missing punctuation. Whisper normally punctuates. When it produces none at all, the cause is usually a small model (use `Large V3 Turbo (Q5)`, the 574 MB recommended default) or a wrong language guess, which applies one language's punctuation conventions to another language's words. If you know the audio language, set it explicitly instead of leaving it on auto.
