@@ -221,89 +221,146 @@ namespace WhisperSubs.Providers
             return await DetectLanguageInternalAsync(audioPath, cancellationToken);
         }
 
+        /// <summary>
+        /// How many forced-subtitle chunks share one whisper-cli run. Each run pays the process start,
+        /// model load and buffer allocation once; the per-chunk encoder pass is unchanged. (Issue #5.)
+        /// </summary>
+        internal const int DetectionBatchSize = 32;
+
+        /// <summary>
+        /// The whisper-cli arguments for --detect-language over one or more files. Both the single-file
+        /// and the batched path build their command here, so the two can never run with different flags.
+        /// Never adds -np: the batch parser needs the per-file "processing '...'" line. Pure.
+        /// </summary>
+        internal static List<string> BuildDetectionArgs(string modelPath, IReadOnlyList<string> audioPaths)
+        {
+            var args = new List<string> { "-m", modelPath };
+            foreach (var path in audioPaths)
+            {
+                args.Add("-f");
+                args.Add(path);
+            }
+
+            args.Add("-l");
+            args.Add("auto");
+            // Cap detection at 4 threads — detection is a trivial workload that doesn't
+            // benefit from high parallelism, and using 16 threads causes unnecessary CPU spikes.
+            args.Add("-t");
+            args.Add("4");
+            args.Add("--detect-language");
+            // Disable GPU for language detection: a fresh process pays the GPU backend init, which
+            // for short chunks cost more than the detection itself. Transcription still uses the GPU.
+            args.Add("--no-gpu");
+            return args;
+        }
+
+        /// <summary>
+        /// Wall-clock cap for one detection run: the historical 300 s for a single file, plus 30 s for
+        /// each further file in the batch. Pure.
+        /// </summary>
+        internal static TimeSpan BatchDetectionTimeout(int count)
+            => TimeSpan.FromSeconds(300 + (30 * Math.Max(0, count - 1)));
+
+        private static readonly Regex BatchProcessingLine =
+            new(@"processing '(?<path>.+)' \(\d+ samples", RegexOptions.Compiled);
+
+        private static readonly Regex BatchDetectedLine =
+            new(@"auto-detected language:\s*(?<lang>\w+(?:\s\w+)*)\s*\(p\s*=\s*(?<p>[\d.]+)\)", RegexOptions.Compiled);
+
+        /// <summary>
+        /// Maps the stderr of one batched whisper-cli --detect-language run back to its input files.
+        /// The result is index-aligned with <paramref name="audioPaths"/>; an entry is null when that
+        /// file got no detection (missing, unreadable, or the run stopped before reaching it).
+        /// A detection line is only accepted right after a "processing '&lt;path&gt;'" line for a file
+        /// still waiting for its result, so one file's result can never land on another. Pure.
+        /// </summary>
+        internal static IReadOnlyList<(string Language, float Probability)?> ParseBatchDetection(string? stderr, IReadOnlyList<string> audioPaths)
+        {
+            var results = new (string Language, float Probability)?[audioPaths.Count];
+            if (string.IsNullOrEmpty(stderr)) return results;
+
+            int current = -1;
+            foreach (var line in stderr.Split('\n'))
+            {
+                var processing = BatchProcessingLine.Match(line);
+                if (processing.Success)
+                {
+                    var path = processing.Groups["path"].Value;
+                    current = -1;
+                    for (int i = 0; i < audioPaths.Count; i++)
+                    {
+                        if (results[i] == null && string.Equals(audioPaths[i], path, StringComparison.Ordinal))
+                        {
+                            current = i;
+                            break;
+                        }
+                    }
+
+                    continue;
+                }
+
+                var detected = BatchDetectedLine.Match(line);
+                if (detected.Success && current >= 0
+                    && float.TryParse(detected.Groups["p"].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var p))
+                {
+                    results[current] = (NormalizeLangName(detected.Groups["lang"].Value), p);
+                    current = -1;
+                }
+            }
+
+            return results;
+        }
+
+        /// <summary>
+        /// Detects the language of several audio files in ONE whisper-cli run instead of one process
+        /// each. Returns an index-aligned list; a null entry means the caller should fall back to
+        /// <see cref="DetectLanguageAsync"/> for that file. Throws <see cref="WhisperLaunchException"/>
+        /// when whisper-cli cannot start, like the single-file path. (Issue #5.)
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Spawns whisper-cli process for batched language detection")]
+        public async Task<IReadOnlyList<(string Language, float Probability)?>> DetectLanguagesAsync(IReadOnlyList<string> audioPaths, CancellationToken cancellationToken)
+        {
+            if (audioPaths.Count == 0) return Array.Empty<(string Language, float Probability)?>();
+
+            if (string.IsNullOrEmpty(_modelPath) || !File.Exists(_modelPath))
+            {
+                throw new FileNotFoundException($"Whisper model not found at: {_modelPath}");
+            }
+
+            _logger.LogInformation("Detecting language for {Count} chunks in one whisper-cli run", audioPaths.Count);
+
+            var (exitCode, _, stderr) = await RunDetectionProcessAsync(audioPaths, BatchDetectionTimeout(audioPaths.Count), cancellationToken);
+
+            var exitFailure = DescribeWhisperExitFailure(exitCode, stderr);
+            if (exitFailure != null) throw new WhisperLaunchException(exitCode, exitFailure);
+
+            // Parse even on a non-zero exit: whisper-cli returns 10 when one file fails mid-batch and
+            // leaves the later files without a result. Those come back null and fall back per chunk.
+            var results = ParseBatchDetection(stderr, audioPaths);
+            var missing = results.Count(r => r == null);
+            if (missing > 0)
+            {
+                _logger.LogWarning("Batched language detection returned no result for {Missing} of {Count} chunks (whisper-cli exit {ExitCode}); those fall back to one run each",
+                    missing, audioPaths.Count, exitCode);
+            }
+
+            return results;
+        }
+
         [ExcludeFromCodeCoverage(Justification = "Spawns whisper-cli process for language detection")]
         private async Task<(string Language, float Probability)> DetectLanguageInternalAsync(string audioPath, CancellationToken cancellationToken)
         {
-            var whisperExecutable = FindWhisperExecutable();
-            if (whisperExecutable == null)
-            {
-                throw new InvalidOperationException(
-                    "Whisper executable not found. Please install whisper.cpp and ensure 'whisper-cli' is in PATH, or set the binary path in plugin settings.");
-            }
-
-            var startInfo = new ProcessStartInfo
-            {
-                FileName = whisperExecutable,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                WorkingDirectory = Path.GetDirectoryName(whisperExecutable) ?? ""
-            };
-
-            // Use the dedicated small detection model when available (checked live so a model that
-            // finished downloading after construction is picked up mid-run); else fall back to the
-            // transcription model. This keeps per-chunk detection under the timeout on slow CPUs. (#95)
-            var detectionModel = ChooseDetectionModel(
-                _modelPath, _detectionModelPath,
-                !string.IsNullOrEmpty(_detectionModelPath) && File.Exists(_detectionModelPath));
-            startInfo.ArgumentList.Add("-m");
-            startInfo.ArgumentList.Add(detectionModel);
-            startInfo.ArgumentList.Add("-f");
-            startInfo.ArgumentList.Add(audioPath);
-            startInfo.ArgumentList.Add("-l");
-            startInfo.ArgumentList.Add("auto");
-            // Cap detection at 4 threads — detection is a trivial workload that doesn't
-            // benefit from high parallelism, and using 16 threads causes unnecessary CPU spikes.
-            startInfo.ArgumentList.Add("-t");
-            startInfo.ArgumentList.Add("4");
-            startInfo.ArgumentList.Add("--detect-language");
-
-            // Disable GPU for language detection. Each DetectLanguageAsync call spawns a
-            // fresh process that must load the model + compile GPU shaders from scratch.
-            // For short chunks (~30s) the GPU init overhead exceeds the detection work
-            // itself (~21s/chunk with GPU vs ~15s/chunk CPU-only). Transcription still
-            // uses GPU where available.
-            startInfo.ArgumentList.Add("--no-gpu");
-
-            _logger.LogDebug("Running: {Executable} {Arguments}", whisperExecutable,
-                string.Join(" ", startInfo.ArgumentList));
-
-            using var process = new Process { StartInfo = startInfo };
-            var outputBuilder = new StringBuilder();
-            var errorBuilder = new StringBuilder();
-
-            process.OutputDataReceived += (_, e) => { if (e.Data != null) outputBuilder.AppendLine(e.Data); };
-            process.ErrorDataReceived += (_, e) => { if (e.Data != null) errorBuilder.AppendLine(e.Data); };
-
-            process.Start();
-            process.BeginOutputReadLine();
-            process.BeginErrorReadLine();
-
-            try
-            {
-                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                // Generous per-chunk cap: with the small detection model this is reached only on a
-                // pathologically slow host; it must not guillotine a legitimately slow detect. (#95)
-                timeoutCts.CancelAfter(TimeSpan.FromSeconds(300));
-                await process.WaitForExitAsync(timeoutCts.Token);
-            }
-            catch (OperationCanceledException)
-            {
-                try { process.Kill(entireProcessTree: true); } catch { }
-                throw;
-            }
-
-            // Flush async stdout/stderr pipe buffers
-            process.WaitForExit();
+            // Generous per-chunk cap: with the small detection model this is reached only on a
+            // pathologically slow host; it must not guillotine a legitimately slow detect. (#95)
+            var (exitCode, stdout, stderr) = await RunDetectionProcessAsync(new[] { audioPath }, BatchDetectionTimeout(1), cancellationToken);
 
             // A crash here (e.g. SIGILL/exit 132 on a non-AVX2 CPU running an AVX2 build) produces
             // truncated output and would otherwise be misreported as "could not detect language".
             // Surface the precise, actionable cause first — same diagnosis as the transcription path.
-            var exitFailure = DescribeWhisperExitFailure(process.ExitCode, errorBuilder.ToString());
-            if (exitFailure != null) throw new WhisperLaunchException(process.ExitCode, exitFailure);
+            var exitFailure = DescribeWhisperExitFailure(exitCode, stderr);
+            if (exitFailure != null) throw new WhisperLaunchException(exitCode, exitFailure);
 
-            var allOutput = outputBuilder.ToString() + "\n" + errorBuilder.ToString();
+            var allOutput = stdout + "\n" + stderr;
 
             // Parse language from whisper output. Handles multiple formats:
             // "Detected language: en" (--detect-language mode)
@@ -333,6 +390,74 @@ namespace WhisperSubs.Providers
             _logger.LogWarning("Could not parse language from whisper output:\n{Output}", allOutput);
             throw new InvalidOperationException(
                 "Could not detect language. Ensure your whisper.cpp build supports --detect-language (v1.5.0+).");
+        }
+
+        /// <summary>
+        /// Runs whisper-cli --detect-language over <paramref name="audioPaths"/> and returns its exit code
+        /// and output. On cancellation or timeout the process tree is killed and the exception rethrown.
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Spawns whisper-cli process for language detection")]
+        private async Task<(int ExitCode, string Stdout, string Stderr)> RunDetectionProcessAsync(
+            IReadOnlyList<string> audioPaths, TimeSpan timeout, CancellationToken cancellationToken)
+        {
+            var whisperExecutable = FindWhisperExecutable();
+            if (whisperExecutable == null)
+            {
+                throw new InvalidOperationException(
+                    "Whisper executable not found. Please install whisper.cpp and ensure 'whisper-cli' is in PATH, or set the binary path in plugin settings.");
+            }
+
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = whisperExecutable,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WorkingDirectory = Path.GetDirectoryName(whisperExecutable) ?? ""
+            };
+
+            // Use the dedicated small detection model when available (checked live so a model that
+            // finished downloading after construction is picked up mid-run); else fall back to the
+            // transcription model. This keeps per-chunk detection under the timeout on slow CPUs. (#95)
+            var detectionModel = ChooseDetectionModel(
+                _modelPath, _detectionModelPath,
+                !string.IsNullOrEmpty(_detectionModelPath) && File.Exists(_detectionModelPath));
+            foreach (var arg in BuildDetectionArgs(detectionModel, audioPaths))
+            {
+                startInfo.ArgumentList.Add(arg);
+            }
+
+            _logger.LogDebug("Running: {Executable} {Arguments}", whisperExecutable,
+                string.Join(" ", startInfo.ArgumentList));
+
+            using var process = new Process { StartInfo = startInfo };
+            var outputBuilder = new StringBuilder();
+            var errorBuilder = new StringBuilder();
+
+            process.OutputDataReceived += (_, e) => { if (e.Data != null) outputBuilder.AppendLine(e.Data); };
+            process.ErrorDataReceived += (_, e) => { if (e.Data != null) errorBuilder.AppendLine(e.Data); };
+
+            process.Start();
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+
+            try
+            {
+                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                timeoutCts.CancelAfter(timeout);
+                await process.WaitForExitAsync(timeoutCts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                try { process.Kill(entireProcessTree: true); } catch { }
+                throw;
+            }
+
+            // Flush async stdout/stderr pipe buffers
+            process.WaitForExit();
+
+            return (process.ExitCode, outputBuilder.ToString(), errorBuilder.ToString());
         }
 
         /// <summary>

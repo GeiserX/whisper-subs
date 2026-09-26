@@ -93,7 +93,7 @@ When `EnableTranslation` is enabled in config (and SubtitleMode is Full or FullA
 Forced subtitles capture only foreign-language dialogue segments (e.g., Russian dialogue in an English film):
 
 1. **VAD** — FFmpeg `silencedetect` splits audio into speech chunks using `-30dB:d=0.5` thresholds.
-2. **Per-chunk language detection** — Each chunk is fed to `WhisperProvider.DetectLanguageAsync` (`--detect-language` mode).
+2. **Per-chunk language detection** — A leading window of each chunk (`LanguageDetectionSampleSeconds`) is detected in `--detect-language` mode. On the local worker, chunks go in batches of 32 to one whisper-cli run (`WhisperProvider.DetectLanguagesAsync`, one `-f` per chunk; stderr is mapped back to each chunk by its `processing '<path>'` line). Any chunk the batch did not answer (missing result, whisper-cli exit mid-batch, parse failure) falls back to its own `DetectLanguageAsync` run, so a chunk only counts as failed when that fallback also fails. Remote workers keep one request per chunk. (#5)
 3. **Foreign segment identification** — Chunks where `detectedLang != primaryLang && probability >= 0.3` are marked foreign. Adjacent chunks are merged.
 4. **Selective transcription** — Only foreign segments are extracted and transcribed individually, with timestamps offset to match original timeline.
 5. **Save** — Written as `<filename>.<lang>.forced.generated.srt`.
