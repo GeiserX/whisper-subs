@@ -50,11 +50,11 @@ whisper.cpp applies no cue-length cap of its own — `--max-len` defaults to `0`
 
 The fix is a setting. In **Dashboard → Plugins → WhisperSubs**, set **Maximum subtitle line length** to `47`. That passes `--max-len 47` together with `--split-on-word`, so a capped line breaks on a word boundary instead of mid-word. Broadcast subtitling caps a line near 42 characters.
 
-The default is `0`, so upgrading changes nothing and existing subtitles are untouched. Regenerate an item to see the difference.
+The default is `0`, so upgrading changes nothing for Whisper and existing subtitles are untouched. Regenerate an item to see the difference.
 
 Two scope notes:
 
-- The setting reaches the Jellyfin host's own `whisper-cli` only. A remote worker segments its own output, so set `WHISPER_MAX_LEN=47` on the worker as well. See [Remote workers and hosted providers](./remote-workers.md).
+- The setting reaches the Jellyfin host's own `whisper-cli`, and its own `crispasr` for [Canary targets](./configuration.md#more-target-languages-experimental). Canary is capped even at `0`: it uses `42`, or `84` for Bulgarian, Greek, Russian and Ukrainian, because `crispasr` counts bytes and those letters take two each. A remote worker, a CrispASR server included, segments its own output, so set `WHISPER_MAX_LEN=47` on a whisper worker as well. See [Remote workers and hosted providers](./remote-workers.md).
 - A `--max-len` placed in **Custom Whisper Arguments** wins, because custom arguments are appended last and `whisper-cli` takes the last value.
 
 This is a guard against the worst case, not a cure for missing punctuation. Whisper normally punctuates. When it produces none at all, the cause is usually a small model (use `Large V3 Turbo (Q5)`, the 574 MB recommended default) or a wrong language guess, which applies one language's punctuation conventions to another language's words. If you know the audio language, set it explicitly instead of leaving it on auto.
@@ -67,7 +67,7 @@ Two separate limits apply, and the second one is easy to hit by accident.
 
 Whisper's `--translate` only produces English. It was trained for X to English and nothing else, so no other target can be reached from inside whisper.cpp. The upstream requests are [whisper.cpp#1219](https://github.com/ggml-org/whisper.cpp/issues/1219) and [whisper.cpp#1956](https://github.com/ggml-org/whisper.cpp/issues/1956) (a forced-decoding workaround, unreliable), and an OpenAI maintainer confirmed the limit in [openai/whisper#1167](https://github.com/openai/whisper/discussions/1167).
 
-English audio is the exception. [More target languages](./configuration.md#more-target-languages-experimental) translates it into 24 European languages with [NVIDIA Canary](https://huggingface.co/nvidia/canary-1b-v2). Audio in any other language still translates to English only. Canary has no direct path between two non-English languages, and when we tried French to Spanish and Spanish to French or German anyway, it returned mixed-language cues, dropped cues or an empty file, with exit code 0 and no warning. The plugin therefore never asks it for such a pair.
+English audio is the exception. [More target languages](./configuration.md#more-target-languages-experimental) translates it into 24 European languages with [NVIDIA Canary](https://huggingface.co/nvidia/canary-1b-v2). That includes a film in another language that also carries an English-tagged audio track, such as a dub: Canary translates from that track. Audio in any other language still translates to English only. Canary has no direct path between two non-English languages, and when we tried French to Spanish and Spanish to French or German anyway, it returned mixed-language cues, dropped cues or an empty file, with exit code 0 and no warning. The plugin therefore never asks it for such a pair.
 
 Canary output is experimental:
 

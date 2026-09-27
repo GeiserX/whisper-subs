@@ -114,7 +114,7 @@ This applies only when Subtitle Mode includes Full subtitles. It does nothing in
 
 ## More target languages (experimental)
 
-Whisper translates only into English. For a title whose audio is English, the plugin can also write a subtitle in any of 24 European languages with [NVIDIA Canary](https://huggingface.co/nvidia/canary-1b-v2), which [CrispASR](https://github.com/CrispStrobe/CrispASR) runs. The [design doc](https://github.com/GeiserX/whisper-subs/blob/main/docs/design/crispasr-translation-engine.md) has the reasoning and the test results.
+Whisper translates only into English. For a title whose audio is English, the plugin can also write a subtitle in any of 24 European languages with [NVIDIA Canary](https://huggingface.co/nvidia/canary-1b-v2), which [CrispASR](https://github.com/CrispStrobe/CrispASR) runs. A title counts as English when any of its audio tracks is tagged English, so a foreign film with an English dub qualifies and Canary translates from the dub. The [design doc](https://github.com/GeiserX/whisper-subs/blob/main/docs/design/crispasr-translation-engine.md) has the reasoning and the test results.
 
 The section sits under Translation on the settings page. The checkboxes drive the automatic run and need **Also create an English subtitle when a title has none** turned on; nothing changes until you tick a language. Translating a single title needs neither. See [Translate one title](#translate-one-title).
 
