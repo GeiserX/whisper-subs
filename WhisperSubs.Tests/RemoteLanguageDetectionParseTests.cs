@@ -73,24 +73,69 @@ public class RemoteLanguageDetectionParseTests
     }
 
     [Fact]
-    public void ProbabilityOfADifferentLanguage_IsNotReused()
+    public void DetectedLanguage_WinsOverTheDecodeLanguage()
     {
-        // The probability belongs to detected_language; pairing it with another language would
-        // report a confidence nobody measured.
+        // whisper-server's `language` is the language it decoded in: its default "en", or the worker's
+        // fixed language. detected_language is the real auto-detection, so a Russian film on an
+        // English-pinned worker must read as Russian, not as English.
         const string json = """{"language":"english","detected_language":"russian","detected_language_probability":0.9}""";
 
         var (language, probability) = RemoteWhisperProvider.ParseDetectionResponse(json);
 
-        Assert.Equal("en", language);
-        Assert.Equal(0.5f, probability);
+        Assert.Equal("ru", language);
+        Assert.Equal(0.9f, probability, 3);
     }
 
     [Fact]
-    public void MissingLanguage_StaysAuto()
+    public void DetectedLanguageWithoutProbability_FallsBackToTheLocalDefault()
     {
-        var (language, probability) = RemoteWhisperProvider.ParseDetectionResponse("""{"text":""}""");
+        const string json = """{"language":"english","detected_language":"russian"}""";
+
+        var (language, probability) = RemoteWhisperProvider.ParseDetectionResponse(json);
+
+        Assert.Equal("ru", language);
+        Assert.Equal(0.5f, probability);
+    }
+
+    // whisper-server answers with whisper's full names (whisper_lang_str_full). A name that did not map
+    // to a code used to reach the forced pass as "galician" != "gl", so every chunk read as foreign.
+    [Theory]
+    [InlineData("galician", "gl")]
+    [InlineData("croatian", "hr")]
+    [InlineData("bulgarian", "bg")]
+    [InlineData("basque", "eu")]
+    [InlineData("persian", "fa")]
+    [InlineData("haitian creole", "ht")]
+    [InlineData("lao", "lo")]
+    [InlineData("cantonese", "yue")]
+    public void EveryWhisperLanguageName_MapsToItsCode(string name, string code)
+    {
+        var json = $$"""{"language":"{{name}}","detected_language":"{{name}}","detected_language_probability":0.93}""";
+
+        var (language, probability) = RemoteWhisperProvider.ParseDetectionResponse(json);
+
+        Assert.Equal(code, language);
+        Assert.Equal(0.93f, probability, 3);
+    }
+
+    [Fact]
+    public void UnmappedLanguageName_GetsNoConfidence()
+    {
+        // A name no table knows cannot match any library language, so it must not count as foreign.
+        const string json = """{"language":"klingon","detected_language":"klingon","detected_language_probability":0.93}""";
+
+        var (_, probability) = RemoteWhisperProvider.ParseDetectionResponse(json);
+
+        Assert.Equal(0f, probability);
+    }
+
+    [Fact]
+    public void MissingLanguage_StaysAutoWithNoConfidence()
+    {
+        // "auto" is not a language: with any probability it would differ from every library language.
+        var (language, probability) = RemoteWhisperProvider.ParseDetectionResponse("""{"text":"","detected_language_probability":0.9}""");
 
         Assert.Equal("auto", language);
-        Assert.Equal(0.5f, probability);
+        Assert.Equal(0f, probability);
     }
 }

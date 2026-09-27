@@ -336,49 +336,12 @@ namespace WhisperSubs.Providers
         }
 
         /// <summary>
-        /// Normalizes whisper language names (e.g. "english" → "en") to ISO 639-1 codes.
+        /// Normalizes whisper language names (e.g. "english" → "en") to the codes whisper uses
+        /// (<see cref="WhisperLanguages"/>). Codes pass through; an unknown name is kept, lowercased,
+        /// rather than truncated to a code that may not exist.
         /// </summary>
         private static string NormalizeLangName(string lang)
-        {
-            return lang.ToLowerInvariant() switch
-            {
-                "english" => "en",
-                "spanish" => "es",
-                "french" => "fr",
-                "german" => "de",
-                "italian" => "it",
-                "portuguese" => "pt",
-                "russian" => "ru",
-                "japanese" => "ja",
-                "chinese" => "zh",
-                "korean" => "ko",
-                "arabic" => "ar",
-                "hindi" => "hi",
-                "dutch" => "nl",
-                "polish" => "pl",
-                "turkish" => "tr",
-                "swedish" => "sv",
-                "danish" => "da",
-                "finnish" => "fi",
-                "norwegian" => "no",
-                "czech" => "cs",
-                "romanian" => "ro",
-                "hungarian" => "hu",
-                "greek" => "el",
-                "hebrew" => "he",
-                "thai" => "th",
-                "ukrainian" => "uk",
-                "vietnamese" => "vi",
-                "indonesian" => "id",
-                "catalan" => "ca",
-                "basque" => "eu",
-                "galician" => "gl",
-                "haitian creole" => "ht",
-                // Short codes (2-3 chars) pass through; unknown long names are logged and kept as-is
-                // rather than silently truncated to potentially invalid codes
-                _ => lang.ToLowerInvariant()
-            };
-        }
+            => (WhisperLanguages.CodeFor(lang) ?? lang).ToLowerInvariant();
 
         private static string GetLanguagePrompt(string language)
         {

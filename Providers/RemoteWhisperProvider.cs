@@ -863,29 +863,34 @@ namespace WhisperSubs.Providers
 
         /// <summary>
         /// Reads the language and its probability from a verbose_json detection response.
-        /// whisper-server (whisper.cpp v1.8.4, examples/server/server.cpp:1058-1059) adds
-        /// <c>detected_language</c> and <c>detected_language_probability</c> unless it runs with
-        /// --no-language-probabilities; OpenAI-style servers send only <c>language</c>. A probability
-        /// that is missing, not a number, outside [0, 1], or that belongs to a different language than
-        /// <c>language</c> falls back to <see cref="UnknownDetectionProbability"/>.
+        /// whisper-server (whisper.cpp v1.8.4, examples/server/server.cpp:1049-1059) sends
+        /// <c>language</c> = the language it decoded in, which is its own default ("en") or the worker's
+        /// fixed language when one is set, and, unless it runs with --no-language-probabilities, a separate
+        /// auto-detection as <c>detected_language</c> + <c>detected_language_probability</c>. The detection
+        /// wins when present. OpenAI-style servers send only <c>language</c>. A probability that is missing,
+        /// not a number or outside [0, 1] falls back to <see cref="UnknownDetectionProbability"/>; a language
+        /// that is missing or that maps to no language code gets probability 0, so no caller acts on it.
         /// </summary>
         internal static (string Language, float Probability) ParseDetectionResponse(string json)
         {
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
 
-            var language = NormalizeLangName(ReadString(root, "language") ?? "auto");
+            var language = NormalizeLangName(
+                ReadString(root, "detected_language") ?? ReadString(root, "language") ?? "auto");
 
-            var detected = ReadString(root, "detected_language");
-            var sameLanguage = detected == null
-                || string.Equals(NormalizeLangName(detected), language, StringComparison.OrdinalIgnoreCase);
+            if (!IsLanguageCode(language))
+            {
+                return (language, 0f);
+            }
 
-            var probability = sameLanguage && TryReadProbability(root, out var p)
-                ? p
-                : UnknownDetectionProbability;
-
+            var probability = TryReadProbability(root, out var p) ? p : UnknownDetectionProbability;
             return (language, probability);
         }
+
+        /// <summary>Two or three ASCII letters: an ISO 639 code, never "auto" or an unmapped name.</summary>
+        private static bool IsLanguageCode(string language)
+            => language.Length is 2 or 3 && language.All(c => c is >= 'a' and <= 'z');
 
         private static string? ReadString(JsonElement root, string propertyName)
             => root.TryGetProperty(propertyName, out var property) && property.ValueKind == JsonValueKind.String
@@ -1032,42 +1037,8 @@ namespace WhisperSubs.Providers
 
         private static string NormalizeLangName(string lang)
         {
-            if (lang.Length <= 3) return lang;
-
-            return lang.ToLowerInvariant() switch
-            {
-                "english" => "en",
-                "spanish" => "es",
-                "french" => "fr",
-                "german" => "de",
-                "italian" => "it",
-                "portuguese" => "pt",
-                "russian" => "ru",
-                "japanese" => "ja",
-                "chinese" => "zh",
-                "korean" => "ko",
-                "dutch" => "nl",
-                "polish" => "pl",
-                "turkish" => "tr",
-                "arabic" => "ar",
-                "hindi" => "hi",
-                "czech" => "cs",
-                "greek" => "el",
-                "hungarian" => "hu",
-                "romanian" => "ro",
-                "swedish" => "sv",
-                "danish" => "da",
-                "finnish" => "fi",
-                "norwegian" => "no",
-                "catalan" => "ca",
-                "ukrainian" => "uk",
-                "vietnamese" => "vi",
-                "thai" => "th",
-                "indonesian" => "id",
-                "malay" => "ms",
-                "hebrew" => "he",
-                _ => lang,
-            };
+            var trimmed = lang.Trim();
+            return (WhisperLanguages.CodeFor(trimmed) ?? trimmed).ToLowerInvariant();
         }
     }
 }

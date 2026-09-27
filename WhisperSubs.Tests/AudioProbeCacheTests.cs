@@ -34,6 +34,16 @@ public class AudioProbeCacheTests
         Assert.Null(cache.TryGet(Guid.NewGuid(), File));
     }
 
+    // Every remote probe before the remote parser read whisper-server's probability was stored at p = 0.
+    // Such an entry says nothing about the language and must not stand in for a fresh probe.
+    [Fact]
+    public void TryGet_ZeroProbability_Misses()
+    {
+        var cache = AudioProbeCache.InMemory();
+        cache.Record(Item, File, "en", 0f);
+        Assert.Null(cache.TryGet(Item, File));
+    }
+
     [Fact]
     public void Record_UnreadableFileOrBlankLanguage_RemembersNothing()
     {
