@@ -142,6 +142,9 @@ public class NormalizeLangNameTests
     [InlineData("basque", "eu")]
     [InlineData("galician", "gl")]
     [InlineData("haitian creole", "ht")]
+    [InlineData("croatian", "hr")]
+    [InlineData("persian", "fa")]
+    [InlineData("lao", "lo")]
     public void FullNames_MapToIsoCodes(string input, string expected)
     {
         Assert.Equal(expected, CallNormalizeLangName(input));
@@ -257,5 +260,18 @@ public class OffsetTimestampTests
     public void MillisecondPrecision()
     {
         Assert.Equal("00:00:01,500", CallOffsetTimestamp("00:00:01,000", 0.5));
+    }
+}
+
+/// <summary>The shared full-name table copied from whisper.cpp's g_lang.</summary>
+public class WhisperLanguagesTableTests
+{
+    [Fact]
+    public void Table_HasEveryWhisperLanguage_WithACode()
+    {
+        // whisper.cpp v1.8.4 g_lang has 100 entries (ids 0..99).
+        Assert.Equal(100, WhisperLanguages.CodeByName.Count);
+        Assert.All(WhisperLanguages.CodeByName.Values, code =>
+            Assert.Matches("^[a-z]{2,3}$", code));
     }
 }

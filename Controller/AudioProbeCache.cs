@@ -66,6 +66,9 @@ namespace WhisperSubs.Controller
         /// <summary>
         /// The remembered probe for this item, or null when there is none or the file changed since it was
         /// measured (<paramref name="identity"/> null means the file could not be read: no answer).
+        /// A remembered probability of 0 is also no answer: it says nothing about the language, and every
+        /// remote probe before 4.10.1.0 was stored that way, which would otherwise read as "not English"
+        /// until the file changed.
         /// </summary>
         public (string Language, float Probability)? TryGet(Guid id, (long Length, long LastWriteTicks)? identity)
         {
@@ -74,6 +77,7 @@ namespace WhisperSubs.Controller
             {
                 if (!_entries.TryGetValue(id, out var e)) return null;
                 if (e.FileLength != file.Length || e.FileLastWriteTicks != file.LastWriteTicks) return null;
+                if (e.Probability <= 0) return null;
                 return (e.Language, e.Probability);
             }
         }

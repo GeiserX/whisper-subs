@@ -847,18 +847,80 @@ namespace WhisperSubs.Providers
             var endpoint = $"{_apiUrl}/v1/audio/transcriptions";
             var json = await PostAudioAsync(endpoint, content, sourceAudioBytes, cancellationToken).ConfigureAwait(false);
 
+            var (language, probability) = ParseDetectionResponse(json);
+
+            _logger.LogInformation("Remote language detection: {Language} (p={Probability:F3})", language, probability);
+
+            return (language, probability);
+        }
+
+        /// <summary>
+        /// Probability reported when the server gives none. Same value the local parser uses when
+        /// whisper-cli prints a language without "(p = ...)" (WhisperProvider.DetectLanguageInternalAsync),
+        /// so a remote and a local probe clear the callers' p >= 0.3 threshold alike.
+        /// </summary>
+        internal const float UnknownDetectionProbability = 0.5f;
+
+        /// <summary>
+        /// Reads the language and its probability from a verbose_json detection response.
+        /// whisper-server (whisper.cpp v1.8.4, examples/server/server.cpp:1049-1059) sends
+        /// <c>language</c> = the language it decoded in, which is its own default ("en") or the worker's
+        /// fixed language when one is set, and, unless it runs with --no-language-probabilities, a separate
+        /// auto-detection as <c>detected_language</c> + <c>detected_language_probability</c>. The detection
+        /// wins when present. OpenAI-style servers send only <c>language</c>. A probability that is missing,
+        /// not a number, outside [0, 1] or not paired with <c>detected_language</c> falls back to <see cref="UnknownDetectionProbability"/>; a language
+        /// that is missing or that maps to no language code gets probability 0, so no caller acts on it.
+        /// </summary>
+        internal static (string Language, float Probability) ParseDetectionResponse(string json)
+        {
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
 
-            var language = root.TryGetProperty("language", out var langProp)
-                ? (langProp.GetString() ?? "auto")
-                : "auto";
+            var detected = ReadString(root, "detected_language");
+            var language = NormalizeLangName(detected ?? ReadString(root, "language") ?? "auto");
 
-            language = NormalizeLangName(language);
+            if (!IsLanguageCode(language))
+            {
+                return (language, 0f);
+            }
 
-            _logger.LogInformation("Remote language detection: {Language}", language);
+            // The probability belongs to detected_language; a bare `language` has none of its own.
+            var probability = detected != null && TryReadProbability(root, out var p) ? p : UnknownDetectionProbability;
+            return (language, probability);
+        }
 
-            return (language, 0.0f);
+        /// <summary>Two or three ASCII letters: an ISO 639 code, never "auto" or an unmapped name.</summary>
+        private static bool IsLanguageCode(string language)
+            => language.Length is 2 or 3 && language.All(c => c is >= 'a' and <= 'z');
+
+        private static string? ReadString(JsonElement root, string propertyName)
+            => root.TryGetProperty(propertyName, out var property) && property.ValueKind == JsonValueKind.String
+                ? property.GetString()
+                : null;
+
+        private static bool TryReadProbability(JsonElement root, out float probability)
+        {
+            probability = 0;
+            if (!root.TryGetProperty("detected_language_probability", out var property))
+            {
+                return false;
+            }
+
+            double value = 0;
+            var parsed = property.ValueKind switch
+            {
+                JsonValueKind.Number => property.TryGetDouble(out value),
+                JsonValueKind.String => double.TryParse(
+                    property.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out value),
+                _ => false,
+            };
+            if (!parsed || !double.IsFinite(value) || value < 0 || value > 1)
+            {
+                return false;
+            }
+
+            probability = (float)value;
+            return true;
         }
 
         /// <summary>
@@ -976,42 +1038,8 @@ namespace WhisperSubs.Providers
 
         private static string NormalizeLangName(string lang)
         {
-            if (lang.Length <= 3) return lang;
-
-            return lang.ToLowerInvariant() switch
-            {
-                "english" => "en",
-                "spanish" => "es",
-                "french" => "fr",
-                "german" => "de",
-                "italian" => "it",
-                "portuguese" => "pt",
-                "russian" => "ru",
-                "japanese" => "ja",
-                "chinese" => "zh",
-                "korean" => "ko",
-                "dutch" => "nl",
-                "polish" => "pl",
-                "turkish" => "tr",
-                "arabic" => "ar",
-                "hindi" => "hi",
-                "czech" => "cs",
-                "greek" => "el",
-                "hungarian" => "hu",
-                "romanian" => "ro",
-                "swedish" => "sv",
-                "danish" => "da",
-                "finnish" => "fi",
-                "norwegian" => "no",
-                "catalan" => "ca",
-                "ukrainian" => "uk",
-                "vietnamese" => "vi",
-                "thai" => "th",
-                "indonesian" => "id",
-                "malay" => "ms",
-                "hebrew" => "he",
-                _ => lang,
-            };
+            var trimmed = lang.Trim();
+            return (WhisperLanguages.CodeFor(trimmed) ?? trimmed).ToLowerInvariant();
         }
     }
 }
