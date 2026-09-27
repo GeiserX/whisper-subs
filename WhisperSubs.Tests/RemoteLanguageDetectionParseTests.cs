@@ -65,7 +65,7 @@ public class RemoteLanguageDetectionParseTests
     [Fact]
     public void NumericStringProbability_IsRead()
     {
-        const string json = """{"language":"en","detected_language_probability":"0.75"}""";
+        const string json = """{"language":"en","detected_language":"en","detected_language_probability":"0.75"}""";
 
         var (_, probability) = RemoteWhisperProvider.ParseDetectionResponse(json);
 
@@ -84,6 +84,18 @@ public class RemoteLanguageDetectionParseTests
 
         Assert.Equal("ru", language);
         Assert.Equal(0.9f, probability, 3);
+    }
+
+    [Fact]
+    public void ProbabilityWithoutDetectedLanguage_IsNotPairedWithLanguage()
+    {
+        // Without detected_language nothing says which language the probability was measured for.
+        const string json = """{"language":"english","detected_language_probability":0.12}""";
+
+        var (language, probability) = RemoteWhisperProvider.ParseDetectionResponse(json);
+
+        Assert.Equal("en", language);
+        Assert.Equal(0.5f, probability);
     }
 
     [Fact]

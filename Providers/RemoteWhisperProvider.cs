@@ -868,7 +868,7 @@ namespace WhisperSubs.Providers
         /// fixed language when one is set, and, unless it runs with --no-language-probabilities, a separate
         /// auto-detection as <c>detected_language</c> + <c>detected_language_probability</c>. The detection
         /// wins when present. OpenAI-style servers send only <c>language</c>. A probability that is missing,
-        /// not a number or outside [0, 1] falls back to <see cref="UnknownDetectionProbability"/>; a language
+        /// not a number, outside [0, 1] or not paired with <c>detected_language</c> falls back to <see cref="UnknownDetectionProbability"/>; a language
         /// that is missing or that maps to no language code gets probability 0, so no caller acts on it.
         /// </summary>
         internal static (string Language, float Probability) ParseDetectionResponse(string json)
@@ -876,15 +876,16 @@ namespace WhisperSubs.Providers
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
 
-            var language = NormalizeLangName(
-                ReadString(root, "detected_language") ?? ReadString(root, "language") ?? "auto");
+            var detected = ReadString(root, "detected_language");
+            var language = NormalizeLangName(detected ?? ReadString(root, "language") ?? "auto");
 
             if (!IsLanguageCode(language))
             {
                 return (language, 0f);
             }
 
-            var probability = TryReadProbability(root, out var p) ? p : UnknownDetectionProbability;
+            // The probability belongs to detected_language; a bare `language` has none of its own.
+            var probability = detected != null && TryReadProbability(root, out var p) ? p : UnknownDetectionProbability;
             return (language, probability);
         }
 
