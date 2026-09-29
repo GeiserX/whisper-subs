@@ -1,12 +1,12 @@
 <p align="center">
-  <img src="docs/images/banner.svg" alt="WhisperSubs Banner" width="900"/>
+  <img src="docs/images/banner.svg" alt="WhisperSubs" width="900"/>
 </p>
 
 <p align="center">
   <a href="https://github.com/GeiserX/whisper-subs/releases"><img src="https://img.shields.io/github/v/release/GeiserX/whisper-subs?style=flat-square&logo=github&color=6B4C9A" alt="Release"></a>
   <a href="https://github.com/GeiserX/whisper-subs/actions/workflows/build-release.yml"><img src="https://img.shields.io/github/actions/workflow/status/GeiserX/whisper-subs/build-release.yml?branch=main&style=flat-square&label=tests" alt="Tests"></a>
-  <a href="https://github.com/GeiserX/whisper-subs/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square" alt="License"></a>
-  <img src="https://img.shields.io/badge/Jellyfin-10.11%2B-6B4C9A?style=flat-square" alt="Jellyfin 10.11+">
+  <a href="https://github.com/GeiserX/whisper-subs/blob/main/LICENSE"><img src="https://img.shields.io/github/license/GeiserX/whisper-subs?style=flat-square" alt="License"></a>
+  <a href="https://jellyfin.org"><img src="https://img.shields.io/badge/Jellyfin-10.11%2B-6B4C9A?style=flat-square" alt="Jellyfin 10.11+"></a>
   <a href="https://codecov.io/gh/GeiserX/whisper-subs"><img src="https://codecov.io/gh/GeiserX/whisper-subs/graph/badge.svg" alt="codecov"></a>
 </p>
 
@@ -25,7 +25,7 @@
 
 ## Quick start
 
-1. In Jellyfin, go to **Dashboard** > **Plugins** > **Repositories** and add `https://geiserx.github.io/whisper-subs/manifest.json`.
+1. On Jellyfin 10.11 or newer, go to **Dashboard** > **Plugins** > **Repositories** and add `https://geiserx.github.io/whisper-subs/manifest.json`.
 2. Install **WhisperSubs** from **Catalog** and restart Jellyfin.
 3. Open **Dashboard** > **Plugins** > **WhisperSubs** and follow the [setup guide](https://geiserx.github.io/whisper-subs/docs/setup/) to install the engine and a model.
 
@@ -45,15 +45,13 @@ Everything past this page lives at **[geiserx.github.io/whisper-subs](https://ge
 
 Planned work is in [ROADMAP.md](ROADMAP.md).
 
-## Other Jellyfin projects by GeiserX
+## Related projects
 
 - [smart-covers](https://github.com/GeiserX/smart-covers): cover extraction for books, audiobooks, comics, magazines and music libraries, with online fallback
 - [quality-gate](https://github.com/GeiserX/quality-gate): restrict users to specific media versions based on configurable path-based policies
-- [quality-gate-encoder](https://github.com/GeiserX/quality-gate-encoder) (formerly jellyfin-encoder): automatic 720p HEVC/AV1 transcoding service with hardware acceleration
+- [quality-gate-encoder](https://github.com/GeiserX/quality-gate-encoder) (formerly jellyfin-encoder): automatic 720p HEVC, H.264 or AV1 copies with hardware acceleration
 - [jellyfin-telegram-channel-sync](https://github.com/GeiserX/jellyfin-telegram-channel-sync): sync Jellyfin access with Telegram channel membership
 
 ## License
 
-This project is licensed under the **GNU General Public License v3.0**. See the [LICENSE](LICENSE) file for the full text.
-
-This project is made possible by generous supporters: **yskaa001**.
+[GPL-3.0-or-later](LICENSE). Supported by yskaa001.
