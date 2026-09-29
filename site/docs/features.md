@@ -56,7 +56,9 @@ Then open **Dashboard** > **Plugins** > **WhisperSubs** and follow the [setup gu
 
 ```bash
 dotnet build --configuration Release
-# copy WhisperSubs.dll to /var/lib/jellyfin/plugins/WhisperSubs/, then restart Jellyfin
+# copy WhisperSubs.dll to <Jellyfin program data>/plugins/WhisperSubs/, then restart Jellyfin
+# Debian/Ubuntu package: /var/lib/jellyfin/plugins/WhisperSubs/
+# jellyfin/jellyfin container: /config/plugins/WhisperSubs/
 ```
 
 ## Output files
@@ -82,11 +84,11 @@ The label is both the title shown in Jellyfin's subtitle picker and the marker t
 | **Full + forced** | Both, per audio track |
 | **Translation only** | An English translated subtitle, skipping native-language transcription |
 
-The scheduled task skips media that already has a usable subtitle in the needed language. Forced tracks do not satisfy that need while **Ignore forced subtitles when skipping** is on (the default), and image-based tracks do not unless you turn on **Count image-based subtitles as present**. They are two independent settings. A manual **Generate** on a single item always transcribes, bypassing the skip.
+The scheduled task skips media that already has a usable subtitle. For the full subtitle any language counts: an external subtitle file or an embedded track in another language also makes it skip the item. The English translation and the extra translation targets are checked per language. Forced tracks do not satisfy that check while **Ignore forced subtitles when skipping** is on (the default), and image-based tracks do not unless you turn on **Count image-based subtitles as present**. They are two independent settings. A manual **Generate** on a single item bypasses that check. A complete WhisperSubs subtitle for the language is still left as it is, and a partial one is resumed rather than started over.
 
 ## User subtitle requests
 
-Off by default. Turn on **Allow user requests** in the **User Requests** panel and non-admin users get a **Request Subtitles** entry on the item page. Requests land as Pending and cost no CPU until an admin approves them, unless you also turn on **Auto-approve**. Approved requests enter the queue below admin requests and above the background sweep. Per-user daily quota (5), active cap (3), per-request item cap (200) and a global cap (500) are all configurable, and `0` means unlimited.
+Off by default. Turn on **Allow user requests** in the **User Requests** panel and non-admin users get a **Request Subtitles** entry on the item page. Requests land as Pending and cost no CPU until an admin approves them, unless you also turn on **Auto-approve**. Approved requests enter the queue at the **User request priority** tier. With the default tiers (admin High, user Medium, sweep Background) that is below admin requests and above the background sweep. Per-user daily quota (5), active cap (3), per-request item cap (200) and a global cap (500) are all configurable, and `0` means unlimited.
 
 ## Models
 
@@ -123,7 +125,7 @@ Every setting on **Dashboard** > **Plugins** > **WhisperSubs** carries its own i
 | `TaskMaxRuntimeHours` | `6` | Cap on one scheduled sweep. It stops cleanly between items and resumes next run. `0` is unlimited. |
 | `LanguageDetectionSampleSeconds` | `30` | Audio sampled per chunk during forced-subtitle language detection. |
 
-Four more fields (`WhisperBinaryVariant`, `VocalSeparationBinaryVariant`, `VocalSeparationModelQuant`, `VadModelPath`) record what the plugin downloaded or resolved. They are not meant to be edited by hand.
+Three more fields (`WhisperBinaryVariant`, `VocalSeparationBinaryVariant`, `VocalSeparationModelQuant`) record what the plugin downloaded. They are not meant to be edited by hand. `VadModelPath` is also written by the plugin when it downloads a VAD model, and a path inside its managed `vad/` directory is ignored in favour of the **Silero VAD model** selection once that model is on disk. Until the selected model has downloaded, an existing managed path stays in use. You can set it by hand to a custom Silero VAD ggml file outside that directory, and if that file exists it wins over the selection.
 
 ## In-page Generate Subtitles button
 The plugin injects a script tag into Jellyfin's `index.html` to add a **Generate Subtitles** entry to the item page. Direct on-disk injection is the default and needs a writable web root, which containers often do not have. If yours is read-only, install the [File Transformation](https://github.com/IAmParadox27/jellyfin-plugin-file-transformation) plugin from `https://www.iamparadox.dev/jellyfin/plugins/manifest.json` and WhisperSubs registers a serve-time injection instead, with no permission changes. Both mechanisms coexist safely. The status panel at the top of the settings page shows which one is active, and `Setup/InjectionStatus` reports the same in JSON.
