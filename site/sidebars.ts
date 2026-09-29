@@ -25,7 +25,7 @@ const sidebars: SidebarsConfig = {
       type: 'category',
       label: 'Reference',
       collapsed: false,
-      items: ['api-and-internals'],
+      items: ['features', 'api-and-internals'],
     },
   ],
 };
