@@ -27,8 +27,8 @@ updates:
           - version-update:semver-major
       - dependency-name: Jellyfin.Controller
       - dependency-name: Jellyfin.Model
-  - package-ecosystem: npm
-    directory: /site
+  - package-ecosystem: pip
+    directory: /docs
     schedule:
       interval: weekly
       day: monday
@@ -44,26 +44,17 @@ updates:
         update-types:
           - minor
           - patch
-      npm_security:
+      pip_security:
         applies-to: security-updates
         patterns:
           - '*'
     ignore:
-      # Docusaurus majors change config and theme APIs, so take those
-      # deliberately. Scoped to Docusaurus rather than '*': a blanket major
-      # ignore also silences security fixes that need a major bump, which is
-      # how Action majors drifted unnoticed elsewhere.
-      - dependency-name: '@docusaurus/*'
+      # Material 9.7 is its last feature line and the next major needs MkDocs 2; take that on purpose.
+      - dependency-name: '*'
         update-types:
           - version-update:semver-major
-      # TypeScript 7 removed the `baseUrl` compiler option, and
-      # @docusaurus/tsconfig still sets it, so `npm run typecheck` fails on
-      # the inherited value no matter what this repo does. Drop this entry
-      # once @docusaurus/tsconfig stops shipping baseUrl, and remove the
-      # baseUrl in site/tsconfig.json at the same time - both have to go.
-      - dependency-name: typescript
-        update-types:
-          - version-update:semver-major
+      # mkdocs-redirects 1.2.3 depends on properdocs, a MkDocs fork, and caps mkdocs<=1.6.1. Stay on 1.2.2.
+      - dependency-name: mkdocs-redirects
   - package-ecosystem: github-actions
     directory: /
     schedule:

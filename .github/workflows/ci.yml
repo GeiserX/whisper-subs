@@ -30,15 +30,14 @@ jobs:
         run: node scripts/check-web-js.mjs
 
   # The documentation site is built and published only by pages.yml, which runs on push and
-  # workflow_run — never on a pull request. So a site dependency bump used to reach main with six
-  # green checks and no one having compiled it; the failure surfaced afterwards, as a red Pages run
-  # on main. pages.yml fails soft, so the plugin catalog survives that, but the docs silently stop
-  # updating. Build it here instead, where the PR can still be stopped.
+  # workflow_run, never on a pull request. Build it here too, so a broken page, a missing nav
+  # entry or a dependency bump is caught while the PR can still be stopped: pages.yml fails soft
+  # (the catalog is published without the docs), so a red Pages run on main is easy to miss.
   site:
     name: Docs site builds
     runs-on: ubuntu-latest
     # Least privilege: this job only reads the tree and runs a static build. Checkout leaves its
-    # token in .git/config by default, which npm ci and every lifecycle script it runs would inherit.
+    # token in .git/config by default, which pip and every MkDocs plugin would inherit.
     permissions:
       contents: read
     steps:
@@ -46,35 +45,32 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-python@v7
         with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: site/package-lock.json
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: docs/requirements-docs.txt
 
       - name: Install
-        working-directory: site
-        run: npm ci
+        run: pip install -r docs/requirements-docs.txt
 
       - name: Build
-        working-directory: site
-        run: npm run build
+        run: mkdocs build --strict
 
       # /docs/setup/ is compiled into every shipped plugin DLL, so it has to exist in the output
       # whatever the docs structure does. A generator emitting its own manifest.json at the site root
       # would overwrite the Jellyfin plugin catalog that pages.yml publishes alongside these files:
       # valid JSON, wrong contents, HTTP 200, invisible to any status-code check.
       - name: Gate - required routes present, no catalog collision
-        working-directory: site
         run: |
           set -euo pipefail
-          test -f build/index.html
-          test -f build/docs/setup/index.html
-          if [ -e build/manifest.json ]; then
+          test -f site/index.html
+          test -f site/docs/setup/index.html
+          if [ -e site/manifest.json ]; then
             echo "::error::The site build emitted manifest.json, which would overwrite the plugin catalog."
             exit 1
           fi
-          echo "routes ok: $(find build -name index.html | wc -l | tr -d ' ') pages, docs/setup present"
+          echo "routes ok: $(find site -name index.html | wc -l | tr -d ' ') pages, docs/setup present"
 
   build:
     runs-on: ubuntu-latest

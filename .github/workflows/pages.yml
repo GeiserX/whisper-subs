@@ -10,7 +10,8 @@ on:
   push:
     branches: [main]
     paths:
-      - 'site/**'
+      - 'docs/**'
+      - 'mkdocs.yml'
       - 'manifest.json'
       - '.github/workflows/pages.yml'
   # A push made by the release workflow's GITHUB_TOKEN does NOT create a
@@ -47,24 +48,24 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-python@v7
         with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: site/package-lock.json
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: docs/requirements-docs.txt
 
       - name: Install docs dependencies
         id: deps
         continue-on-error: true
-        working-directory: site
-        run: npm ci
+        run: pip install -r docs/requirements-docs.txt
 
+      # mkdocs.yml sets `strict: true`; the flag keeps the build strict even
+      # if someone removes that line. Output: site/ (the MkDocs default).
       - name: Build documentation
         id: docs
         if: steps.deps.outcome == 'success'
         continue-on-error: true
-        working-directory: site
-        run: npm run build
+        run: mkdocs build --strict
 
       # The release workflow attaches manifest.json to every release, so the
       # newest release carries the authoritative catalog. There is no read of
@@ -104,7 +105,7 @@ jobs:
           set -euo pipefail
           mkdir -p _site
           if [ "${{ steps.docs.outcome }}" = "success" ]; then
-            cp -r site/build/. _site/
+            cp -r site/. _site/
             echo "docs: included"
           else
             echo "docs: BUILD FAILED - publishing the catalog only"
