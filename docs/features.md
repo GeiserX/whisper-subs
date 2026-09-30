@@ -1,7 +1,5 @@
 ---
-title: Features in detail
 description: Every feature, the prerequisites, output files, subtitle modes, models, config-file settings and the REST API.
-sidebar_position: 8
 ---
 
 # Features in detail
@@ -15,8 +13,8 @@ sidebar_position: 8
 - **Automatic language detection.** Reads each audio stream's language tag, falling back to whisper's own detection when tags are absent. A multi-language file gets one subtitle per audio language.
 - **Forced subtitles.** Transcribe only foreign-language dialogue, via VAD speech segmentation and per-chunk language detection.
 - **English translation.** Optionally add an English subtitle to a title that has none. English is the only language whisper can translate into.
-- **More target languages (experimental).** English audio, including an English dub on a foreign film, can also get subtitles in 24 European languages from [NVIDIA Canary](https://huggingface.co/nvidia/canary-1b-v2), run by [CrispASR](https://github.com/CrispStrobe/CrispASR) on this server or on a CrispASR worker. Audio in other languages still translates to English only. See [Settings](https://geiserx.github.io/whisper-subs/configuration/#more-target-languages-experimental).
-- **Translate one title.** From the item page, translate a movie, episode, season or series into English or, for English audio, any of the 24 Canary languages, without turning on a library-wide list. See [Translate one title](https://geiserx.github.io/whisper-subs/configuration/#translate-one-title).
+- **More target languages (experimental).** English audio, including an English dub on a foreign film, can also get subtitles in 24 European languages from [NVIDIA Canary](https://huggingface.co/nvidia/canary-1b-v2), run by [CrispASR](https://github.com/CrispStrobe/CrispASR) on this server or on a CrispASR worker. Audio in other languages still translates to English only. See [Settings](configuration.md#more-target-languages-experimental).
+- **Translate one title.** From the item page, translate a movie, episode, season or series into English or, for English audio, any of the 24 Canary languages, without turning on a library-wide list. See [Translate one title](configuration.md#translate-one-title).
 - **Lyrics (experimental).** `.lrc` files for music libraries, picked up by Jellyfin automatically.
 - **Vocal separation (optional).** Isolate vocals with [BSRoformer.cpp](https://github.com/chenmozhijin/BSRoformer.cpp) before transcription for noisy content. Falls back to the original audio when unavailable.
 - **GPU acceleration.** CUDA (NVIDIA), Vulkan (Intel / AMD / NVIDIA) and ROCm (AMD).
@@ -34,7 +32,7 @@ sidebar_position: 8
 |---|---|
 | **Jellyfin** | 10.11.0 or later |
 | **FFmpeg** | Bundled with Jellyfin (`/usr/lib/jellyfin-ffmpeg/ffmpeg`) or on `PATH`. Used to extract audio. |
-| **whisper.cpp** | The `whisper-cli` binary. Downloadable from the settings page on Linux; installed manually on macOS and Windows. See the [setup guide](https://geiserx.github.io/whisper-subs/docs/setup/). |
+| **whisper.cpp** | The `whisper-cli` binary. Downloadable from the settings page on Linux; installed manually on macOS and Windows. See the [setup guide](docs/setup.md). |
 | **Whisper model** | A GGML model file, downloadable from the settings page on every platform, or manually from [Hugging Face](https://huggingface.co/ggerganov/whisper.cpp). |
 | **BSRoformer.cpp** *(optional)* | The `bs_roformer-cli` binary for vocal separation. Downloadable from the settings page on Linux, macOS and Windows. |
 
@@ -50,7 +48,7 @@ sidebar_position: 8
 3. Go to **Catalog**, find **WhisperSubs**, and click **Install**.
 4. Restart Jellyfin.
 
-Then open **Dashboard** > **Plugins** > **WhisperSubs** and follow the [setup guide](https://geiserx.github.io/whisper-subs/docs/setup/) to install the engine and a model.
+Then open **Dashboard** > **Plugins** > **WhisperSubs** and follow the [setup guide](docs/setup.md) to install the engine and a model.
 
 ### Manual installation
 
@@ -106,11 +104,11 @@ Nine models are offered on the settings page. The default is **Large V3 Turbo (Q
 | `ggml-base.bin` | 148 MB | yes | Lightweight. |
 | `ggml-tiny.bin` | 78 MB | yes | Testing and constrained environments only. |
 
-**The two turbo models cannot translate.** They were fine-tuned without the translate task, so enabling translation with one of them writes the *source* language into an English-named `.translated.srt` file. The plugin logs a warning and runs the job anyway; nothing in the filename or the subtitle picker reveals it. Download **Large V3 (Q5)** or **Medium (Q5)** before turning translation on. [Limitations](https://geiserx.github.io/whisper-subs/limitations/) has the detail.
+**The two turbo models cannot translate.** They were fine-tuned without the translate task, so enabling translation with one of them writes the *source* language into an English-named `.translated.srt` file. The plugin logs a warning and runs the job anyway; nothing in the filename or the subtitle picker reveals it. Download **Large V3 (Q5)** or **Medium (Q5)** before turning translation on. [Limitations](limitations.md) has the detail.
 
 ## Distributed transcription
 
-By default everything runs on this Jellyfin server, one job at a time. Expand **Worker Pool (Optional / Advanced)** to add OpenAI-compatible endpoints: another box with a GPU, a NAS, or a hosted API. The plugin extracts audio locally and sends it over HTTP, always preferring workers with a cost weight of `0` and bursting to a paid one only when the free ones are saturated. [`worker/`](https://github.com/GeiserX/whisper-subs/blob/main/worker/README.md) is a ready-to-run whisper.cpp + Vulkan worker image. Setup, upload-size caps and provider quirks are covered in [Remote workers](https://geiserx.github.io/whisper-subs/remote-workers/).
+By default everything runs on this Jellyfin server, one job at a time. Expand **Worker Pool (Optional / Advanced)** to add OpenAI-compatible endpoints: another box with a GPU, a NAS, or a hosted API. The plugin extracts audio locally and sends it over HTTP, always preferring workers with a cost weight of `0` and bursting to a paid one only when the free ones are saturated. [`worker/`](https://github.com/GeiserX/whisper-subs/blob/main/worker/README.md) is a ready-to-run whisper.cpp + Vulkan worker image. Setup, upload-size caps and provider quirks are covered in [Remote workers](remote-workers.md).
 
 ## Settings
 
@@ -132,4 +130,4 @@ The plugin injects a script tag into Jellyfin's `index.html` to add a **Generate
 
 ## REST API
 
-44 endpoints live under `/Plugins/WhisperSubs/`. All of them require authentication. Everything except the five user endpoints (`Requests/Capabilities`, `TranslationTargets`, `Items/{id}/Request`, `Requests/Mine`, `Items/{id}/RequestStatus`) requires a Jellyfin admin. [Diagnostics](https://geiserx.github.io/whisper-subs/diagnostics/) shows how to call `Setup/Status`, `Queue` and `Setup/InjectionStatus`, which are the three worth capturing when something goes wrong.
+44 endpoints live under `/Plugins/WhisperSubs/`. All of them require authentication. Everything except the five user endpoints (`Requests/Capabilities`, `TranslationTargets`, `Items/{id}/Request`, `Requests/Mine`, `Items/{id}/RequestStatus`) requires a Jellyfin admin. [Diagnostics](diagnostics.md) shows how to call `Setup/Status`, `Queue` and `Setup/InjectionStatus`, which are the three worth capturing when something goes wrong.

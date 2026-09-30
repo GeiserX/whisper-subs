@@ -1,7 +1,5 @@
 ---
-title: Limitations
 description: What WhisperSubs cannot do, why, and what would have to change.
-sidebar_position: 8
 ---
 
 # Limitations
@@ -40,9 +38,8 @@ OpenAI offers a `gpt-4o-transcribe-diarize` model that does diarization server-s
 
 WhisperSubs negotiates `srt` and `verbose_json` only. It neither requests nor parses `diarized_json`, so pointing a remote worker at that model today does not work. It is also a paid cloud service that uploads your audio, which is the opposite of why most people run this plugin.
 
-:::tip Workaround
-Run diarization outside the plugin, on the finished subtitle or the media file: [WhisperX](https://github.com/m-bain/whisperX) or [whisper-diarization](https://github.com/MahmoudAshraf97/whisper-diarization). WhisperSubs produces the transcript; those tools add the speaker layer.
-:::
+!!! tip "Workaround"
+    Run diarization outside the plugin, on the finished subtitle or the media file: [WhisperX](https://github.com/m-bain/whisperX) or [whisper-diarization](https://github.com/MahmoudAshraf97/whisper-diarization). WhisperSubs produces the transcript; those tools add the speaker layer.
 
 ## Run-on lines with no punctuation
 
@@ -54,7 +51,7 @@ The default is `0`, so upgrading changes nothing for Whisper and existing subtit
 
 Two scope notes:
 
-- The setting reaches the Jellyfin host's own `whisper-cli`, and its own `crispasr` for [Canary targets](./configuration.md#more-target-languages-experimental). Canary is capped even at `0`: it uses `42`, or `84` for Bulgarian, Greek, Russian and Ukrainian, because `crispasr` counts bytes and those letters take two each. A remote worker, a CrispASR server included, segments its own output, so set `WHISPER_MAX_LEN=47` on a whisper worker as well. See [Remote workers and hosted providers](./remote-workers.md).
+- The setting reaches the Jellyfin host's own `whisper-cli`, and its own `crispasr` for [Canary targets](configuration.md#more-target-languages-experimental). Canary is capped even at `0`: it uses `42`, or `84` for Bulgarian, Greek, Russian and Ukrainian, because `crispasr` counts bytes and those letters take two each. A remote worker, a CrispASR server included, segments its own output, so set `WHISPER_MAX_LEN=47` on a whisper worker as well. See [Remote workers and hosted providers](remote-workers.md).
 - A `--max-len` placed in **Custom Whisper Arguments** wins, because custom arguments are appended last and `whisper-cli` takes the last value.
 
 This is a guard against the worst case, not a cure for missing punctuation. Whisper normally punctuates. When it produces none at all, the cause is usually a small model (use `Large V3 Turbo (Q5)`, the 574 MB recommended default) or a wrong language guess, which applies one language's punctuation conventions to another language's words. If you know the audio language, set it explicitly instead of leaving it on auto.
@@ -67,7 +64,7 @@ Two separate limits apply, and the second one is easy to hit by accident.
 
 Whisper's `--translate` only produces English. It was trained for X to English and nothing else, so no other target can be reached from inside whisper.cpp. The upstream requests are [whisper.cpp#1219](https://github.com/ggml-org/whisper.cpp/issues/1219) and [whisper.cpp#1956](https://github.com/ggml-org/whisper.cpp/issues/1956) (a forced-decoding workaround, unreliable), and an OpenAI maintainer confirmed the limit in [openai/whisper#1167](https://github.com/openai/whisper/discussions/1167).
 
-English audio is the exception. [More target languages](./configuration.md#more-target-languages-experimental) translates it into 24 European languages with [NVIDIA Canary](https://huggingface.co/nvidia/canary-1b-v2). That includes a film in another language that also carries an English-tagged audio track, such as a dub: Canary translates from that track. Audio in any other language still translates to English only. Canary has no direct path between two non-English languages, and when we tried French to Spanish and Spanish to French or German anyway, it returned mixed-language cues, dropped cues or an empty file, with exit code 0 and no warning. The plugin therefore never asks it for such a pair.
+English audio is the exception. [More target languages](configuration.md#more-target-languages-experimental) translates it into 24 European languages with [NVIDIA Canary](https://huggingface.co/nvidia/canary-1b-v2). That includes a film in another language that also carries an English-tagged audio track, such as a dub: Canary translates from that track. Audio in any other language still translates to English only. Canary has no direct path between two non-English languages, and when we tried French to Spanish and Spanish to French or German anyway, it returned mixed-language cues, dropped cues or an empty file, with exit code 0 and no warning. The plugin therefore never asks it for such a pair.
 
 Canary output is experimental:
 
@@ -77,15 +74,13 @@ Canary output is experimental:
 
 WhisperSubs will not add a text-to-text translation step. Translating an existing `.srt` is a different pipeline stage with a different API contract, different failure modes and a separate dependency. Coupling subtitle generation to a translation service's availability doubles the config surface for something orthogonal to speech-to-text.
 
-:::tip Workaround
-For a non-English title, generate the English subtitle here, then translate the file with a dedicated tool. [Lingarr](https://github.com/lingarr-translate/lingarr) mounts your media directories and translates subtitles in place, with LibreTranslate, DeepL, Google, OpenAI, Anthropic, Gemini, DeepSeek, Bing, Yandex, Azure and local Ollama backends. [Sublarr](https://github.com/Abrechen2/sublarr) is another option with Sonarr/Radarr webhook support.
-:::
+!!! tip "Workaround"
+    For a non-English title, generate the English subtitle here, then translate the file with a dedicated tool. [Lingarr](https://github.com/lingarr-translate/lingarr) mounts your media directories and translates subtitles in place, with LibreTranslate, DeepL, Google, OpenAI, Anthropic, Gemini, DeepSeek, Bing, Yandex, Azure and local Ollama backends. [Sublarr](https://github.com/Abrechen2/sublarr) is another option with Sonarr/Radarr webhook support.
 
 ### The recommended model cannot translate
 
-:::warning
-The recommended model, **Large V3 Turbo (Q5)** (`ggml-large-v3-turbo-q5_0.bin`), cannot translate. Neither can **Large V3 Turbo (F16)**. Both are flagged `canTranslate: false` in the model catalog.
-:::
+!!! warning
+    The recommended model, **Large V3 Turbo (Q5)** (`ggml-large-v3-turbo-q5_0.bin`), cannot translate. Neither can **Large V3 Turbo (F16)**. Both are flagged `canTranslate: false` in the model catalog.
 
 whisper.cpp's distilled turbo models were fine-tuned without the translate task, so `--translate` emits the **source language** instead of English.
 
@@ -119,7 +114,7 @@ If you do not need foreign-dialogue-only tracks, use **Full** mode.
 
 Transcription concurrency is capped by the pool's total concurrency, which is the sum of every worker's max concurrency. A default install has one local worker at max concurrency 1, so everything runs one item at a time: the scheduled task's queued requests, its library sweep, and manual **Generate** and **Generate All** alike.
 
-You can raise a worker's own max concurrency, but whisper.cpp runs one transcription per GPU context, so a single-GPU worker should stay at 1. Raising the ceiling means adding workers. See [Remote workers and hosted providers](./remote-workers.md).
+You can raise a worker's own max concurrency, but whisper.cpp runs one transcription per GPU context, so a single-GPU worker should stay at 1. Raising the ceiling means adding workers. See [Remote workers and hosted providers](remote-workers.md).
 
 ## Engine auto-download is Linux only
 
@@ -148,4 +143,4 @@ On OpenAI, timestamps are available on `whisper-1` only. `gpt-4o-transcribe` and
 
 The `.srt` WhisperSubs writes is not always the provider's own `srt` response. When an endpoint refuses `srt`, the plugin converts the segments of a `verbose_json` response into SRT itself. Both paths still need the provider to return timestamps. On OpenRouter, timestamps exist only on its OpenAI-compatible models.
 
-Details, and the matching upload-size limits, are in [Remote workers and hosted providers](./remote-workers.md).
+Details, and the matching upload-size limits, are in [Remote workers and hosted providers](remote-workers.md).

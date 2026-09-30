@@ -462,7 +462,7 @@ Detection stays on the Whisper base model.
    changes for an existing install.
 2. `TranslationRoute`, `CanaryProvider`, the per-target loop, unit tests for every pure piece.
 3. Worker capability change with the `{"en"}` default, the dialect switch and the multipart fields.
-4. Docs: [`configuration.md`](../../site/docs/configuration.md) gains the field, [`limitations.md`](../../site/docs/limitations.md) rewrites the "English is the only
+4. Docs: [`configuration.md`](../configuration.md) gains the field, [`limitations.md`](../limitations.md) rewrites the "English is the only
    target language" section to "English is the only target for non-English audio", and the
    Lingarr pointer stays for that case.
 5. Ship as a minor version. Bump the CrispASR pin only after re-running the spike commands.

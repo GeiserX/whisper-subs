@@ -1,7 +1,5 @@
 ---
-title: API and internals
 description: The REST endpoints, how a subtitle gets made, and the files the plugin writes.
-sidebar_position: 7
 ---
 
 # API and internals
@@ -12,7 +10,7 @@ Everything the settings page does, it does over HTTP. This page lists those endp
 
 All 44 endpoints live under `/Plugins/WhisperSubs`. Two controllers share that prefix: 39 admin endpoints and 5 user-facing ones.
 
-Every admin endpoint needs an administrator token. [Diagnostics](/diagnostics) covers creating an API key and which header to send. A browser tab sends no credentials, so opening any of these URLs directly returns 401.
+Every admin endpoint needs an administrator token. [Diagnostics](diagnostics.md) covers creating an API key and which header to send. A browser tab sends no credentials, so opening any of these URLs directly returns 401.
 
 ### Admin endpoints {#admin-endpoints}
 
@@ -82,7 +80,7 @@ These mirror the whisper endpoints for the BSRoformer.cpp binary and model. They
 
 **Setup: CrispASR and Canary**
 
-These install the engine for the [extra target languages](./configuration.md#more-target-languages-experimental): the `crispasr` binary and the NVIDIA Canary model. They use their own download lock, separate from the whisper and vocal-separation downloads.
+These install the engine for the [extra target languages](configuration.md#more-target-languages-experimental): the `crispasr` binary and the NVIDIA Canary model. They use their own download lock, separate from the whisper and vocal-separation downloads.
 
 | Method | Path | Returns |
 |---|---|---|
@@ -132,7 +130,7 @@ Once a job starts, this is what happens.
 
 **4. Extract the audio.** FFmpeg writes 16 kHz mono PCM to the system temp directory, mapping the audio stream that matches the target language. Jellyfin's own bundled FFmpeg at `/usr/lib/jellyfin-ffmpeg/ffmpeg` is preferred over one on the PATH.
 
-**5. Separate the vocals, if enabled.** With vocal separation on and configured, the extraction runs at 44.1 kHz instead, `bs_roformer-cli` isolates the vocal track, and the result is downsampled to the 16 kHz whisper expects. Only one separation runs at a time across the whole server. If the binary or model is missing, or the process fails, the job continues on the original mix rather than failing. See [Vocal separation](/docs/setup#vocal-separation).
+**5. Separate the vocals, if enabled.** With vocal separation on and configured, the extraction runs at 44.1 kHz instead, `bs_roformer-cli` isolates the vocal track, and the result is downsampled to the 16 kHz whisper expects. Only one separation runs at a time across the whole server. If the binary or model is missing, or the process fails, the job continues on the original mix rather than failing. See [Vocal separation](docs/setup.md#vocal-separation).
 
 **6. Transcribe.** The assigned worker transcribes the WAV: local `whisper-cli`, a remote worker or a hosted API. The forced pass works differently. It splits the audio on silence, runs language detection on each speech chunk, and transcribes only the chunks whose language is not the primary one.
 

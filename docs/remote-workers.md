@@ -1,7 +1,5 @@
 ---
-title: Remote workers and hosted providers
 description: Distributing transcription across machines, and using Groq, OpenAI or OpenRouter as a backend.
-sidebar_position: 6
 ---
 
 # Remote workers and hosted providers
@@ -21,9 +19,8 @@ Two rules govern dispatch:
 
 You want the pool when you have a second machine with a real GPU, when the Jellyfin host is a NAS too weak to transcribe (turn **Also use this server as a worker** off and offload entirely), or when you want a backlog to clear in parallel across several boxes.
 
-:::note
-The scheduled task runs in two phases and both dispatch across the pool. It first drains queued requests, then sweeps the library. Each phase leases a worker slot per item and starts the next item without waiting for the previous one to finish, so up to the pool's total concurrency runs at once. Manual **Generate** and **Generate All** feed the same dispatcher. Extra workers speed up all of it, including an overnight sweep.
-:::
+!!! note
+    The scheduled task runs in two phases and both dispatch across the pool. It first drains queued requests, then sweeps the library. Each phase leases a worker slot per item and starts the next item without waiting for the previous one to finish, so up to the pool's total concurrency runs at once. Manual **Generate** and **Generate All** feed the same dispatcher. Extra workers speed up all of it, including an overnight sweep.
 
 ## Running the worker container
 
@@ -74,9 +71,8 @@ Settings worth knowing:
 | `WHISPER_THREADS` | *(whisper default)* | CPU threads; set to your core count on CPU-only workers |
 | `WHISPER_VAD` | `true` | Native Silero VAD, so cue starts snap to real speech onset |
 
-:::warning
-With no `API_KEY` the worker is an unauthenticated transcription endpoint on `0.0.0.0` — anyone who can reach the port can drive your GPU. Run it on a trusted network, or set `API_KEY` and put TLS in front of it. Do not port-forward it.
-:::
+!!! warning
+    With no `API_KEY` the worker is an unauthenticated transcription endpoint on `0.0.0.0` — anyone who can reach the port can drive your GPU. Run it on a trusted network, or set `API_KEY` and put TLS in front of it. Do not port-forward it.
 
 ### Confirm it is up
 
@@ -114,7 +110,7 @@ Three timeout settings bound a remote call, so a slow-but-working pass is never 
 
 ## CrispASR server workers
 
-A [CrispASR](https://github.com/CrispStrobe/CrispASR) server running [NVIDIA Canary](https://huggingface.co/nvidia/canary-1b-v2) can make the [extra target languages](./configuration.md#more-target-languages-experimental) for English audio on another machine. Start it with the model and the Silero VAD model:
+A [CrispASR](https://github.com/CrispStrobe/CrispASR) server running [NVIDIA Canary](https://huggingface.co/nvidia/canary-1b-v2) can make the [extra target languages](configuration.md#more-target-languages-experimental) for English audio on another machine. Start it with the model and the Silero VAD model:
 
 ```bash
 crispasr --server --backend canary -m <gguf> -vm <silero> --cache-dir <dir>
@@ -201,9 +197,8 @@ Two per-worker settings deal with this:
 
 For a 40-minute title on Groq, FLAC alone is not enough — ~39 MB still exceeds 25 MB. Use Opus.
 
-:::warning
-Keep **WAV** for self-hosted workers. whisper.cpp's `whisper-server` decodes WAV only, and the bundled worker image ships without ffmpeg. Choose a compressed format only on a hosted endpoint documented to accept it. Groq accepts FLAC and OGG; OpenAI's documented list is mp3, mp4, mpeg, mpga, m4a, wav and webm.
-:::
+!!! warning
+    Keep **WAV** for self-hosted workers. whisper.cpp's `whisper-server` decodes WAV only, and the bundled worker image ships without ffmpeg. Choose a compressed format only on a hosted endpoint documented to accept it. Groq accepts FLAC and OGG; OpenAI's documented list is mp3, mp4, mpeg, mpga, m4a, wav and webm.
 
 When a compressed upload is prepared, the log shows a line like `Prepared opus upload: 6.7 MB (from 76.8 MB)` before the job. If the re-encode cannot run — no ffmpeg, the encode failed, or the result was not actually smaller — the plugin falls back to the original WAV, says why, and labels the upload as a WAV so the provider is not handed a mislabelled body.
 

@@ -1,7 +1,5 @@
 ---
-title: Diagnostics and the status endpoint
 description: How to read WhisperSubs' own diagnostic endpoints, including the API key you need to reach them.
-sidebar_position: 1
 ---
 
 # Diagnostics and the status endpoint
@@ -48,9 +46,8 @@ Two forms work, and they are not equally reliable:
 
 Use the `Authorization` form. It is the one the plugin's own settings page uses, and it does not depend on a server setting.
 
-:::warning
-Your API key grants full administrator access to your server. Never paste it into a GitHub issue, a screenshot, or a log excerpt. Keep it in a shell variable as shown above, and revoke it in **Dashboard → API Keys** when you are finished.
-:::
+!!! warning
+    Your API key grants full administrator access to your server. Never paste it into a GitHub issue, a screenshot, or a log excerpt. Keep it in a shell variable as shown above, and revoke it in **Dashboard → API Keys** when you are finished.
 
 ## Why you got 401, 403 or 404
 
@@ -134,9 +131,8 @@ Inside `Gpu`:
 | `HasAvx` | The CPU has the AVX2-class instructions the prebuilt binaries need. Always `true` on arm64. When `false`, only the `*-noavx` variants will run; the others die with SIGILL (exit code 132). |
 | `RecommendedVariant` | The variant the plugin would pick for this hardware. |
 
-:::note
-A GPU flag on its own is not enough. `RecommendedVariant` only names a GPU build when **both** the device and its userspace library are present, because a GPU binary cannot start without the library. That is why the pairs matter: `HasNvidia` with `HasCudaLibrary`, `HasAmdGpu` with `HasRocmLibrary`, `HasRenderDevice` with `HasVulkanLibrary`.
-:::
+!!! note
+    A GPU flag on its own is not enough. `RecommendedVariant` only names a GPU build when **both** the device and its userspace library are present, because a GPU binary cannot start without the library. That is why the pairs matter: `HasNvidia` with `HasCudaLibrary`, `HasAmdGpu` with `HasRocmLibrary`, `HasRenderDevice` with `HasVulkanLibrary`.
 
 A broken engine install looks like this:
 
@@ -165,7 +161,7 @@ A broken engine install looks like this:
 Three things to read out of that:
 
 - `BinaryPath` and `ModelPath` are **missing entirely**, not `null`. Jellyfin drops null fields from its JSON, so an absent field means "not found". Nothing is wrong with your copy of the response.
-- `SetupComplete: false` with both `BinaryFound` and `ModelFound` false means the engine was never installed. Install it from the plugin's settings page, described in the [setup guide](/docs/setup).
+- `SetupComplete: false` with both `BinaryFound` and `ModelFound` false means the engine was never installed. Install it from the plugin's settings page, described in the [setup guide](docs/setup.md).
 - `HasNvidia: true` with `HasCudaLibrary: false` is the classic container case: the GPU device was passed through, but the CUDA runtime libraries are not in the image. The plugin therefore recommends `cpu`, because a `cuda12` binary would fail to start.
 
 ### A binary that is installed but cannot start
@@ -213,9 +209,8 @@ curl -s -H "Authorization: MediaBrowser Token=$JF_KEY" \
 
 Field names here are camelCase, unlike the status endpoint. The useful ones are `isProcessing`, `currentItem`, `remaining`, `processed`, `failed`, `lastError`, `phase`, `pendingRequests`, and `workers` (which worker is transcribing what).
 
-:::warning
-The queue response names the media being processed (`currentItem`, `library`) and `lastError` can contain file paths. Redact anything private before pasting it into a public issue.
-:::
+!!! warning
+    The queue response names the media being processed (`currentItem`, `library`) and `lastError` can contain file paths. Redact anything private before pasting it into a public issue.
 
 **Client script injection**, for "the Generate Subtitles button is missing":
 
@@ -232,9 +227,8 @@ Read `Level` and `Message` first: they carry the diagnosis and the remedy in pla
 
 **A query parameter, as a last resort.** The `ApiKey` query parameter works in the address bar, with no header needed. Use it only when you cannot send a header.
 
-:::warning
-A key in a URL leaks. It is written to your browser history, to the access log of every reverse proxy or gateway in front of Jellyfin, and to Jellyfin's own log, and it travels with the URL into any bug report or screenshot you paste it into. Revoke the key in **Dashboard → API Keys** as soon as you have the JSON.
-:::
+!!! warning
+    A key in a URL leaks. It is written to your browser history, to the access log of every reverse proxy or gateway in front of Jellyfin, and to Jellyfin's own log, and it travels with the URL into any bug report or screenshot you paste it into. Revoke the key in **Dashboard → API Keys** as soon as you have the JSON.
 
 ```text
 https://your-jellyfin/Plugins/WhisperSubs/Setup/Status?ApiKey=your-api-key

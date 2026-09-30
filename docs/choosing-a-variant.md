@@ -1,7 +1,5 @@
 ---
-title: Choosing a whisper binary variant
 description: The seven binary variants, which one your CPU and GPU can actually run, and how to fix illegal-instruction crashes.
-sidebar_position: 3
 ---
 
 # Choosing a whisper binary variant
@@ -26,21 +24,19 @@ Every build is statically linked, so none of them needs `libwhisper.so`.
 
 SSE4.2 arrived with Intel Nehalem in 2008 and AMD Bulldozer in 2011. AVX2 arrived with Intel Haswell in 2013 and AMD Excavator in 2015. So anything older than Haswell needs a `-noavx` build. So does every Atom, Celeron and Pentium built on the Silvermont or Goldmont cores, no matter how recently it shipped.
 
-:::warning Only four variants need `libgomp1`
-`noavx`, `vulkan-noavx` and `cuda12-noavx` are compiled with OpenMP disabled. They are self-contained and will never ask for `libgomp1`. The other four link it for a small threading speed-up: `cpu`, `vulkan`, `cuda12` and `rocm`.
+!!! warning "Only four variants need `libgomp1`"
+    `noavx`, `vulkan-noavx` and `cuda12-noavx` are compiled with OpenMP disabled. They are self-contained and will never ask for `libgomp1`. The other four link it for a small threading speed-up: `cpu`, `vulkan`, `cuda12` and `rocm`.
 
-If you have read anywhere that every variant requires `libgomp1`, that is wrong. A missing `libgomp1` is a reason to switch to a `-noavx` build, not a reason to give up on the plugin.
-:::
+    If you have read anywhere that every variant requires `libgomp1`, that is wrong. A missing `libgomp1` is a reason to switch to a `-noavx` build, not a reason to give up on the plugin.
 
 ### On ARM64
 
 Only `cpu` and `noavx` are published for ARM64 (Raspberry Pi 4 and 5, Apple silicon Linux VMs, ARM servers). AVX does not exist on ARM, so on those machines the two builds differ **only** in OpenMP: pick `noavx` if `libgomp1` is missing, `cpu` otherwise.
 
-:::warning[ROCm users: re-download your binary]
-ROCm binaries published before 4.8.0.2 were built for the CI machine's own CPU, which emitted AVX-512. They crash with an illegal instruction on any CPU without it, which includes every AMD Zen 1 to 3 and every Intel consumer chip from 12th gen onward.
+!!! warning "ROCm users: re-download your binary"
+    ROCm binaries published before 4.8.0.2 were built for the CI machine's own CPU, which emitted AVX-512. They crash with an illegal instruction on any CPU without it, which includes every AMD Zen 1 to 3 and every Intel consumer chip from 12th gen onward.
 
-Updating the plugin does not replace a binary you already downloaded: the setup check only looks for a file on disk, it does not record which release produced it. If you use the `rocm` variant, open **Whisper Engine** on the settings page and download it again after updating.
-:::
+    Updating the plugin does not replace a binary you already downloaded: the setup check only looks for a file on disk, it does not record which release produced it. If you use the `rocm` variant, open **Whisper Engine** on the settings page and download it again after updating.
 
 ### No ROCm compatibility build
 
@@ -68,9 +64,8 @@ If you only want the yes/no answer:
 grep -qw avx2 /proc/cpuinfo && echo "AVX2: yes" || echo "AVX2: no"
 ```
 
-:::danger `avx` is not `avx2`
-The Xeon row above is the trap. That CPU advertises `avx`, so a loose check reports success, and then the AVX2 binary crashes anyway. Match the exact flag `avx2`. Nothing else answers the question.
-:::
+!!! danger "`avx` is not `avx2`"
+    The Xeon row above is the trap. That CPU advertises `avx`, so a loose check reports success, and then the AVX2 binary crashes anyway. Match the exact flag `avx2`. Nothing else answers the question.
 
 ## Pick your variant
 
@@ -190,9 +185,8 @@ You usually do not need this page. The plugin already:
 - **Falls back automatically.** After downloading, it launches the binary to check it starts. On failure it walks a fallback chain: `cuda12` and `vulkan` fall back to `cpu`, then `cpu` to `noavx`; `cuda12-noavx`, `vulkan-noavx` and `rocm` fall back straight to `noavx`. A crash on launch (132, 134, 135) or a missing shared library triggers the walk.
 - **Remembers what you installed.** The chosen variant is stored in the config, so revisiting the Setup page will not silently swap you back to a GPU-recommended build that crashes.
 
-:::tip When not to intervene
-If the Setup page hint is green and subtitles are being generated, leave the variant alone. Override the recommendation only when you know something the detection cannot see, such as a GPU that is present but unusable inside your container.
-:::
+!!! tip "When not to intervene"
+    If the Setup page hint is green and subtitles are being generated, leave the variant alone. Override the recommendation only when you know something the detection cannot see, such as a GPU that is present but unusable inside your container.
 
 One limit worth knowing: CPU detection is deliberately fail-open. On a non-Linux host, or if `/proc/cpuinfo` cannot be read, the plugin assumes AVX2 is available rather than steering you to a slower build on a guess. The download-time launch check is what catches a genuine mismatch.
 

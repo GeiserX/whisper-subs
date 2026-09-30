@@ -1,7 +1,5 @@
 ---
-title: Platform-specific installs
 description: Getting the whisper engine working on TrueNAS, Proxmox LXC, Synology, unRAID and other non-standard Jellyfin deployments.
-sidebar_position: 4
 ---
 
 # Platform-specific installs
@@ -25,9 +23,8 @@ On every mainstream container template `/config` is a mapped volume, so the bina
 
 The plugin settings page reports the path it actually used. Trust that over the table above.
 
-:::warning
-`GET /Plugins/WhisperSubs/Setup/Status` requires an admin token. Pasting that URL into a browser tab answers 401 or 404, which is why several bug reports say "couldn't access the endpoint". Read the status from the plugin settings page instead.
-:::
+!!! warning
+    `GET /Plugins/WhisperSubs/Setup/Status` requires an admin token. Pasting that URL into a browser tab answers 401 or 404, which is why several bug reports say "couldn't access the endpoint". Read the status from the plugin settings page instead.
 
 **2. The shared libraries the chosen build needs have to exist inside the container.**
 
@@ -51,9 +48,8 @@ Both appear in the log when a real transcription runs. Running the binary with `
 
 Prebuilt binaries exist for Linux only. `linux-x64` gets all seven variants; `linux-arm64` gets `cpu` and `noavx` only, with no GPU builds. On a Windows or macOS Jellyfin host the Download button has nothing to offer and you must supply your own `whisper-cli`.
 
-:::tip
-Run plugin **v3.21.1.0 or newer** (current releases are 4.x). Older builds re-selected the GPU-recommended variant on every visit to the settings page, so a second Download could silently overwrite a working Compatibility build with one that crashes.
-:::
+!!! tip
+    Run plugin **v3.21.1.0 or newer** (current releases are 4.x). Older builds re-selected the GPU-recommended variant on every visit to the settings page, so a second Download could silently overwrite a working Compatibility build with one that crashes.
 
 ## TrueNAS SCALE / TrueCharts
 
@@ -73,7 +69,7 @@ Pick a variant that needs nothing, in the plugin settings page under the **whisp
 
 - CPU only: **CPU (Compatibility)** (`noavx`).
 - NVIDIA GPU: **NVIDIA CUDA 12 (Compatibility)** (`cuda12-noavx`). Since v3.18.1.0 the CUDA runtime is statically linked into the binary, so the only shared library it needs is `libcuda.so.1`, which the toolkit already provides.
-- Intel or AMD GPU via Vulkan: only if `libvulkan.so.1` and a Mesa ICD are already in the image. Check before choosing it; if they are absent, use `noavx` on CPU or offload to a [remote worker](/remote-workers).
+- Intel or AMD GPU via Vulkan: only if `libvulkan.so.1` and a Mesa ICD are already in the image. Check before choosing it; if they are absent, use `noavx` on CPU or offload to a [remote worker](remote-workers.md).
 
 Current plugin versions detect a missing `libgomp.so.1` and a CPU without AVX2, then fall back to `noavx` at download time. Choosing the variant yourself is what to do when that automatic fallback does not fire.
 
@@ -102,9 +98,8 @@ Read the whole output. Every line should resolve to a path; a line ending in `no
 
 Finish by generating a subtitle for one short item from the plugin settings page. That is the only check that exercises the AVX2 code path, and the Jellyfin log will name the failure if there is one.
 
-:::warning
-On TrueNAS releases before 24.10, apps ran under k3s and there is no `docker` command. Use the app's own Shell action in the web UI and run the `whisper-cli --help` and `ldd` commands directly.
-:::
+!!! warning
+    On TrueNAS releases before 24.10, apps ran under k3s and there is no `docker` command. Use the app's own Shell action in the web UI and run the `whisper-cli --help` and `ldd` commands directly.
 
 ## Proxmox LXC
 
@@ -289,6 +284,6 @@ docker exec jellyfin ldd /config/data/WhisperSubs/whisper/whisper-cli
 
 ## When none of this fits
 
-If the container cannot get the libraries and the CPU is too slow for `noavx` to be usable, stop fighting the box. Run the transcription somewhere else and point Jellyfin at it: see [Remote workers](/remote-workers). The plugin still extracts audio locally; only the transcription moves.
+If the container cannot get the libraries and the CPU is too slow for `noavx` to be usable, stop fighting the box. Run the transcription somewhere else and point Jellyfin at it: see [Remote workers](remote-workers.md). The plugin still extracts audio locally; only the transcription moves.
 
-For picking between the seven binary variants on hardware not covered here, see [Choosing a variant](/choosing-a-variant). For reading a failure out of the logs, see [Diagnostics](/diagnostics).
+For picking between the seven binary variants on hardware not covered here, see [Choosing a variant](choosing-a-variant.md). For reading a failure out of the logs, see [Diagnostics](diagnostics.md).

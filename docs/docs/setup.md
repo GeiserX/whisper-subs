@@ -1,8 +1,5 @@
 ---
-title: Setup guide
 description: Installing the whisper engine, including container library requirements and GPU passthrough.
-slug: /docs/setup
-sidebar_position: 2
 ---
 
 # Setup guide
@@ -20,15 +17,13 @@ Open **Dashboard → Plugins → WhisperSubs**. The **Whisper Engine** section h
 3. **Download a model.** This is the second, separate download, from Hugging Face. The default is **Large V3 Turbo (Q5)**, about 574 MB, and it suits most libraries. If you want the English translation feature, pick a non-turbo model instead: the turbo models were fine-tuned without the translate task and return the source language rather than English.
 4. **Install any missing libraries.** If the binary panel reports a missing shared library, see [Docker setup](#docker-setup) below.
 
-:::note[The variant dropdown is empty]
-It reads "No prebuilt binaries for this platform" and both controls are disabled on **macOS and Windows**. The plugin only publishes prebuilt `whisper-cli` binaries for Linux, so there is nothing to offer.
+!!! note "The variant dropdown is empty"
+    It reads "No prebuilt binaries for this platform" and both controls are disabled on **macOS and Windows**. The plugin only publishes prebuilt `whisper-cli` binaries for Linux, so there is nothing to offer.
 
-This is not a broken install. Install `whisper-cli` yourself (Homebrew, a whisper.cpp release, or your own build), then set **Whisper Binary Path** and **Whisper Model Path** under Advanced settings. A manually installed binary is fully supported: the plugin will find it and use it.
-:::
+    This is not a broken install. Install `whisper-cli` yourself (Homebrew, a whisper.cpp release, or your own build), then set **Whisper Binary Path** and **Whisper Model Path** under Advanced settings. A manually installed binary is fully supported: the plugin will find it and use it.
 
-:::tip[Running on bare metal Linux?]
-The required libraries are usually already present. Select your variant and download; the plugin tells you if anything is missing.
-:::
+!!! tip "Running on bare metal Linux?"
+    The required libraries are usually already present. Select your variant and download; the plugin tells you if anything is missing.
 
 ## Variant requirements {#variants}
 
@@ -157,9 +152,8 @@ services:
       - /dev/dri:/dev/dri   # only if using GPU variants
 ```
 
-:::note[unRAID users]
-You can add the `apt install` command to the container's **Post Arguments**, or use the **User Scripts** plugin to run it on container start.
-:::
+!!! note "unRAID users"
+    You can add the `apt install` command to the container's **Post Arguments**, or use the **User Scripts** plugin to run it on container start.
 
 ## Vocal separation (optional) {#vocal-separation}
 
@@ -249,9 +243,8 @@ The assets are `.tar.xz` on Linux and macOS and `.zip` on Windows. Linux x64 has
 
 **Where they go.** When the downloader does it, both land in the plugin's data folder: the binary in `vocal-separation/bin/` and the model in `vocal-separation/models/`, so `/config/data/WhisperSubs/vocal-separation/` on a standard Docker install. A manual install can live anywhere Jellyfin can read, and the binary must be executable. Set the two paths under **Separation tuning (advanced)** and save.
 
-:::warning[unRAID: keep it off /opt]
-unRAID rebuilds its root filesystem in RAM from the flash drive on every boot, and `/opt` is part of that. Anything you put there is gone after a reboot. Keep the binary and the model under `/mnt/user/appdata` and bind-mount that into the container, as in the compose example above.
-:::
+!!! warning "unRAID: keep it off /opt"
+    unRAID rebuilds its root filesystem in RAM from the flash drive on every boot, and `/opt` is part of that. Anything you put there is gone after a reboot. Keep the binary and the model under `/mnt/user/appdata` and bind-mount that into the container, as in the compose example above.
 
 ### Licences {#vocal-separation-licences}
 

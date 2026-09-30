@@ -1,7 +1,5 @@
 ---
-title: Settings reference
 description: Every WhisperSubs setting, what it does, and its default.
-sidebar_position: 5
 ---
 
 # Settings reference
@@ -27,7 +25,7 @@ Defaults are the values a fresh install starts with.
 | **Full + Forced** | Both files, per track. |
 | **Translation Only (English)** | Skips native-language transcription entirely and produces only an English translation, in a single whisper pass. |
 
-Translation Only needs a model that can translate. The recommended turbo models cannot, so pick a medium or large non-turbo model for it. [Limitations](/limitations#the-recommended-model-cannot-translate) explains why.
+Translation Only needs a model that can translate. The recommended turbo models cannot, so pick a medium or large non-turbo model for it. [Limitations](limitations.md#the-recommended-model-cannot-translate) explains why.
 
 ## Subtitle file naming
 
@@ -58,9 +56,8 @@ Label at end                {name}.{lang}{.type}.{label}
 Keep .generated             {name}.{lang}.{label}.generated
 ```
 
-:::warning[A template with no type token collides]
-The **Keep .generated** preset has no `{.type}`, so the type is simply dropped. Full, forced and translated output for the same language all expand to the same filename and overwrite each other. If you use a custom template, keep `{.type}` in it unless you run in Full mode only.
-:::
+!!! warning "A template with no type token collides"
+    The **Keep .generated** preset has no `{.type}`, so the type is simply dropped. Full, forced and translated output for the same language all expand to the same filename and overwrite each other. If you use a custom template, keep `{.type}` in it unless you run in Full mode only.
 
 Files written by older versions are still recognised. Anything containing `.generated.` or `.translated.` counts as the plugin's own output regardless of the current label, alongside the label-based `.WhisperSubs.` form.
 
@@ -70,7 +67,7 @@ Files written by older versions are still recognised. Anything containing `.gene
 |---|---|---|
 | Enable Auto-Generation | Off | Lets the scheduled task sweep your libraries. With this off, subtitles are only ever produced by a manual Generate. |
 | Libraries | none selected | The checkbox list under Auto-Generation scopes the sweep. **With none selected, every library is scanned.** Selecting one or more restricts the sweep to those. It applies to the scheduled task only; a manual Generate on a single item ignores it. |
-| Enable Lyrics Generation (Experimental) | Off | Includes music libraries in the sweep and writes `.lrc` lyrics next to audio tracks. Whisper is trained on speech, not singing, so accuracy varies. See [Limitations](/limitations#lyrics-generation-is-experimental). |
+| Enable Lyrics Generation (Experimental) | Off | Includes music libraries in the sweep and writes `.lrc` lyrics next to audio tracks. Whisper is trained on speech, not singing, so accuracy varies. See [Limitations](limitations.md#lyrics-generation-is-experimental). |
 | Pause generation during playback | Off | Pauses transcription while any user is playing something, and resumes when playback stops. Useful when the same box transcodes and transcribes. |
 | Skip media that already has subtitles | On | The sweep skips media that already has a usable subtitle in the language it needs, embedded or external. For the translation pass, an existing English subtitle counts as already translated. |
 | Ignore forced subtitles when skipping | On | A forced subtitle track does not count as satisfying the need. Forced tracks only cover foreign-dialogue inserts, not the whole dialogue. |
@@ -84,9 +81,8 @@ Whisper transcribes the speech it hears, so it can only write a subtitle in the 
 | Generate original-language subtitles | On | The main generate switch. Transcribes each title in its own spoken language: a Korean film gets Korean subtitles, an English film gets English. Turning it off leaves the sweep producing only whatever forced or translated output the mode calls for. A manual single-item Generate always transcribes regardless of this setting. |
 | Count image-based subtitles as present | Off | When on, image-based tracks (PGS, VOBSUB) count as an existing subtitle. Off by default because image subtitles cannot be searched or edited, so the plugin still writes a text one. |
 
-:::note[The two filters are independent]
-"Ignore forced subtitles" and "Count image-based subtitles as present" are separate tests, applied one after the other to the same stream. A stream has to pass both to count as an existing subtitle. Neither one governs the other: a forced image track is rejected by the forced test whatever the image setting says, and turning the image setting on does not make forced tracks count.
-:::
+!!! note "The two filters are independent"
+    "Ignore forced subtitles" and "Count image-based subtitles as present" are separate tests, applied one after the other to the same stream. A stream has to pass both to count as an existing subtitle. Neither one governs the other: a forced image track is rejected by the forced test whatever the image setting says, and turning the image setting on does not make forced tracks count.
 
 The plugin's own output is always excluded from these checks, so a subtitle it generated last week never satisfies the check this week and stops it regenerating a file it just wrote.
 
@@ -134,7 +130,7 @@ Per title and per language, the pass skips instead of translating when:
 - The plugin already wrote a translated subtitle in that language.
 - A usable subtitle in that language exists and **Skip media that already has subtitles** is on.
 
-If the audio is English and no engine can make the language, a title you generate by hand fails that language with an error that says why: nothing is installed, **Also use this server as a worker** is off, or a single Remote API URL keeps this server out of the pool. An engine is the local crispasr binary and Canary model together, or a worker that lists the language, as described in [Remote workers](./remote-workers.md#crispasr-server-workers). No file is written for a language that fails or skips.
+If the audio is English and no engine can make the language, a title you generate by hand fails that language with an error that says why: nothing is installed, **Also use this server as a worker** is off, or a single Remote API URL keeps this server out of the pool. An engine is the local crispasr binary and Canary model together, or a worker that lists the language, as described in [Remote workers](remote-workers.md#crispasr-server-workers). No file is written for a language that fails or skips.
 
 The scheduled task treats an English title as finished only when every checked language has its subtitle, so adding a language gets picked up by the next automatic run. Changing the list also clears the skip cache. A checked language that no engine can make is left out of each automatic run, with one warning in the log naming it, so it never fails your English titles. Installing the engine clears the skip cache and the next run picks those titles up.
 
@@ -152,7 +148,7 @@ On a movie, episode, season or series page, **Translate into…** sits next to t
 
 For admins, the translation goes straight to the queue at the admin priority. When **Allow users to request subtitles** is on, other users see the same list. Their pick becomes a request with the usual approval, quota and caps, and a translation request counts toward them like any other. Collections and folders cannot be translated in one go, for the same reason they cannot be generated in one go.
 
-Canary output is experimental. [Limitations](./limitations.md#translation) explains what it cannot do.
+Canary output is experimental. [Limitations](limitations.md#translation) explains what it cannot do.
 
 ## Subtitle timing
 
@@ -189,11 +185,10 @@ Both apply to full and translated subtitles. Neither applies to forced subtitles
 
 Each of these maps to one `--vad-*` flag on whisper-cli, and each applies only when **Use speech detection (VAD)** is on.
 
-:::note[An empty field means "use whisper's own default"]
-Leave a tuning field empty and the plugin stores `-1`, which it treats as unset. No flag is emitted for it and whisper.cpp uses its built-in value. That is why the rows below quote a whisper default rather than a plugin one: on a fresh install the plugin sets none of them, and the command line it builds is identical to one with no tuning feature at all.
+!!! note "An empty field means "use whisper's own default""
+    Leave a tuning field empty and the plugin stores `-1`, which it treats as unset. No flag is emitted for it and whisper.cpp uses its built-in value. That is why the rows below quote a whisper default rather than a plugin one: on a fresh install the plugin sets none of them, and the command line it builds is identical to one with no tuning feature at all.
 
-**Max Speech Duration** additionally treats `0` as unset, because a zero second cap has no meaning.
-:::
+    **Max Speech Duration** additionally treats `0` as unset, because a zero second cap has no meaning.
 
 | Setting | Default | What it does |
 |---|---|---|
@@ -207,7 +202,7 @@ Leave a tuning field empty and the plugin stores `-1`, which it treats as unset.
 
 A matching flag placed in **Custom Whisper Arguments** supersedes the value set here. Custom arguments are appended last and whisper-cli takes the last value it sees.
 
-The next two sections on the page, **Remote Whisper API** and **Worker Pool**, are covered in [Remote workers](/remote-workers).
+The next two sections on the page, **Remote Whisper API** and **Worker Pool**, are covered in [Remote workers](remote-workers.md).
 
 ## Performance and advanced
 
@@ -230,9 +225,8 @@ These have no control on the settings page. They live in Jellyfin's plugin confi
 | `jellyfin/jellyfin` container, and the NAS app images built on it | `/config/plugins/configurations/WhisperSubs.xml` |
 | Debian or Ubuntu package on bare metal or in an LXC | `/var/lib/jellyfin/plugins/configurations/WhisperSubs.xml` |
 
-:::warning[Stop Jellyfin before editing it]
-Jellyfin holds the plugin configuration in memory and writes the whole file back whenever you press Save on the settings page. Editing the file while Jellyfin is running either has no effect or gets overwritten. Stop Jellyfin, edit, start it again.
-:::
+!!! warning "Stop Jellyfin before editing it"
+    Jellyfin holds the plugin configuration in memory and writes the whole file back whenever you press Save on the settings page. Editing the file while Jellyfin is running either has no effect or gets overwritten. Stop Jellyfin, edit, start it again.
 
 ### Remote call deadlines
 
@@ -287,6 +281,6 @@ The remaining settings belong to features with their own pages.
 
 | Settings | Where |
 |---|---|
-| Whisper Binary Path, Whisper Model Path, and the recorded binary variant | [Setup guide](/docs/setup) |
-| Vocal separation: the master switch, binary and model paths, the recorded variant and quantization, overlap and chunk size | [Vocal separation](/docs/setup#vocal-separation) |
-| Remote Whisper API URL, model and key, the worker pool list with each worker's dialect and translation targets, and whether the local host participates as a worker | [Remote workers](/remote-workers) |
+| Whisper Binary Path, Whisper Model Path, and the recorded binary variant | [Setup guide](docs/setup.md) |
+| Vocal separation: the master switch, binary and model paths, the recorded variant and quantization, overlap and chunk size | [Vocal separation](docs/setup.md#vocal-separation) |
+| Remote Whisper API URL, model and key, the worker pool list with each worker's dialect and translation targets, and whether the local host participates as a worker | [Remote workers](remote-workers.md) |
