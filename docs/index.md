@@ -1,7 +1,6 @@
 ---
 hide:
   - navigation
-  - toc
 ---
 
 # WhisperSubs { .ws-visually-hidden }
