@@ -21,7 +21,5 @@ Thumbs.db
 *.log
 build_log.txt
 
-# Docusaurus documentation site
-site/node_modules/
-site/build/
-site/.docusaurus/
+# MkDocs build output; pages.yml and ci.yml build it fresh
+site/
