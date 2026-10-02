@@ -136,6 +136,38 @@ public class EngineSwitchProviderTests
         Assert.Equal(30, WhisperSubs.Setup.Qwen3Catalog.Languages.Count);
     }
 
+    // The alignment rule follows the engine that ran: Whisper here has no VAD model, so it says
+    // false, while Qwen3-ASR always says true.
+    [Fact]
+    public async Task RequiresSpeechAlignmentOptIn_FollowsTheEngineThatRan()
+    {
+        var provider = new EngineSwitchProvider(Whisper(), Qwen3);
+        Assert.True(provider.RequiresSpeechAlignmentOptIn);          // before any job: Qwen3-ASR is current
+
+        await Assert.ThrowsAnyAsync<Exception>(() => provider.TranscribeAsync("/nope/a.wav", "sw", CancellationToken.None));
+        Assert.False(provider.RequiresSpeechAlignmentOptIn);         // Swahili ran on Whisper
+        Assert.IsType<WhisperProvider>(provider.LastUsed);
+
+        await Assert.ThrowsAnyAsync<Exception>(() => provider.TranscribeAsync("/nope/a.wav", "en", CancellationToken.None));
+        Assert.True(provider.RequiresSpeechAlignmentOptIn);          // English ran on Qwen3-ASR
+        Assert.IsType<Qwen3Provider>(provider.LastUsed);
+
+        await Assert.ThrowsAnyAsync<Exception>(() => provider.TranscribeAsync("/nope/a.wav", "fr", CancellationToken.None, translate: true));
+        Assert.False(provider.RequiresSpeechAlignmentOptIn);         // a translation ran on Whisper
+    }
+
+    // The detection paths must see the Whisper provider through the wrapper, or forced-subtitle
+    // chunk detection loses its batching.
+    [Fact]
+    public void AsWhisper_SeesThroughTheWrapper()
+    {
+        var whisper = Whisper();
+        Assert.Same(whisper, WhisperSubs.Controller.SubtitleManager.AsWhisper(whisper));
+        Assert.Same(whisper, WhisperSubs.Controller.SubtitleManager.AsWhisper(new EngineSwitchProvider(whisper, Qwen3)));
+        Assert.Null(WhisperSubs.Controller.SubtitleManager.AsWhisper(Qwen3()));
+        Assert.Null(WhisperSubs.Controller.SubtitleManager.AsWhisper(null));
+    }
+
     [Fact]
     public async Task DetectLanguage_AlwaysGoesToWhisper()
     {

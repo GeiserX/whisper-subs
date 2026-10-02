@@ -27,12 +27,25 @@ namespace WhisperSubs.Providers
         /// <summary>The Whisper provider every non-transcription call lands on.</summary>
         public WhisperProvider Whisper { get; }
 
-        /// <summary>The engine a transcription would use right now.</summary>
+        private volatile ISubtitleProvider? _lastUsed;
+
+        /// <summary>The engine a transcription would use right now, before the language is known.</summary>
         public ISubtitleProvider Current => (ISubtitleProvider?)_qwen3() ?? Whisper;
+
+        /// <summary>
+        /// The engine the last transcription actually ran on, or <see cref="Current"/> before any. The
+        /// manager reads it right after the transcription it belongs to; this server's worker holds one
+        /// slot, so no other job runs between the two.
+        /// </summary>
+        public ISubtitleProvider LastUsed => _lastUsed ?? Current;
 
         public string Name => Current.Name;
 
-        public bool RequiresSpeechAlignmentOptIn => Current.RequiresSpeechAlignmentOptIn;
+        /// <summary>
+        /// Of the engine that ran: Qwen3-ASR (VAD or aligner timing, opt-in) or Whisper (its own VAD
+        /// rule), which differ when a title's language sent the job to Whisper.
+        /// </summary>
+        public bool RequiresSpeechAlignmentOptIn => LastUsed.RequiresSpeechAlignmentOptIn;
 
         public Task<string> TranscribeAsync(string audioPath, string language, CancellationToken cancellationToken, bool translate = false, string? targetLanguage = null)
             => TranscribeAsync(audioPath, language, cancellationToken, translate, applyVad: true, targetLanguage);
@@ -60,11 +73,13 @@ namespace WhisperSubs.Providers
                 // Whisper rather than failing or coming back in the wrong language.
                 if (Setup.Qwen3Catalog.Supports(code))
                 {
+                    _lastUsed = qwen3;
                     return await qwen3.TranscribeAsync(audioPath, code, cancellationToken, translate: false, targetLanguage: null, applyVad);
                 }
                 _logger?.LogInformation("Qwen3-ASR does not cover '{Language}'; transcribing with Whisper instead", code);
                 language = code;
             }
+            _lastUsed = Whisper;
             // A target is only ever "en" here (Whisper refuses anything else); the interface overload
             // checks it, the applyVad overload is the one the forced path needs.
             return targetLanguage == null
