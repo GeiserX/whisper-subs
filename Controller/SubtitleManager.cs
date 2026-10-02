@@ -1808,9 +1808,12 @@ namespace WhisperSubs.Controller
                         // span a few merged utterances); re-running whisper's VAD can filter a short
                         // window to zero segments and write an empty subtitle. Only WhisperProvider
                         // runs a local VAD pass; the remote provider ignores it.
-                        var srtContent = provider is WhisperProvider whisperProv
-                            ? await whisperProv.TranscribeAsync(segmentPath, segment.Language, cancellationToken, translateForced, applyVad: false)
-                            : await provider.TranscribeAsync(segmentPath, segment.Language, cancellationToken, translate: translateForced);
+                        var srtContent = provider switch
+                        {
+                            WhisperProvider whisperProv => await whisperProv.TranscribeAsync(segmentPath, segment.Language, cancellationToken, translateForced, applyVad: false),
+                            EngineSwitchProvider switchProv => await switchProv.TranscribeAsync(segmentPath, segment.Language, cancellationToken, translateForced, applyVad: false),
+                            _ => await provider.TranscribeAsync(segmentPath, segment.Language, cancellationToken, translate: translateForced),
+                        };
 
                         if (!string.IsNullOrWhiteSpace(srtContent))
                         {

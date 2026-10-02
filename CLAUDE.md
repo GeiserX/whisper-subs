@@ -53,9 +53,15 @@ Plugin.cs                          Entry point, IHasWebPages (embeds config UI)
 │   ├── ISubtitleProvider.cs       Provider interface (TranscribeAsync, DetectLanguageAsync, RequiresSpeechAlignmentOptIn)
 │   ├── WhisperProvider.cs         Local whisper.cpp integration (finds binary, runs process, reads SRT output)
 │   ├── RemoteWhisperProvider.cs   OpenAI-compatible HTTP worker (POSTs audio to /v1/audio/{transcriptions,translations})
+│   ├── CanaryProvider.cs          NVIDIA Canary through the plugin-managed crispasr binary: English audio into 24 languages
+│   ├── Qwen3Provider.cs           Qwen3-ASR-1.7B through the same crispasr binary: transcription only, cues timed by Silero VAD
+│   ├── EngineSwitchProvider.cs    This server's provider: Qwen3-ASR for whole titles while selected+installed (read per job), Whisper for everything else
 │   ├── VocalSeparationProvider.cs Runs bs_roformer-cli (BSRoformer.cpp) to isolate vocals before VAD/transcription; fail-soft
-│   └── SubtitleProviderFactory.cs Builds the local (or legacy single-remote) provider from config
+│   └── SubtitleProviderFactory.cs Builds the local (or legacy single-remote) provider from config; CreateCanary / CreateQwen3
 ├── Setup/
+│   ├── CrispAsrCatalog.cs         CrispASR binary variants (upstream release pinned at v0.8.35); CrispAsrSetupService downloads binary + GGUFs
+│   ├── CanaryCatalog.cs           Canary GGUF quants (pinned HF revision + SHA-256) and the 24 target languages
+│   ├── Qwen3Catalog.cs            Qwen3-ASR GGUF quants (pinned HF revision + SHA-256) and the `TranscriptionEngine` keys
 │   ├── WhisperSetupService.cs     Downloads/validates whisper-cli + models (this project's own CI-built release)
 │   ├── RoformerCatalog.cs         BSRoformer.cpp binary variant/asset-name catalog (upstream 3rd-party release, pinned version)
 │   ├── RoformerModelCatalog.cs    BSRoformer.cpp GGUF model (anvuew/BS-RoFormer) quantization catalog

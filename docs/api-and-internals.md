@@ -90,6 +90,11 @@ These install the engine for the [extra target languages](configuration.md#more-
 | GET | `Setup/CrispAsr/BinaryVariants` | The `crispasr` variants published for this platform. |
 | POST | `Setup/CrispAsr/DownloadBinary` | 202. Query: `variant`, defaulting to `cpu`. 400 for a variant this platform lacks, 409 while a download runs. |
 | POST | `Setup/CrispAsr/DownloadModel` | 202. Query: `quant`, a catalogue key such as `q8_0`. 400 for an unknown key, 409 while a download runs. |
+| GET | `Setup/CrispAsr/Qwen3/AvailableModels` | The Qwen3-ASR GGUF quantizations offered for download, for the [transcription engine](configuration.md#transcription-engine-experimental). |
+| POST | `Setup/CrispAsr/Qwen3/DownloadModel` | 202. Query: `quant`, `q8_0` or `q4_k`. 400 for an unknown key, 409 while a download runs. Progress on `Setup/CrispAsr/Progress`. |
+| POST | `Setup/CrispAsr/Qwen3/DownloadAligner` | 202. Downloads the Canary CTC aligner for word timing. 409 while a download runs. |
+
+`Setup/CrispAsr/Status` also reports `Qwen3ModelFound`, `Qwen3ModelPath`, `InstalledQwen3Quant`, the saved `TranscriptionEngine`, `Qwen3Active` (true when Qwen3-ASR is selected and both its files exist), `Qwen3AlignerFound`, `Qwen3AlignerPath` and `Qwen3UseAligner`.
 
 ### User endpoints {#user-endpoints}
 

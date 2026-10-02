@@ -467,6 +467,32 @@ namespace WhisperSubs.Configuration
         /// <summary>crispasr <c>-t N</c>. 0 = the engine's own default.</summary>
         public int CrispAsrThreadCount { get; set; } = 0;
 
+        // ── Transcription engine (whisper-cli, or Qwen3-ASR through CrispASR) ────────────────
+        // Whole-title transcription on this server runs on whisper-cli unless the admin picks
+        // Qwen3-ASR, which uses the same crispasr binary as Canary plus its own model. Translation
+        // into English and language detection stay on Whisper either way.
+
+        /// <summary>
+        /// <c>whisper</c> (default) or <c>qwen3</c> (<see cref="Setup.Qwen3Catalog.EngineKey"/>). Any
+        /// other value, or Qwen3-ASR selected with its files missing, behaves as <c>whisper</c>.
+        /// </summary>
+        public string TranscriptionEngine { get; set; } = Setup.Qwen3Catalog.WhisperEngineKey;
+
+        /// <summary>Filesystem path to the active Qwen3-ASR GGUF model. Set after download; manual override allowed.</summary>
+        public string Qwen3ModelPath { get; set; } = "";
+
+        /// <summary>
+        /// Filesystem path to the Canary CTC aligner GGUF (<see cref="Setup.Qwen3Catalog.Aligner"/>)
+        /// that gives Qwen3-ASR word-accurate cue timing. Empty = VAD timing.
+        /// </summary>
+        public string Qwen3AlignerModelPath { get; set; } = "";
+
+        /// <summary>
+        /// Use the aligner when its file exists and the title's language is one it knows. Off keeps
+        /// an installed aligner idle, for admins who prefer the speed.
+        /// </summary>
+        public bool Qwen3UseAligner { get; set; } = true;
+
         public PluginConfiguration()
         {
         }

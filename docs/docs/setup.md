@@ -10,7 +10,7 @@ The binaries are prebuilt, so they need runtime libraries that a slim Jellyfin c
 
 ## Quick start {#quick-start}
 
-Open **Dashboard → Plugins → WhisperSubs**. The **Whisper Engine** section has two panels, *whisper-cli Binary* and *Language Models*. Each shows an empty orange box until it is satisfied, then a green checked box.
+Open **Dashboard → Plugins → WhisperSubs**. The **Whisper Engine** section has two panels you need, *whisper-cli Binary* and *Language Models*, and a third, *Transcription engine*, that you can leave on Whisper (it swaps in [Qwen3-ASR](../configuration.md#transcription-engine-experimental), experimental). Each shows an empty orange box until it is satisfied, then a green checked box.
 
 1. **Pick a variant.** The dropdown in the binary panel comes preselected with the variant the plugin recommends after looking at your GPU devices and the libraries present on the system. Take that recommendation unless you have a reason not to. [Variant requirements](#variants) explains the options.
 2. **Download the binary.** The plugin fetches it from this project's GitHub release matching the installed plugin version, then launches it once to check it actually runs. If it fails to launch, the plugin retries automatically with a more compatible variant, ending at `noavx`, which has no external library dependencies at all.

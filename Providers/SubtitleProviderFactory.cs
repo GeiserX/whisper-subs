@@ -66,7 +66,7 @@ namespace WhisperSubs.Providers
 
             var vadTuning = BuildVadTuning(config);
 
-            return new WhisperProvider(
+            var whisper = new WhisperProvider(
                 loggerFactory.CreateLogger<WhisperProvider>(),
                 config.WhisperModelPath,
                 config.WhisperBinaryPath,
@@ -76,7 +76,44 @@ namespace WhisperSubs.Providers
                 detectionModelPath,
                 vadTuning,
                 config.SubtitleMaxLineLength);
+
+            // The engine choice is read on every job, from the live configuration, so switching it on
+            // the settings page needs no pool rebuild (the same reason the Canary install is live).
+            var qwen3Logger = loggerFactory.CreateLogger<Qwen3Provider>();
+            return new EngineSwitchProvider(whisper, () => CreateQwen3(Plugin.Instance?.Configuration ?? config, qwen3Logger));
         }
+
+        /// <summary>
+        /// The Qwen3-ASR provider when it is the selected engine and the crispasr binary and its model
+        /// are on disk, else null so <see cref="EngineSwitchProvider"/> stays on Whisper. The Silero VAD
+        /// model is resolved even when <see cref="PluginConfiguration.EnableVad"/> is off, because
+        /// Qwen3-ASR without VAD returns the whole file as one cue; the provider reports a missing
+        /// model as a clear error.
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Orchestration: depends on Plugin.Instance and File.Exists; the selection rule and the argument vector are unit-tested")]
+        public static Qwen3Provider? CreateQwen3(PluginConfiguration config, ILogger logger)
+        {
+            if (!IsQwen3Active(config.TranscriptionEngine, config.CrispAsrBinaryPath, config.Qwen3ModelPath, System.IO.File.Exists)) return null;
+
+            var dataPath = Plugin.Instance?.DataFolderPath ?? "";
+            var vadModelPath = new WhisperSetupService(logger, dataPath)
+                .ResolveVadModelPath(config.VadModelPath, config.VadModelVersion) ?? "";
+
+            return new Qwen3Provider(
+                logger,
+                config.CrispAsrBinaryPath,
+                config.Qwen3ModelPath,
+                config.CrispAsrThreadCount,
+                vadModelPath,
+                BuildVadTuning(config),
+                config.SubtitleMaxLineLength,
+                new CrispAsrSetupService(logger, dataPath).CacheDirectory,
+                config.Qwen3UseAligner ? config.Qwen3AlignerModelPath : null);
+        }
+
+        /// <summary>Qwen3-ASR transcribes when it is selected and both its files exist. Pure.</summary>
+        internal static bool IsQwen3Active(string? transcriptionEngine, string? binaryPath, string? modelPath, System.Func<string, bool> fileExists)
+            => Qwen3Catalog.IsSelected(transcriptionEngine) && IsCanaryInstalled(binaryPath, modelPath, fileExists);
 
         /// <summary>
         /// Builds the Canary provider for the non-English translation targets, or null when the

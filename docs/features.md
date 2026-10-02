@@ -10,6 +10,7 @@ description: Every feature, the prerequisites, output files, subtitle modes, mod
 
 - **Self-hosted processing.** Audio is transcribed by [whisper.cpp](https://github.com/ggerganov/whisper.cpp) on this server by default, or across a pool of your own workers.
 - **Built-in engine setup.** The settings page downloads the `whisper-cli` binary and a model. Binary downloads are **Linux only**: on macOS and Windows the variant dropdown is empty by design, and you install `whisper-cli` yourself and set **Whisper Binary Path**. Model downloads work on every platform.
+- **A second transcription engine (experimental).** [Qwen3-ASR-1.7B](https://huggingface.co/Qwen/Qwen3-ASR-1.7B), 30 languages and 22 Chinese dialects, run through [CrispASR](https://github.com/CrispStrobe/CrispASR) on this server instead of whisper-cli. One switch on the settings page; detection and English translation stay on Whisper. See [Transcription engine](configuration.md#transcription-engine-experimental).
 - **Automatic language detection.** Reads each audio stream's language tag, falling back to whisper's own detection when tags are absent. A multi-language file gets one subtitle per audio language.
 - **Forced subtitles.** Transcribe only foreign-language dialogue, via VAD speech segmentation and per-chunk language detection.
 - **English translation.** Optionally add an English subtitle to a title that has none. English is the only language whisper can translate into.

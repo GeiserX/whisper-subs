@@ -22,6 +22,7 @@
 - A title you ask for jumps ahead of the nightly sweep. Your users can ask too, and a request costs no CPU until you approve it.
 - **Generate Subtitles** and **Translate into...** sit on every item page; a live banner on the settings page shows the current title, the phase and the queue.
 - The engine and a model download from the settings page on Linux (macOS and Windows servers install `whisper-cli` themselves), and a GPU is used when there is one: CUDA, Vulkan or ROCm.
+- One switch swaps the transcription model for Qwen3-ASR 1.7B (experimental), run through CrispASR; detection and English translation stay on Whisper.
 - Transcription can spread across your own workers or a hosted endpoint, free workers first.
 - An interrupted job resumes from its last timestamp, and the daily sweep skips what it already checked.
 - Music libraries can get `.lrc` lyrics (experimental), and vocal separation can clean noisy audio before transcription (optional).

@@ -8,7 +8,8 @@ namespace WhisperSubs.Setup
     /// fork that runs NVIDIA Canary for the non-English translation targets. Mirrors
     /// <see cref="RoformerCatalog"/>: CrispASR publishes its own release archives, so the download
     /// targets THAT upstream release, pinned to <see cref="Version"/>, and extracts an archive.
-    /// whisper-cli stays the transcription engine; this binary only ever serves Canary routes.
+    /// whisper-cli stays the default transcription engine; this binary serves the Canary routes and,
+    /// when the admin selects it, the Qwen3-ASR transcription engine (<see cref="Qwen3Catalog"/>).
     /// </summary>
     public static class CrispAsrCatalog
     {

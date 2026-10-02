@@ -24,6 +24,7 @@ Define arbitrary CLI commands as transcription backends.
 
 ## Done
 
+- **Qwen3-ASR transcription engine (experimental).** One switch on the settings page runs whole-title transcription on [Qwen3-ASR-1.7B](https://huggingface.co/Qwen/Qwen3-ASR-1.7B) through the plugin-managed CrispASR binary instead of whisper-cli; language detection and English translation stay on Whisper, and a missing file falls back to Whisper ([design](docs/design/qwen3-transcription-engine.md)). *(v4.11)*
 - **Non-English translation targets (experimental).** English audio can also get subtitles in 24 European languages from NVIDIA Canary, run by a plugin-managed CrispASR binary or a CrispASR server in the worker pool ([design](docs/design/crispasr-translation-engine.md), [#38](https://github.com/GeiserX/whisper-subs/issues/38), [#41](https://github.com/GeiserX/whisper-subs/issues/41)).
 - **Distributed Transcription (Worker Pool)** — pool multiple machines / GPUs / a NAS / cloud endpoints and transcribe in parallel, with cost-weighted routing that prefers free local workers and bursts to paid ones only when locals are saturated. Off by default; a normal single-server install is unchanged. *(v4.0)*
 - **English Translation** — generate an English subtitle for foreign-language audio via whisper's `--translate`, either alongside the native-language subtitle (`Enable Translation`) or on its own (`Translation Only` mode). *(v3.11)*
