@@ -171,8 +171,10 @@ namespace WhisperSubs.Providers
         /// <list type="bullet">
         /// <item><c>--backend qwen3</c>: the 1.7B weights are recognised from the file; there is no
         /// separate backend name to pass for them.</item>
-        /// <item><c>-l &lt;code&gt;</c> only for a known language. <c>auto</c> or empty omits the flag
-        /// and lets the model identify the language itself, which it does natively.</item>
+        /// <item><c>-l &lt;code&gt;</c> only for a known language. Resolve <c>auto</c> or empty before
+        /// calling this provider (<see cref="EngineSwitchProvider"/> does): without <c>-l</c>, crispasr
+        /// v0.8.35 fetches Whisper tiny for identification and defaults to English when that fails,
+        /// instead of asking the model, which could identify the language itself.</item>
         /// <item><c>--cache-dir</c>: keeps anything the binary fetches on its own inside the managed tree.</item>
         /// <item><c>--vad</c> with the plugin's Silero model: without it the file is one cue. The
         /// Whisper VAD tuning flags apply unchanged. Omitted when <paramref name="vadModelPath"/> is
