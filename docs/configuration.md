@@ -23,6 +23,7 @@ The **Whisper Engine** section ends with a **Transcription engine** panel. It de
 What stays on Whisper when Qwen3-ASR is selected:
 
 - Language detection, including the per-chunk detection of the forced-subtitle pass. Qwen3-ASR always receives a language code; with **Default Language** on auto-detect the Whisper detection model names it first.
+- Any language outside Qwen3-ASR's 30 (Chinese, English, Cantonese, Arabic, German, French, Spanish, Portuguese, Indonesian, Italian, Korean, Russian, Thai, Vietnamese, Japanese, Turkish, Hindi, Malay, Dutch, Swedish, Danish, Finnish, Polish, Czech, Filipino, Persian, Greek, Hungarian, Macedonian, Romanian). Such a title is transcribed by Whisper and the log says so.
 - Translation into English, which Qwen3-ASR cannot do. A turbo Whisper model still cannot translate, see [Limitations](limitations.md#the-recommended-model-cannot-translate).
 - Everything, until both the binary and the model are installed. A missing file means Whisper transcribes and the panel says so. No job fails because of the switch.
 

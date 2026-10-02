@@ -107,6 +107,35 @@ public class EngineSwitchProviderTests
         Assert.Contains("Whisper model", ex.Message);
     }
 
+    // A language outside the model's 30 stays on Whisper, which knows it, instead of failing or
+    // coming back in the wrong language.
+    [Theory]
+    [InlineData("sw")]
+    [InlineData("cy")]
+    [InlineData("und")]
+    public async Task UnsupportedLanguage_WithQwen3Selected_StaysOnWhisper(string language)
+    {
+        var provider = new EngineSwitchProvider(Whisper(), Qwen3);
+        var ex = await Assert.ThrowsAsync<System.IO.FileNotFoundException>(
+            () => provider.TranscribeAsync("/nope/a.wav", language, CancellationToken.None));
+        Assert.Contains("Whisper model", ex.Message);
+    }
+
+    [Theory]
+    [InlineData("en", true)]
+    [InlineData("yue", true)]
+    [InlineData("fil", true)]
+    [InlineData("mk", true)]
+    [InlineData("sw", false)]
+    [InlineData("auto", false)]
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    public void Supports_IsTheModelCardList(string? code, bool expected)
+    {
+        Assert.Equal(expected, WhisperSubs.Setup.Qwen3Catalog.Supports(code));
+        Assert.Equal(30, WhisperSubs.Setup.Qwen3Catalog.Languages.Count);
+    }
+
     [Fact]
     public async Task DetectLanguage_AlwaysGoesToWhisper()
     {

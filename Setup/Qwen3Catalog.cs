@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 
 namespace WhisperSubs.Setup
@@ -46,6 +47,21 @@ namespace WhisperSubs.Setup
         public static Qwen3ModelOption Resolve(string? key)
             => Array.Find(Models, m => string.Equals(m.Key, key, StringComparison.OrdinalIgnoreCase))
                ?? Models.First(m => m.Key == DefaultKey);
+
+        /// <summary>
+        /// The 30 languages of the model card (ISO 639-1, plus <c>yue</c> and <c>fil</c>), the only
+        /// codes handed to crispasr as <c>-l</c>. A title in any other language stays on Whisper, which
+        /// knows it; the 22 Chinese dialects all ride on <c>zh</c>.
+        /// </summary>
+        public static readonly IReadOnlySet<string> Languages = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "zh", "en", "yue", "ar", "de", "fr", "es", "pt", "id", "it", "ko", "ru", "th", "vi", "ja",
+            "tr", "hi", "ms", "nl", "sv", "da", "fi", "pl", "cs", "fil", "fa", "el", "hu", "mk", "ro",
+        };
+
+        /// <summary>True when Qwen3-ASR transcribes <paramref name="language"/> (a normalized code). Pure.</summary>
+        public static bool Supports(string? language)
+            => !string.IsNullOrEmpty(language) && Languages.Contains(language);
 
         /// <summary>True when the configured engine key selects Qwen3-ASR. Pure.</summary>
         public static bool IsSelected(string? transcriptionEngine)

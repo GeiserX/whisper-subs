@@ -39,7 +39,7 @@ crispasr --backend qwen3 -m <qwen3.gguf> -f <wav> -l <code> [-t N] --cache-dir <
 ```
 
 - `--backend qwen3` recognises the 1.7B weights from the file; `qwen3-1.7b` is only a name for `-m auto`.
-- `-l` is always present, for the reason above.
+- `-l` is always present, for the reason above, and only one of the model's 30 languages is ever passed; a title in another language goes to Whisper.
 - `--vad`: without it the whole file is one cue. Same Silero model and tuning as whisper-cli.
 - `--max-len`: unset means 42, doubled for two-byte scripts and tripled for CJK, because crispasr counts bytes.
 - The progress line is `crispasr: progress =  10% (1/10 slices)`, which the existing regex already matches.

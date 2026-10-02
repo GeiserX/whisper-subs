@@ -1,4 +1,5 @@
 using System;
+using Microsoft.Extensions.Logging;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -14,11 +15,13 @@ namespace WhisperSubs.Providers
     public sealed class EngineSwitchProvider : ISubtitleProvider
     {
         private readonly Func<Qwen3Provider?> _qwen3;
+        private readonly Microsoft.Extensions.Logging.ILogger? _logger;
 
-        public EngineSwitchProvider(WhisperProvider whisper, Func<Qwen3Provider?> qwen3)
+        public EngineSwitchProvider(WhisperProvider whisper, Func<Qwen3Provider?> qwen3, Microsoft.Extensions.Logging.ILogger? logger = null)
         {
             Whisper = whisper;
             _qwen3 = qwen3;
+            _logger = logger;
         }
 
         /// <summary>The Whisper provider every non-transcription call lands on.</summary>
@@ -53,7 +56,14 @@ namespace WhisperSubs.Providers
                     code = Qwen3Provider.NormalizeLanguage(detected)
                         ?? throw new InvalidOperationException("The language of the audio could not be detected, and Qwen3-ASR needs one.");
                 }
-                return await qwen3.TranscribeAsync(audioPath, code, cancellationToken, translate: false, targetLanguage: null, applyVad);
+                // Only the model's 30 languages go to crispasr; a Swahili or Welsh title stays on
+                // Whisper rather than failing or coming back in the wrong language.
+                if (Setup.Qwen3Catalog.Supports(code))
+                {
+                    return await qwen3.TranscribeAsync(audioPath, code, cancellationToken, translate: false, targetLanguage: null, applyVad);
+                }
+                _logger?.LogInformation("Qwen3-ASR does not cover '{Language}'; transcribing with Whisper instead", code);
+                language = code;
             }
             // A target is only ever "en" here (Whisper refuses anything else); the interface overload
             // checks it, the applyVad overload is the one the forced path needs.

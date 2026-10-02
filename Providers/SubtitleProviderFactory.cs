@@ -80,7 +80,8 @@ namespace WhisperSubs.Providers
             // The engine choice is read on every job, from the live configuration, so switching it on
             // the settings page needs no pool rebuild (the same reason the Canary install is live).
             var qwen3Logger = loggerFactory.CreateLogger<Qwen3Provider>();
-            return new EngineSwitchProvider(whisper, () => CreateQwen3(Plugin.Instance?.Configuration ?? config, qwen3Logger));
+            return new EngineSwitchProvider(whisper, () => CreateQwen3(Plugin.Instance?.Configuration ?? config, qwen3Logger),
+                loggerFactory.CreateLogger<EngineSwitchProvider>());
         }
 
         /// <summary>
