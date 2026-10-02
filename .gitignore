@@ -26,8 +26,7 @@ site/
 
 # Beads tracker: bead text lives in a private Dolt remote, never in this public repository.
 # The scaffolding under .beads/ (config.yaml, README.md, hooks/, metadata.json, .gitignore) is committed; the data never is.
-.beads/issues.jsonl
-.beads/interactions.jsonl
+.beads/*.jsonl
 .beads/dolt/
 .beads/embeddeddolt/
 .beads/proxieddb/

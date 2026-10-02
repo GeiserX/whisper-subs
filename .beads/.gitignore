@@ -1,6 +1,5 @@
-# Bead text (exports and interaction log): lives in the Dolt tracker only, never in git
-issues.jsonl
-interactions.jsonl
+# Bead text (issues.jsonl, interactions.jsonl, events and other exports): lives in the Dolt tracker only, never in git
+*.jsonl
 
 # Dolt database (managed by Dolt, not git)
 dolt/
