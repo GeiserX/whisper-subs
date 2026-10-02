@@ -23,3 +23,6 @@ build_log.txt
 
 # MkDocs build output; pages.yml and ci.yml build it fresh
 site/
+
+# Beads tracker: local working data, kept out of the commits of this public repository.
+.beads/
