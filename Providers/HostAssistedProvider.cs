@@ -29,10 +29,26 @@ namespace WhisperSubs.Providers
 
         public bool RequiresSpeechAlignmentOptIn => Remote.RequiresSpeechAlignmentOptIn;
 
-        public Task<string> TranscribeAsync(string audioPath, string language, CancellationToken cancellationToken, bool translate = false, string? targetLanguage = null)
-            => IsTranslation(translate, targetLanguage)
-                ? Whisper.TranscribeAsync(audioPath, language, cancellationToken, translate, targetLanguage)
-                : Remote.TranscribeAsync(audioPath, language, cancellationToken, translate, targetLanguage);
+        public async Task<string> TranscribeAsync(string audioPath, string language, CancellationToken cancellationToken, bool translate = false, string? targetLanguage = null)
+        {
+            if (IsTranslation(translate, targetLanguage))
+            {
+                return await Whisper.TranscribeAsync(audioPath, language, cancellationToken, translate, targetLanguage);
+            }
+            // Untagged audio arrives as "auto". The server would then run the detection this dialect
+            // exists to avoid, so the host's Whisper names the language first; a language the model
+            // does not cover stays on the host's Whisper too, as the local engine switch does.
+            var code = Qwen3Provider.NormalizeLanguage(language);
+            if (code == null)
+            {
+                var (detected, _) = await Whisper.DetectLanguageAsync(audioPath, cancellationToken);
+                code = Qwen3Provider.NormalizeLanguage(detected)
+                    ?? throw new System.InvalidOperationException("The language of the audio could not be detected, and the Qwen3-ASR server needs one.");
+            }
+            return Setup.Qwen3Catalog.Supports(code)
+                ? await Remote.TranscribeAsync(audioPath, code, cancellationToken, translate, targetLanguage)
+                : await Whisper.TranscribeAsync(audioPath, code, cancellationToken, translate, targetLanguage);
+        }
 
         /// <summary>A translate request, or any target: the host's Whisper takes it. Pure.</summary>
         internal static bool IsTranslation(bool translate, string? targetLanguage)

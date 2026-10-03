@@ -195,14 +195,29 @@ public class Qwen3ServerWorkerTests
         Assert.False(HostAssistedProvider.IsTranslation(false, null));
     }
 
+    // Untagged audio ("auto") is detected on the host's Whisper before the server sees it, and a
+    // language the model does not cover never reaches the server.
+    [Theory]
+    [InlineData("auto")]
+    [InlineData("")]
+    [InlineData("sw")]
+    public async Task HostAssistedProvider_AutoAndUnsupportedLanguages_StayOnWhisperFirst(string language)
+    {
+        var remote = new RemoteWhisperProvider(NullLogger.Instance, "http://mini:9020", "qwen3", dialect: "crispasr-qwen3", wordCueMaxChars: 42);
+        var wrapped = new HostAssistedProvider(remote, Whisper());
+        var ex = await Assert.ThrowsAsync<System.IO.FileNotFoundException>(
+            () => wrapped.TranscribeAsync("/nope/a.wav", language, CancellationToken.None));
+        Assert.Contains("Whisper model", ex.Message);
+    }
+
     [Fact]
-    public void DetectionWhisper_SeesThroughTheWrapper_AsWhisperDoesNot()
+    public void HostWhisper_SeesThroughTheWrapper_AsWhisperDoesNot()
     {
         var whisper = Whisper();
         var remote = new RemoteWhisperProvider(NullLogger.Instance, "http://mini:9020", "qwen3", dialect: "crispasr-qwen3");
         var wrapped = new HostAssistedProvider(remote, whisper);
-        Assert.Same(whisper, SubtitleManager.DetectionWhisper(wrapped));
+        Assert.Same(whisper, SubtitleManager.HostWhisper(wrapped));
         Assert.Null(SubtitleManager.AsWhisper(wrapped));                    // the turbo warning stays local-only
-        Assert.Null(SubtitleManager.DetectionWhisper(remote));
+        Assert.Null(SubtitleManager.HostWhisper(remote));
     }
 }
