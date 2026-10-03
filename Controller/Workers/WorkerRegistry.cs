@@ -94,12 +94,20 @@ namespace WhisperSubs.Controller.Workers
             PluginConfiguration config, ILoggerFactory loggerFactory)
         {
             var resolvedModel = string.IsNullOrWhiteSpace(model) ? "Systran/faster-whisper-large-v3" : model.Trim();
-            var provider = new RemoteWhisperProvider(
+            var normalizedDialect = WorkerDialect.Normalize(dialect);
+            var qwen3Server = normalizedDialect == WorkerDialect.CrispAsrQwen3;
+            ISubtitleProvider provider = new RemoteWhisperProvider(
                 loggerFactory.CreateLogger<RemoteWhisperProvider>(),
                 url, resolvedModel, key,
                 config.JobTimeoutRealtimeFactor, config.JobMinTimeoutSeconds, config.JobMaxTimeoutHours,
                 httpClient: null, maxUploadBytes: maxUploadBytes, uploadCodec: uploadCodec,
-                dialect: WorkerDialect.Normalize(dialect));
+                dialect: normalizedDialect,
+                wordCueMaxChars: qwen3Server ? WordCueMaxChars(config.SubtitleMaxLineLength) : 0);
+            if (qwen3Server)
+            {
+                // The server neither detects languages nor translates; this server's Whisper does both for the row.
+                provider = new HostAssistedProvider(provider, LocalWhisper(config, loggerFactory));
+            }
 
             return new TranscriptionWorker(id, name, provider, new WorkerCapabilities
             {
@@ -109,6 +117,21 @@ namespace WhisperSubs.Controller.Workers
                 TranslateTargets = translateTargets,
                 TranscribesItems = WorkerTargets.TranscribesItems(dialect, translateTargets),
             });
+        }
+
+        /// <summary>
+        /// Characters per cue for a Qwen3-ASR server row: the configured line length, or the same 42 the
+        /// local Qwen3 path uses when it is unset. Pure.
+        /// </summary>
+        internal static int WordCueMaxChars(int configuredMaxLineLength)
+            => configuredMaxLineLength > 0 ? configuredMaxLineLength : Qwen3Provider.DefaultMaxLineLength;
+
+        /// <summary>This server's Whisper provider, for the detection a Qwen3-ASR server row cannot do.</summary>
+        [ExcludeFromCodeCoverage(Justification = "Orchestration over CreateLocal, which is excluded for the same reason")]
+        private static WhisperProvider LocalWhisper(PluginConfiguration config, ILoggerFactory loggerFactory)
+        {
+            var local = SubtitleProviderFactory.CreateLocal(config, loggerFactory);
+            return local is EngineSwitchProvider sw ? sw.Whisper : (WhisperProvider)local;
         }
 
         /// <summary>Shared across pool rebuilds so the cached install verdict survives them.</summary>

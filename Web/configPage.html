@@ -3064,9 +3064,9 @@
 
                     row.appendChild(WhisperSubsConfig._workerSelect(
                         'Dialect', 'wkDialect',
-                        [['openai', 'OpenAI-compatible'], ['crispasr', 'CrispASR server']],
-                        (w.Dialect === 'crispasr' ? 'crispasr' : 'openai'),
-                        'OpenAI-compatible covers whisper-server, OpenAI and Groq. Pick CrispASR server for crispasr --server running the Canary model: it has no translations route, so the plugin sends the target language as form fields.'));
+                        [['openai', 'OpenAI-compatible'], ['crispasr', 'CrispASR server (Canary)'], ['crispasr-qwen3', 'CrispASR server (Qwen3-ASR, transcribe only)']],
+                        WhisperSubsConfig.normalizeDialect(w.Dialect),
+                        'OpenAI-compatible covers whisper-server, OpenAI and Groq. CrispASR server (Canary) is crispasr --server with the Canary model, for the extra translation targets. CrispASR server (Qwen3-ASR) is crispasr --server with a Qwen3-ASR model: it only transcribes, cues are cut from its word timestamps, and this server\'s Whisper detects languages for it.'));
                     // Rows saved before this field existed carry only CanTranslate: migrate it to "en" or nothing.
                     var targetsValue = (w.TranslateTargets && w.TranslateTargets.length)
                         ? w.TranslateTargets.join(', ')
@@ -3207,6 +3207,11 @@
 
                 // Splits a worker's "Translation targets" field: trimmed, lower-case, no duplicates, input order.
                 // Mirrors WorkerTargets.Parse on the server.
+                normalizeDialect: function (value) {
+                    var v = (value || '').trim().toLowerCase();
+                    return v === 'crispasr' || v === 'crispasr-qwen3' ? v : 'openai';
+                },
+
                 parseWorkerTargets: function (raw) {
                     var out = [];
                     (raw || '').split(/[,; ]+/).forEach(function (part) {
@@ -3231,6 +3236,9 @@
                         if (unknown.length) {
                             return label + ': unknown translation target(s) ' + unknown.join(', ') + '. Use en and the Canary codes listed under Translation.';
                         }
+                        if (w.Dialect === 'crispasr-qwen3' && w.TranslateTargets.length) {
+                            return label + ': a Qwen3-ASR server cannot translate. Leave its translation targets blank.';
+                        }
                         if (w.Dialect !== 'crispasr' && w.TranslateTargets.some(function (c) { return c !== 'en'; })) {
                             return label + ': only a CrispASR server can translate into languages other than en. Set the dialect to CrispASR server or keep only en.';
                         }
@@ -3252,7 +3260,7 @@
                         var costRaw = (row.querySelector('.wkCost').value || '').trim();
                         var maxUploadRaw = (row.querySelector('.wkMaxUpload').value || '').trim();
                         var uploadCodec = (row.querySelector('.wkUploadCodec').value || 'wav').trim();
-                        var dialect = row.querySelector('.wkDialect').value === 'crispasr' ? 'crispasr' : 'openai';
+                        var dialect = WhisperSubsConfig.normalizeDialect(row.querySelector('.wkDialect').value);
                         var targets = WhisperSubsConfig.parseWorkerTargets(row.querySelector('.wkTargets').value);
                         var enabled = row.querySelector('.wkEnabled').checked;
 

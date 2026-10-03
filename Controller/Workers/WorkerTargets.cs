@@ -17,15 +17,28 @@ namespace WhisperSubs.Controller.Workers
         public const string OpenAi = "openai";
         public const string CrispAsr = "crispasr";
 
+        /// <summary>
+        /// A <c>crispasr --server</c> running Qwen3-ASR: the OpenAI transcription route, no translation at
+        /// all, cue timing from the word timestamps in its <c>verbose_json</c>, and no language detection
+        /// of its own (this server's Whisper detects for it). A transcribe-only worker by construction.
+        /// </summary>
+        public const string CrispAsrQwen3 = "crispasr-qwen3";
+
         /// <summary>The known dialect for <paramref name="value"/>, or <see cref="OpenAi"/> when blank or unknown.</summary>
         public static string Normalize(string? value)
-            => string.Equals(value?.Trim(), CrispAsr, StringComparison.OrdinalIgnoreCase) ? CrispAsr : OpenAi;
+        {
+            var v = value?.Trim();
+            if (string.Equals(v, CrispAsr, StringComparison.OrdinalIgnoreCase)) return CrispAsr;
+            if (string.Equals(v, CrispAsrQwen3, StringComparison.OrdinalIgnoreCase)) return CrispAsrQwen3;
+            return OpenAi;
+        }
 
-        /// <summary>True when <paramref name="value"/> is blank or one of the two dialects.</summary>
+        /// <summary>True when <paramref name="value"/> is blank or one of the three dialects.</summary>
         public static bool IsKnown(string? value)
             => string.IsNullOrWhiteSpace(value)
                || string.Equals(value.Trim(), OpenAi, StringComparison.OrdinalIgnoreCase)
-               || string.Equals(value.Trim(), CrispAsr, StringComparison.OrdinalIgnoreCase);
+               || string.Equals(value.Trim(), CrispAsr, StringComparison.OrdinalIgnoreCase)
+               || string.Equals(value.Trim(), CrispAsrQwen3, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -75,6 +88,8 @@ namespace WhisperSubs.Controller.Workers
         /// </summary>
         public static IReadOnlySet<string> ForRow(WhisperWorker row)
         {
+            // A Qwen3-ASR server translates nothing, whatever the row's targets say.
+            if (WorkerDialect.Normalize(row.Dialect) == WorkerDialect.CrispAsrQwen3) return None;
             if (row.TranslateTargets == null || row.TranslateTargets.Count == 0) return row.CanTranslate ? EnglishOnly : None;
 
             var crisp = WorkerDialect.Normalize(row.Dialect) == WorkerDialect.CrispAsr;

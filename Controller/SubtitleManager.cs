@@ -1700,7 +1700,7 @@ namespace WhisperSubs.Controller
                 // at provider creation, usually landing during the audio extraction above). Give it a
                 // bounded head start so the FIRST forced run uses it too — otherwise early chunks fall
                 // back to the slow transcription model. On timeout we proceed regardless. (Issue #95.)
-                if (AsWhisper(provider) is { } whisperProvider)
+                if (HostWhisper(provider) is { } whisperProvider)
                 {
                     await whisperProvider.WaitForDetectionModelAsync(cancellationToken);
                 }
@@ -1722,7 +1722,7 @@ namespace WhisperSubs.Controller
                     },
                     // Only the local whisper-cli batches; a remote worker answers each chunk from a warm
                     // server already, so it keeps one request per chunk.
-                    AsWhisper(provider) is { } batchProvider ? batchProvider.DetectLanguagesAsync : null,
+                    HostWhisper(provider) is { } batchProvider ? batchProvider.DetectLanguagesAsync : null,
                     provider.DetectLanguageAsync,
                     _logger,
                     item.Name,
@@ -1785,7 +1785,7 @@ namespace WhisperSubs.Controller
                 // Gate the turbo-model warning to local whisper runs — a remote provider can translate
                 // fine and shouldn't trigger a warning about the local model path. (CodeRabbit.)
                 if (translateForced
-                    && AsWhisper(provider) != null
+                    && HostWhisper(provider) != null
                     && !ModelCatalog.IsTranslationCapable(Plugin.Instance?.Configuration?.WhisperModelPath))
                 {
                     _logger.LogWarning(
@@ -1812,6 +1812,9 @@ namespace WhisperSubs.Controller
                         {
                             WhisperProvider whisperProv => await whisperProv.TranscribeAsync(segmentPath, segment.Language, cancellationToken, translateForced, applyVad: false),
                             EngineSwitchProvider switchProv => await switchProv.TranscribeAsync(segmentPath, segment.Language, cancellationToken, translateForced, applyVad: false),
+                            // A Qwen3-ASR server row: the host's Whisper translates the foreign lines of an
+                            // English title, and like every local run it must not re-run VAD on the chunk.
+                            HostAssistedProvider assisted when translateForced => await assisted.Whisper.TranscribeAsync(segmentPath, segment.Language, cancellationToken, translateForced, applyVad: false),
                             _ => await provider.TranscribeAsync(segmentPath, segment.Language, cancellationToken, translate: translateForced),
                         };
 
@@ -2007,6 +2010,16 @@ namespace WhisperSubs.Controller
         /// </summary>
         internal static WhisperProvider? AsWhisper(ISubtitleProvider? provider)
             => provider as WhisperProvider ?? (provider as EngineSwitchProvider)?.Whisper;
+
+        /// <summary>
+        /// The host's Whisper provider involved in <paramref name="provider"/>: the local one behind this
+        /// server's engine switch, or the one a Qwen3-ASR server row borrows for detection and English
+        /// translation (<see cref="HostAssistedProvider"/>). Null for a worker that does both on its own.
+        /// The detection paths and the turbo-model warning use it; <see cref="AsWhisper"/> says only
+        /// whether the local Whisper transcribes. Pure.
+        /// </summary>
+        internal static WhisperProvider? HostWhisper(ISubtitleProvider? provider)
+            => AsWhisper(provider) ?? (provider as HostAssistedProvider)?.Whisper;
 
         /// <summary>
         /// Seconds for an FFmpeg <c>-ss</c> / <c>-t</c> argument, always with a dot. The plain

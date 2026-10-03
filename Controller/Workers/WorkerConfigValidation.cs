@@ -38,7 +38,10 @@ namespace WhisperSubs.Controller.Workers
                 return (false, "Upload format must be wav, flac or opus.");
             }
             if (!WorkerDialect.IsKnown(worker.Dialect))
-                return (false, "Dialect must be openai or crispasr.");
+                return (false, "Dialect must be openai, crispasr or crispasr-qwen3.");
+            if (WorkerDialect.Normalize(worker.Dialect) == WorkerDialect.CrispAsrQwen3
+                && worker.TranslateTargets is { Count: > 0 })
+                return (false, "A Qwen3-ASR server cannot translate. Leave its translation targets blank.");
             if (worker.TranslateTargets is { Count: > 0 })
             {
                 var invalid = worker.TranslateTargets
