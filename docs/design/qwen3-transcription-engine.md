@@ -76,7 +76,7 @@ On the Spanish track with the aligner and punctuation split, every cue landed wi
 
 So the aligner ships as a managed, pinned download in the Qwen3 panel, on by default once installed, used for the 25 languages it knows, with `--split-on-punct` alongside. Other languages keep VAD timing. Two things the aligner does not fix: the first word of a slice that opens with music can still be anchored at the slice start, and cue cuts by length can leave fragments.
 
-The limitation is documented in [limitations.md](../limitations.md#qwen3-asr-cues-are-timed-by-vad-not-by-the-model). The plugin's own speech alignment pass (`Align subtitles to speech`) snaps cue starts to speech afterwards.
+The limitation is documented in [limitations.md](../limitations.md#qwen3-asr-cues-are-timed-by-vad-unless-the-aligner-is-installed). The plugin's own speech alignment pass (`Align subtitles to speech`) snaps cue starts to speech afterwards.
 
 ## Rollout
 
