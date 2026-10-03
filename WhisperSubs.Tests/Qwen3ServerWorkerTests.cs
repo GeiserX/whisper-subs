@@ -166,10 +166,10 @@ public class Qwen3ServerWorkerTests
         => new(NullLogger<WhisperProvider>.Instance, "/nope/whisper.bin", "/nope/whisper-cli", 0, "", "", "", null, 0);
 
     [Fact]
-    public async Task LocalDetectionProvider_DetectsOnWhisper_TranscribesOnTheRemote()
+    public async Task HostAssistedProvider_DetectsOnWhisper_TranscribesOnTheRemote()
     {
         var remote = new RemoteWhisperProvider(NullLogger.Instance, "http://mini:9020", "qwen3", dialect: "crispasr-qwen3", wordCueMaxChars: 42);
-        var wrapped = new LocalDetectionProvider(remote, Whisper());
+        var wrapped = new HostAssistedProvider(remote, Whisper());
         Assert.Equal(remote.Name, wrapped.Name);
         Assert.Equal(remote.RequiresSpeechAlignmentOptIn, wrapped.RequiresSpeechAlignmentOptIn);
 
@@ -180,12 +180,27 @@ public class Qwen3ServerWorkerTests
         Assert.Contains("Audio file", transcribe.Message);                  // went to the remote (its own check)
     }
 
+    // The forced pass asks for English translation of foreign lines in an English title even with the
+    // translation option off; the row cannot do it, the host's Whisper can.
+    [Fact]
+    public async Task HostAssistedProvider_TranslationGoesToWhisper()
+    {
+        var remote = new RemoteWhisperProvider(NullLogger.Instance, "http://mini:9020", "qwen3", dialect: "crispasr-qwen3", wordCueMaxChars: 42);
+        var wrapped = new HostAssistedProvider(remote, Whisper());
+        var ex = await Assert.ThrowsAsync<System.IO.FileNotFoundException>(
+            () => wrapped.TranscribeAsync("/nope/seg.wav", "fr", CancellationToken.None, translate: true));
+        Assert.Contains("Whisper model", ex.Message);
+        Assert.True(HostAssistedProvider.IsTranslation(true, null));
+        Assert.True(HostAssistedProvider.IsTranslation(false, "en"));
+        Assert.False(HostAssistedProvider.IsTranslation(false, null));
+    }
+
     [Fact]
     public void DetectionWhisper_SeesThroughTheWrapper_AsWhisperDoesNot()
     {
         var whisper = Whisper();
         var remote = new RemoteWhisperProvider(NullLogger.Instance, "http://mini:9020", "qwen3", dialect: "crispasr-qwen3");
-        var wrapped = new LocalDetectionProvider(remote, whisper);
+        var wrapped = new HostAssistedProvider(remote, whisper);
         Assert.Same(whisper, SubtitleManager.DetectionWhisper(wrapped));
         Assert.Null(SubtitleManager.AsWhisper(wrapped));                    // the turbo warning stays local-only
         Assert.Null(SubtitleManager.DetectionWhisper(remote));

@@ -105,8 +105,8 @@ namespace WhisperSubs.Controller.Workers
                 wordCueMaxChars: qwen3Server ? WordCueMaxChars(config.SubtitleMaxLineLength) : 0);
             if (qwen3Server)
             {
-                // The server cannot detect languages; this server's Whisper does it for the row.
-                provider = new LocalDetectionProvider(provider, LocalWhisper(config, loggerFactory));
+                // The server neither detects languages nor translates; this server's Whisper does both for the row.
+                provider = new HostAssistedProvider(provider, LocalWhisper(config, loggerFactory));
             }
 
             return new TranscriptionWorker(id, name, provider, new WorkerCapabilities

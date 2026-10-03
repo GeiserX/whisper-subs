@@ -122,7 +122,7 @@ The files are the ones the plugin's own Qwen3-ASR panel downloads: the model, th
 
 Then add a worker row with **Dialect** set to `CrispASR server (Qwen3-ASR, transcribe only)`, the base URL (no `/v1`), the key, and **Translation targets** blank. The plugin treats that row differently from the other two dialects:
 
-- It never sends a translation there. Qwen3-ASR has no translate task, so English stays on Whisper workers and the Canary targets on Canary ones.
+- It never sends a translation there. Qwen3-ASR has no translate task, so English translation stays on Whisper and the Canary targets on Canary workers. When a title with English audio needs its foreign lines translated for a forced subtitle, this server's Whisper translates those lines and the row keeps the rest.
 - It asks for `verbose_json` first and cuts cues from the word timestamps in the answer, at **Maximum subtitle line length** characters (42 when unset), at sentence ends, and at pauses of a second or more. The server's own SRT is one cue per 30-second slice, which is not a subtitle.
 - Language detection for titles without tags, and the per-chunk detection of the forced-subtitle pass, run on this server's Whisper, not on the worker. The server reports `auto` as its language, so a row that detected there would guess.
 

@@ -1812,6 +1812,9 @@ namespace WhisperSubs.Controller
                         {
                             WhisperProvider whisperProv => await whisperProv.TranscribeAsync(segmentPath, segment.Language, cancellationToken, translateForced, applyVad: false),
                             EngineSwitchProvider switchProv => await switchProv.TranscribeAsync(segmentPath, segment.Language, cancellationToken, translateForced, applyVad: false),
+                            // A Qwen3-ASR server row: the host's Whisper translates the foreign lines of an
+                            // English title, and like every local run it must not re-run VAD on the chunk.
+                            HostAssistedProvider assisted when translateForced => await assisted.Whisper.TranscribeAsync(segmentPath, segment.Language, cancellationToken, translateForced, applyVad: false),
                             _ => await provider.TranscribeAsync(segmentPath, segment.Language, cancellationToken, translate: translateForced),
                         };
 
@@ -2011,10 +2014,10 @@ namespace WhisperSubs.Controller
         /// <summary>
         /// The Whisper provider that detects languages for <paramref name="provider"/>: the local one
         /// behind this server's wrapper, or the one a Qwen3-ASR server row borrows
-        /// (<see cref="LocalDetectionProvider"/>). Null for a worker that detects on its own. Pure.
+        /// (<see cref="HostAssistedProvider"/>). Null for a worker that detects on its own. Pure.
         /// </summary>
         internal static WhisperProvider? DetectionWhisper(ISubtitleProvider? provider)
-            => AsWhisper(provider) ?? (provider as LocalDetectionProvider)?.Whisper;
+            => AsWhisper(provider) ?? (provider as HostAssistedProvider)?.Whisper;
 
         /// <summary>
         /// Seconds for an FFmpeg <c>-ss</c> / <c>-t</c> argument, always with a dot. The plain
