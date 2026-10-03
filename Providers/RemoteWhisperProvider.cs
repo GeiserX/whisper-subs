@@ -140,6 +140,12 @@ namespace WhisperSubs.Providers
         private readonly long _maxUploadBytes;
         private readonly string _uploadCodec;
         private readonly string _dialect;
+
+        /// <summary>
+        /// Characters per cue when cues are cut from word timestamps (the Qwen3-ASR server dialect).
+        /// 0 = segments as the server sent them.
+        /// </summary>
+        private readonly int _wordCueMaxChars;
         // Set once a blind (body-didn't-say-so) format retry has been spent for this provider instance.
         // The cached format only fills on SUCCESS, so without this a worker that always 4xxs — e.g. the bare
         // OpenRouter model slug this release's README warns about — would upload the full audio twice on
@@ -161,9 +167,10 @@ namespace WhisperSubs.Providers
         public RemoteWhisperProvider(ILogger logger, string apiUrl, string model, string apiKey = "",
             double realtimeFactor = 6.0, int minTimeoutSeconds = 60, int maxTimeoutHours = 12,
             HttpClient? httpClient = null, long maxUploadBytes = 0, string? uploadCodec = null,
-            string? dialect = null)
+            string? dialect = null, int wordCueMaxChars = 0)
         {
             _dialect = WorkerDialect.Normalize(dialect);
+            _wordCueMaxChars = wordCueMaxChars;
             _logger = logger;
             _apiUrl = apiUrl.TrimEnd('/');
             _model = model;
@@ -200,6 +207,10 @@ namespace WhisperSubs.Providers
         {
             // Only a CrispASR server takes a non-English target; an OpenAI-compatible endpoint would answer
             // it with an English subtitle, so that dialect refuses before anything is uploaded.
+            if (_dialect == WorkerDialect.CrispAsrQwen3 && (translate || !string.IsNullOrWhiteSpace(targetLanguage)))
+            {
+                throw new NotSupportedException("A Qwen3-ASR server only transcribes; it is never given a translation.");
+            }
             if (_dialect != WorkerDialect.CrispAsr)
             {
                 WhisperProvider.EnsureEnglishTarget(targetLanguage, Name);
@@ -277,7 +288,9 @@ namespace WhisperSubs.Providers
             // only an explicit format complaint triggers a retry again.
             var formatNotYetNegotiated =
                 cachedResponseFormat is null && Volatile.Read(ref _blindNegotiationSpent) == 0;
-            var responseFormat = cachedResponseFormat ?? "srt";
+            // A Qwen3-ASR server's SRT is one cue per 30-second slice; its verbose_json carries the word
+            // timestamps the cues are cut from, so that dialect asks for JSON first.
+            var responseFormat = cachedResponseFormat ?? DefaultResponseFormat(_dialect);
             var negotiatedByFormatRejection = false;
             string response;
             try
@@ -321,7 +334,7 @@ namespace WhisperSubs.Providers
             }
 
             var audioDurationSeconds = SourceAudioDurationSeconds(sourceAudioBytes);
-            var srt = RequireSrtCues(ConvertTranscriptionResponseToSrt(response, audioDurationSeconds), canaryTarget);
+            var srt = RequireSrtCues(ConvertTranscriptionResponseToSrt(response, audioDurationSeconds, _wordCueMaxChars), canaryTarget);
 
             if (translate)
             {
@@ -503,6 +516,10 @@ namespace WhisperSubs.Providers
         internal static string AlternateResponseFormat(string responseFormat)
             => string.Equals(responseFormat, "srt", StringComparison.Ordinal) ? "verbose_json" : "srt";
 
+        /// <summary>The first format asked of an endpoint: SRT, except the Qwen3-ASR server dialect. Pure.</summary>
+        internal static string DefaultResponseFormat(string? dialect)
+            => WorkerDialect.Normalize(dialect) == WorkerDialect.CrispAsrQwen3 ? "verbose_json" : "srt";
+
         internal static bool HasTimestampedSegmentsArray(string response)
         {
             if (string.IsNullOrWhiteSpace(response))
@@ -586,7 +603,7 @@ namespace WhisperSubs.Providers
         /// synchronized subtitle without fabricating them.
         /// </summary>
         internal static string ConvertTranscriptionResponseToSrt(
-            string response, double? maxDurationSeconds = null)
+            string response, double? maxDurationSeconds = null, int wordCueMaxChars = 0)
         {
             if (string.IsNullOrWhiteSpace(response))
             {
@@ -630,6 +647,15 @@ namespace WhisperSubs.Providers
                     throw new InvalidOperationException(
                         "Remote Whisper API returned JSON without timestamped segments. " +
                         "Use a model/provider that supports response_format=verbose_json; plain json text cannot be synchronized.");
+                }
+
+                if (wordCueMaxChars > 0)
+                {
+                    var fromWords = BuildCuesFromWords(segments, wordCueMaxChars, maxDurationSeconds);
+                    if (fromWords != null)
+                    {
+                        return fromWords;
+                    }
                 }
 
                 var output = new StringBuilder();
@@ -688,6 +714,123 @@ namespace WhisperSubs.Providers
 
                 return output.ToString().TrimEnd();
             }
+        }
+
+        /// <summary>
+        /// One timed word from a verbose_json segment's <c>words</c> array.
+        /// </summary>
+        internal readonly record struct TimedWord(string Text, double Start, double End);
+
+        /// <summary>Seconds of silence between two words that ends a cue. Pure constant.</summary>
+        internal const double WordGapCueBreakSeconds = 1.0;
+
+        /// <summary>
+        /// Cuts cues from the words of every segment: a cue grows word by word until the next word would
+        /// pass <paramref name="maxChars"/>, the previous word ends a sentence, or the gap to the next word
+        /// is <see cref="WordGapCueBreakSeconds"/> or more. Each cue is timed by its first and last word,
+        /// which is what the Canary aligner inside a Qwen3-ASR server provides and what its slice-level
+        /// SRT throws away. Returns null when no segment carries words, so the caller keeps the segment
+        /// path. Pure.
+        /// </summary>
+        internal static string? BuildCuesFromWords(JsonElement segments, int maxChars, double? maxDurationSeconds)
+        {
+            var words = new List<TimedWord>();
+            foreach (var segment in segments.EnumerateArray())
+            {
+                if (segment.ValueKind != JsonValueKind.Object
+                    || !segment.TryGetProperty("words", out var array)
+                    || array.ValueKind != JsonValueKind.Array)
+                {
+                    continue;
+                }
+                foreach (var w in array.EnumerateArray())
+                {
+                    if (w.ValueKind != JsonValueKind.Object
+                        || !w.TryGetProperty("word", out var textProperty)
+                        || textProperty.ValueKind != JsonValueKind.String
+                        || !TryReadSeconds(w, "start", out var start)
+                        || !TryReadSeconds(w, "end", out var end))
+                    {
+                        continue;
+                    }
+                    var text = NormalizeCueText(textProperty.GetString()).Replace('\n', ' ').Trim();
+                    if (text.Length == 0) continue;
+                    if (end < start) end = start;
+                    if (maxDurationSeconds is > 0 && start > maxDurationSeconds.Value + 5)
+                    {
+                        throw new InvalidOperationException(
+                            "Remote Whisper API returned a word timestamp past the end of the audio");
+                    }
+                    words.Add(new TimedWord(text, start, end));
+                }
+            }
+            if (words.Count == 0) return null;
+
+            var cues = CutCues(words, maxChars);
+            var output = new StringBuilder();
+            var index = 1;
+            foreach (var (start, end, text) in cues)
+            {
+                var startTimestamp = FormatSrtTimestamp(start);
+                var endTimestamp = FormatSrtTimestamp(end);
+                if (output.Length > 0) output.AppendLine();
+                output.Append(index++).AppendLine();
+                output.Append(startTimestamp.Text).Append(" --> ").Append(endTimestamp.Text).AppendLine();
+                output.AppendLine(text);
+            }
+            return output.ToString().TrimEnd();
+        }
+
+        /// <summary>Minimum length of a cue cut from words, so a one-word cue stays readable. Pure constant.</summary>
+        internal const double MinWordCueSeconds = 0.5;
+
+        /// <summary>The cue cutting rule over an ordered word list. Pure, unit-tested on its own.</summary>
+        internal static List<(double Start, double End, string Text)> CutCues(IReadOnlyList<TimedWord> words, int maxChars)
+        {
+            var cues = new List<(double, double, string)>();
+            if (words.Count == 0) return cues;
+            var text = new StringBuilder();
+            var cueStart = words[0].Start;
+            var cueEnd = words[0].End;
+            var previousEndsSentence = false;
+            double previousEnd = words[0].Start;
+            var first = true;
+            foreach (var word in words)
+            {
+                var breakHere = !first
+                    && (previousEndsSentence
+                        || word.Start - previousEnd >= WordGapCueBreakSeconds
+                        || text.Length + 1 + word.Text.Length > maxChars);
+                if (breakHere)
+                {
+                    cues.Add((cueStart, Math.Max(cueEnd, cueStart + MinWordCueSeconds), text.ToString()));
+                    text.Clear();
+                    cueStart = word.Start;
+                }
+                if (text.Length > 0) text.Append(' ');
+                text.Append(word.Text);
+                cueEnd = Math.Max(word.End, word.Start);
+                previousEnd = cueEnd;
+                previousEndsSentence = EndsSentence(word.Text);
+                first = false;
+            }
+            cues.Add((cueStart, Math.Max(cueEnd, cueStart + MinWordCueSeconds), text.ToString()));
+            // A cue may not run into the next one's start.
+            for (var i = 0; i < cues.Count - 1; i++)
+            {
+                if (cues[i].Item2 > cues[i + 1].Item1)
+                {
+                    cues[i] = (cues[i].Item1, cues[i + 1].Item1, cues[i].Item3);
+                }
+            }
+            return cues;
+        }
+
+        /// <summary>True when the word ends a sentence: a terminal mark, optionally followed by a closing quote or bracket. Pure.</summary>
+        internal static bool EndsSentence(string word)
+        {
+            var trimmed = word.TrimEnd('"', '\'', ')', ']', '\u201d', '\u2019');
+            return trimmed.Length > 0 && ".?!\u2026\u3002\uff01\uff1f".Contains(trimmed[^1]);
         }
 
         private static string NormalizeRawSrt(string payload, double? maxDurationSeconds)

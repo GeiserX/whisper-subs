@@ -103,10 +103,30 @@ Each row has these fields:
 | **Cost weight** | `0` = free, preferred. Above `0` = paid, used only to burst |
 | **Max upload size (MB)** | What this endpoint accepts. `0` (default) = unlimited |
 | **Upload format** | `WAV` (default), `FLAC` (lossless, ~half) or `Opus 24k` (~a tenth) |
-| **Dialect** | `OpenAI-compatible` (default) for whisper-server, OpenAI, Groq and OpenRouter. `CrispASR server` for a [CrispASR server](#crispasr-server-workers) |
+| **Dialect** | `OpenAI-compatible` (default) for whisper-server, OpenAI, Groq and OpenRouter. `CrispASR server (Canary)` for a [CrispASR server](#crispasr-server-workers) with the Canary model. `CrispASR server (Qwen3-ASR, transcribe only)` for a [Qwen3-ASR server](#qwen3-asr-server-workers) |
 | **Translation targets** | Comma-separated languages this worker translates into. `en` is Whisper translation and needs `/v1/audio/translations` on an OpenAI-compatible worker. Canary codes such as `nl` or `de` need the CrispASR dialect. Leave it blank for a transcribe-only worker |
 
 Three timeout settings bound a remote call, so a slow-but-working pass is never cut off and a dead endpoint still fails: **Job timeout — real-time factor** (default `6`, multiplied by the audio length), **minimum seconds** (default `60`) and **maximum hours** (default `12`).
+
+## Qwen3-ASR server workers
+
+A [CrispASR](https://github.com/CrispStrobe/CrispASR) server running [Qwen3-ASR](https://huggingface.co/Qwen/Qwen3-ASR-1.7B) can take whole titles the same way the [local Qwen3-ASR engine](configuration.md#transcription-engine-experimental) does, on another machine. On an Apple Silicon Mac the server runs on Metal at 10 to 14 times realtime with the model kept loaded, which is what makes it worth a row during a large catch-up.
+
+```bash
+crispasr --server --host 0.0.0.0 --port 9020 --backend qwen3 -m qwen3-asr-1.7b-q8_0.gguf \
+         -vm ggml-silero-v6.2.0.bin -am canary-ctc-aligner-q4_k.gguf --force-aligner -sp -ml 42 -sow \
+         --lid-backend off --cache-dir <dir> --api-keys <key>
+```
+
+The files are the ones the plugin's own Qwen3-ASR panel downloads: the model, the Silero VAD and the word aligner. `--lid-backend off` matters: without it the server fetches Whisper tiny for language identification and that step named Norwegian for English and Spanish test clips.
+
+Then add a worker row with **Dialect** set to `CrispASR server (Qwen3-ASR, transcribe only)`, the base URL (no `/v1`), the key, and **Translation targets** blank. The plugin treats that row differently from the other two dialects:
+
+- It never sends a translation there. Qwen3-ASR has no translate task, so English stays on Whisper workers and the Canary targets on Canary ones.
+- It asks for `verbose_json` first and cuts cues from the word timestamps in the answer, at **Maximum subtitle line length** characters (42 when unset), at sentence ends, and at pauses of a second or more. The server's own SRT is one cue per 30-second slice, which is not a subtitle.
+- Language detection for titles without tags, and the per-chunk detection of the forced-subtitle pass, run on this server's Whisper, not on the worker. The server reports `auto` as its language, so a row that detected there would guess.
+
+The server keeps one request at a time per loaded model, so **Max concurrency** stays at 1.
 
 ## CrispASR server workers
 

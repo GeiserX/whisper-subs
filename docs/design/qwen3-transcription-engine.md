@@ -23,7 +23,7 @@ Out of scope, and why:
 
 - Language detection on Qwen3-ASR. The model identifies languages natively, but crispasr v0.8.35 does not use that when `-l` is absent: it downloads Whisper tiny for identification and, when that download fails, silently defaults to English. The plugin's Whisper detection model answers instead and Qwen3-ASR always gets a code.
 - Translation. Qwen3-ASR has no translate task. English stays on Whisper, the Canary targets on Canary.
-- Qwen3-ASR on remote workers. A CrispASR server with `--backend qwen3` already speaks the OpenAI transcription route and can be added as a worker row; nothing in the plugin needed to change for that.
+- Qwen3-ASR on remote workers, in the first release. 4.12 added the `crispasr-qwen3` worker dialect once a Mac mini measured 10 to 14x realtime in CrispASR's server mode on Metal: the server's SRT is one cue per slice and its language detection guessed, so the plugin cuts cues from the word timestamps in its `verbose_json` and detects on the host's Whisper (see [remote workers](../remote-workers.md#qwen3-asr-server-workers)).
 - Word timestamps from the model itself; it has none. The managed aligner covers it, see the timing section.
 
 ## Architecture

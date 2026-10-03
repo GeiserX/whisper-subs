@@ -56,6 +56,7 @@ Plugin.cs                          Entry point, IHasWebPages (embeds config UI)
 │   ├── CanaryProvider.cs          NVIDIA Canary through the plugin-managed crispasr binary: English audio into 24 languages
 │   ├── Qwen3Provider.cs           Qwen3-ASR-1.7B through the same crispasr binary: transcription only, cues timed by Silero VAD
 │   ├── EngineSwitchProvider.cs    This server's provider: Qwen3-ASR for whole titles while selected+installed (read per job), Whisper for everything else
+│   ├── LocalDetectionProvider.cs  A remote worker row (crispasr-qwen3 dialect) that borrows this server's Whisper for language detection
 │   ├── VocalSeparationProvider.cs Runs bs_roformer-cli (BSRoformer.cpp) to isolate vocals before VAD/transcription; fail-soft
 │   └── SubtitleProviderFactory.cs Builds the local (or legacy single-remote) provider from config; CreateCanary / CreateQwen3
 ├── Setup/

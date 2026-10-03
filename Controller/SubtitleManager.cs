@@ -1700,7 +1700,7 @@ namespace WhisperSubs.Controller
                 // at provider creation, usually landing during the audio extraction above). Give it a
                 // bounded head start so the FIRST forced run uses it too — otherwise early chunks fall
                 // back to the slow transcription model. On timeout we proceed regardless. (Issue #95.)
-                if (AsWhisper(provider) is { } whisperProvider)
+                if (DetectionWhisper(provider) is { } whisperProvider)
                 {
                     await whisperProvider.WaitForDetectionModelAsync(cancellationToken);
                 }
@@ -1722,7 +1722,7 @@ namespace WhisperSubs.Controller
                     },
                     // Only the local whisper-cli batches; a remote worker answers each chunk from a warm
                     // server already, so it keeps one request per chunk.
-                    AsWhisper(provider) is { } batchProvider ? batchProvider.DetectLanguagesAsync : null,
+                    DetectionWhisper(provider) is { } batchProvider ? batchProvider.DetectLanguagesAsync : null,
                     provider.DetectLanguageAsync,
                     _logger,
                     item.Name,
@@ -2007,6 +2007,14 @@ namespace WhisperSubs.Controller
         /// </summary>
         internal static WhisperProvider? AsWhisper(ISubtitleProvider? provider)
             => provider as WhisperProvider ?? (provider as EngineSwitchProvider)?.Whisper;
+
+        /// <summary>
+        /// The Whisper provider that detects languages for <paramref name="provider"/>: the local one
+        /// behind this server's wrapper, or the one a Qwen3-ASR server row borrows
+        /// (<see cref="LocalDetectionProvider"/>). Null for a worker that detects on its own. Pure.
+        /// </summary>
+        internal static WhisperProvider? DetectionWhisper(ISubtitleProvider? provider)
+            => AsWhisper(provider) ?? (provider as LocalDetectionProvider)?.Whisper;
 
         /// <summary>
         /// Seconds for an FFmpeg <c>-ss</c> / <c>-t</c> argument, always with a dot. The plain
