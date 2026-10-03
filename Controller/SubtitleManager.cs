@@ -2008,6 +2008,15 @@ namespace WhisperSubs.Controller
         internal static WhisperProvider? AsWhisper(ISubtitleProvider? provider)
             => provider as WhisperProvider ?? (provider as EngineSwitchProvider)?.Whisper;
 
+        /// <summary>
+        /// Seconds for an FFmpeg <c>-ss</c> / <c>-t</c> argument, always with a dot. The plain
+        /// <c>ToString("F1")</c> follows the server culture, and a Spanish Jellyfin wrote
+        /// <c>-ss 1213,9</c>, which FFmpeg refuses ("Invalid duration for option ss"), so every resume
+        /// from a partial subtitle failed on that server. Pure.
+        /// </summary>
+        internal static string FfmpegSeconds(double seconds, int decimals)
+            => seconds.ToString("F" + decimals.ToString(System.Globalization.CultureInfo.InvariantCulture), System.Globalization.CultureInfo.InvariantCulture);
+
         internal static string ConvertSrtToLrc(string srtContent, string? title = null)
         {
             var sb = new StringBuilder();
@@ -2269,9 +2278,9 @@ namespace WhisperSubs.Controller
                 CreateNoWindow = true
             };
             startInfo.ArgumentList.Add("-ss");
-            startInfo.ArgumentList.Add(startSeconds.ToString("F3"));
+            startInfo.ArgumentList.Add(FfmpegSeconds(startSeconds, 3));
             startInfo.ArgumentList.Add("-t");
-            startInfo.ArgumentList.Add(durationSeconds.ToString("F3"));
+            startInfo.ArgumentList.Add(FfmpegSeconds(durationSeconds, 3));
             startInfo.ArgumentList.Add("-i");
             startInfo.ArgumentList.Add(sourceAudioPath);
             startInfo.ArgumentList.Add("-acodec");
@@ -2554,7 +2563,7 @@ namespace WhisperSubs.Controller
             if (startOffsetSeconds > 0)
             {
                 extractInfo.ArgumentList.Add("-ss");
-                extractInfo.ArgumentList.Add(startOffsetSeconds.ToString("F1"));
+                extractInfo.ArgumentList.Add(FfmpegSeconds(startOffsetSeconds, 1));
             }
 
             extractInfo.ArgumentList.Add("-i");
