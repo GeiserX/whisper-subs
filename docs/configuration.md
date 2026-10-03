@@ -8,6 +8,29 @@ Everything below lives at **Dashboard → Plugins → WhisperSubs**, except the 
 
 Defaults are the values a fresh install starts with.
 
+## Transcription engine (experimental)
+
+The **Whisper Engine** section ends with a **Transcription engine** panel. It decides which model transcribes whole titles on this server. Workers in the pool keep their own engine.
+
+| Setting | Default | What it does |
+|---|---|---|
+| Engine | Whisper | `whisper` runs whisper-cli with the model picked above, as every version so far. `qwen3` runs [Qwen3-ASR-1.7B](https://huggingface.co/Qwen/Qwen3-ASR-1.7B) through [CrispASR](https://github.com/CrispStrobe/CrispASR), the same binary the Canary targets use. Stored as `TranscriptionEngine`. |
+| crispasr Binary | not installed | The one CrispASR binary, shared with [More target languages](#more-target-languages-experimental). Either panel installs it. CPU is the default: in testing the CPU build was faster than the Vulkan build on an integrated GPU. |
+| Qwen3-ASR Model | not installed | Downloads the GGUF weights. Q8_0 is 2.5 GB and recommended. Q4_K is 1.5 GB, with the audio encoder kept at Q8_0. |
+| Word timing (CTC aligner) | not installed, on | Downloads the NVIDIA Canary CTC aligner (392 MB, CC-BY-4.0) that gives Qwen3-ASR word-accurate cue timing, see below. The checkbox keeps an installed aligner idle when off. Stored as `Qwen3AlignerModelPath` and `Qwen3UseAligner`. |
+| Qwen3-ASR model path | empty | Filled by the model Download button. Set it only for your own file. |
+
+What stays on Whisper when Qwen3-ASR is selected:
+
+- Language detection, including the per-chunk detection of the forced-subtitle pass. Qwen3-ASR always receives a language code; with **Default Language** on auto-detect the Whisper detection model names it first.
+- Any language outside Qwen3-ASR's 30 (Chinese, English, Cantonese, Arabic, German, French, Spanish, Portuguese, Indonesian, Italian, Korean, Russian, Thai, Vietnamese, Japanese, Turkish, Hindi, Malay, Dutch, Swedish, Danish, Finnish, Polish, Czech, Filipino, Persian, Greek, Hungarian, Macedonian, Romanian). Such a title is transcribed by Whisper and the log says so.
+- Translation into English, which Qwen3-ASR cannot do. A turbo Whisper model still cannot translate, see [Limitations](limitations.md#the-recommended-model-cannot-translate).
+- Everything, until both the binary and the model are installed. A missing file means Whisper transcribes and the panel says so. No job fails because of the switch.
+
+Thread count comes from the **Canary thread count** field under Translation, which is the crispasr `-t` for both engines. `0` keeps crispasr's default of 8.
+
+Qwen3-ASR returns text without timestamps. Without the aligner, cue timing comes from the Silero VAD model: each speech segment is one cue, split at **Maximum subtitle line length** in proportion to text, so a segment with music under it becomes a cue that starts early. With the aligner installed and on, crispasr places every word and cue starts land on the spoken word, for English and the 24 [Canary languages](#more-target-languages-experimental); other languages keep segment timing. The line length defaults to 42 characters for this engine, scaled for Cyrillic, Greek and CJK scripts because crispasr counts bytes. The [subtitle timing](#subtitle-timing) corrections apply afterwards like for Whisper, once **Align subtitles to speech** is on.
+
 ## Generation defaults
 
 | Setting | Default | What it does |
@@ -117,11 +140,11 @@ The section sits under Translation on the settings page. The checkboxes drive th
 | Setting | Default | What it does |
 |---|---|---|
 | Target language checkboxes | none | Each checked language gets its own `.translated` subtitle, for example `Movie.nl.WhisperSubs.translated.srt`. Stored as `TranslationTargetLanguages`. |
-| crispasr Binary | not installed | Downloads the pinned CrispASR release for your platform. On Linux x64 the variants are CPU, which is the default, CPU compatibility for CPUs without AVX2, Vulkan, CUDA 12, CUDA 13 and ROCm. CPU is the default because Canary ran no faster on an integrated GPU. The Vulkan and ROCm builds do not fall back to the CPU when the driver is missing. |
+| crispasr Binary | not installed | Downloads the pinned CrispASR release for your platform. On Linux x64 the variants are CPU, which is the default, CPU compatibility for CPUs without AVX2, Vulkan, CUDA 12, CUDA 13 and ROCm. CPU is the default because Canary ran no faster on an integrated GPU. The Vulkan and ROCm builds do not fall back to the CPU when the driver is missing. The same binary serves the optional [Qwen3-ASR transcription engine](#transcription-engine-experimental). |
 | Canary Model | not installed | Downloads the Canary GGUF weights. Q8_0 is 1.05 GB and recommended. Q5_0 is 720 MB. |
 | crispasr binary path | empty | Filled by the Download button. Set it only for your own build. |
 | Canary model path | empty | Filled by the model Download button. |
-| Canary thread count | `0` | crispasr `-t`. `0` keeps the engine's own default. |
+| Canary thread count | `0` | crispasr `-t`, for Canary and for Qwen3-ASR. `0` keeps the engine's own default. |
 
 Per title and per language, the pass skips instead of translating when:
 

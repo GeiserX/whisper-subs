@@ -116,6 +116,14 @@ Transcription concurrency is capped by the pool's total concurrency, which is th
 
 You can raise a worker's own max concurrency, but whisper.cpp runs one transcription per GPU context, so a single-GPU worker should stay at 1. Raising the ceiling means adding workers. See [Remote workers and hosted providers](remote-workers.md).
 
+## Qwen3-ASR cues are timed by VAD unless the aligner is installed
+
+With the [Qwen3-ASR engine](configuration.md#transcription-engine-experimental) the speech model returns text per speech segment and no timestamps of its own. The Silero VAD model cuts the audio into segments, each segment becomes one cue, and **Maximum subtitle line length** splits a long one into pieces timed in proportion to their length. Where music runs under dialogue, VAD can keep one segment open for twenty seconds or more, and that cue then shows early and stays late. Whisper times cues from its own decoder and does not have this failure.
+
+The fix is the **Word timing** download in the same panel: the Canary CTC aligner places every word, and in testing the cue that started 22 s early with VAD timing started on the word with the aligner. It costs about twice the run time and knows only English and the 24 Canary languages; a title in any other language keeps VAD timing. Even with it, a cue can still span a pause when the text split falls there, because cues are cut by length and punctuation, not by silence. **Align subtitles to speech** snaps cue starts to speech afterwards in both cases.
+
+Qwen3-ASR does not translate, so **Translation to English** keeps using the Whisper model even with Qwen3-ASR selected, and a title that needs English still needs a Whisper model that can translate.
+
 ## Engine auto-download is Linux only
 
 The setup page downloads prebuilt `whisper-cli` binaries for two platforms:

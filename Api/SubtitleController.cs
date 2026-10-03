@@ -1597,6 +1597,76 @@ namespace WhisperSubs.Api
             return Accepted(new { message = $"Download of {catalogEntry.FileName} started." });
         }
 
+        /// <summary>Lists the Qwen3-ASR GGUF model quantizations available for download.</summary>
+        [HttpGet("Setup/CrispAsr/Qwen3/AvailableModels")]
+        [Authorize(Policy = "RequiresElevation")]
+        public ActionResult GetQwen3AvailableModels()
+        {
+            return Ok(Qwen3Catalog.Models.Select(m => new
+            {
+                m.Key,
+                m.FileName,
+                m.DisplayName,
+                m.SizeMB,
+                m.IsRecommended,
+                m.Description
+            }));
+        }
+
+        /// <summary>
+        /// Downloads a Qwen3-ASR GGUF model from Hugging Face. Returns 202 immediately; poll
+        /// GET Setup/CrispAsr/Progress.
+        /// </summary>
+        [HttpPost("Setup/CrispAsr/Qwen3/DownloadModel")]
+        [Authorize(Policy = "RequiresElevation")]
+        public ActionResult DownloadQwen3Model([FromQuery] string quant)
+        {
+            if (string.IsNullOrEmpty(quant))
+                return BadRequest(new { error = "Model quantization key is required." });
+
+            var catalogEntry = Qwen3Catalog.Models.FirstOrDefault(m =>
+                string.Equals(m.Key, quant, StringComparison.OrdinalIgnoreCase));
+            if (catalogEntry == null)
+                return BadRequest(new { error = $"Unknown Qwen3-ASR model: {quant}" });
+
+            var canonicalKey = catalogEntry.Key;
+
+            if (!CrispAsrSetupService.TryAcquire("qwen3-model", $"Starting download of {catalogEntry.FileName}..."))
+                return Conflict(new { error = "A download is already in progress." });
+
+            var service = GetCrispAsrSetupService();
+
+            _ = Task.Run(async () =>
+            {
+                try { await service.DownloadQwen3ModelAsync(canonicalKey, CancellationToken.None); }
+                catch (Exception ex) { _logger.LogError(ex, "Background Qwen3-ASR model download failed"); }
+            });
+
+            return Accepted(new { message = $"Download of {catalogEntry.FileName} started." });
+        }
+
+        /// <summary>
+        /// Downloads the Canary CTC aligner that gives Qwen3-ASR word-accurate cue timing. Returns 202;
+        /// poll GET Setup/CrispAsr/Progress.
+        /// </summary>
+        [HttpPost("Setup/CrispAsr/Qwen3/DownloadAligner")]
+        [Authorize(Policy = "RequiresElevation")]
+        public ActionResult DownloadQwen3Aligner()
+        {
+            if (!CrispAsrSetupService.TryAcquire("qwen3-aligner", $"Starting download of {Qwen3Catalog.Aligner.FileName}..."))
+                return Conflict(new { error = "A download is already in progress." });
+
+            var service = GetCrispAsrSetupService();
+
+            _ = Task.Run(async () =>
+            {
+                try { await service.DownloadQwen3AlignerAsync(CancellationToken.None); }
+                catch (Exception ex) { _logger.LogError(ex, "Background Qwen3-ASR aligner download failed"); }
+            });
+
+            return Accepted(new { message = $"Download of {Qwen3Catalog.Aligner.FileName} started." });
+        }
+
         /// <summary>Returns the current CrispASR/Canary download progress (binary or model).</summary>
         [HttpGet("Setup/CrispAsr/Progress")]
         [Authorize(Policy = "RequiresElevation")]

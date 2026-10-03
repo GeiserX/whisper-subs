@@ -122,6 +122,14 @@ namespace WhisperSubs.Setup
             return Array.Find(CanaryCatalog.Models, m => string.Equals(m.FileName, fileName, StringComparison.OrdinalIgnoreCase))?.Key ?? "";
         }
 
+        /// <summary>Same as <see cref="InstalledModelKey"/> for the Qwen3-ASR catalog.</summary>
+        internal static string InstalledQwen3ModelKey(string? modelPath)
+        {
+            if (string.IsNullOrEmpty(modelPath)) return "";
+            var fileName = Path.GetFileName(modelPath);
+            return Array.Find(Qwen3Catalog.Models, m => string.Equals(m.FileName, fileName, StringComparison.OrdinalIgnoreCase))?.Key ?? "";
+        }
+
         /// <summary>Reports whether the configured binary and model exist.</summary>
         [ExcludeFromCodeCoverage(Justification = "Requires Plugin.Instance (Jellyfin runtime)")]
         public CrispAsrSetupStatus GetStatus()
@@ -129,6 +137,8 @@ namespace WhisperSubs.Setup
             var config = Plugin.Instance.Configuration;
             var binaryOk = !string.IsNullOrEmpty(config.CrispAsrBinaryPath) && File.Exists(config.CrispAsrBinaryPath);
             var modelOk = !string.IsNullOrEmpty(config.CanaryModelPath) && File.Exists(config.CanaryModelPath);
+            var qwen3Ok = !string.IsNullOrEmpty(config.Qwen3ModelPath) && File.Exists(config.Qwen3ModelPath);
+            var alignerOk = !string.IsNullOrEmpty(config.Qwen3AlignerModelPath) && File.Exists(config.Qwen3AlignerModelPath);
 
             return new CrispAsrSetupStatus
             {
@@ -142,6 +152,14 @@ namespace WhisperSubs.Setup
                 InstalledVersion = config.CrispAsrBinaryVersion,
                 PinnedVersion = CrispAsrCatalog.Version,
                 InstalledModelQuant = modelOk ? InstalledModelKey(config.CanaryModelPath) : "",
+                Qwen3ModelFound = qwen3Ok,
+                Qwen3ModelPath = qwen3Ok ? config.Qwen3ModelPath : null,
+                InstalledQwen3Quant = qwen3Ok ? InstalledQwen3ModelKey(config.Qwen3ModelPath) : "",
+                TranscriptionEngine = Qwen3Catalog.IsSelected(config.TranscriptionEngine) ? Qwen3Catalog.EngineKey : Qwen3Catalog.WhisperEngineKey,
+                Qwen3Active = binaryOk && qwen3Ok && Qwen3Catalog.IsSelected(config.TranscriptionEngine),
+                Qwen3AlignerFound = alignerOk,
+                Qwen3AlignerPath = alignerOk ? config.Qwen3AlignerModelPath : null,
+                Qwen3UseAligner = config.Qwen3UseAligner,
                 Gpu = WhisperSetupService.DetectGpu()
             };
         }
@@ -153,16 +171,66 @@ namespace WhisperSubs.Setup
         /// first real job. Caller must call TryAcquire("canary-model", ...) first.
         /// </summary>
         [ExcludeFromCodeCoverage(Justification = "HTTP download + Plugin.Instance + process validation")]
-        public async Task DownloadModelAsync(string? quantKey, CancellationToken cancellationToken)
+        public Task DownloadModelAsync(string? quantKey, CancellationToken cancellationToken)
         {
             var option = CanaryCatalog.Resolve(quantKey);
-            var destPath = Path.Combine(ModelsDirectory, option.FileName);
+            return DownloadGgufModelAsync(
+                new GgufDownload("Canary", option.FileName, option.SizeBytes, option.Sha256, $"{CanaryCatalog.HuggingFaceBaseUrl}/{option.FileName}"),
+                c => c.CanaryModelPath, (c, path) => c.CanaryModelPath = path,
+                (binary, model, variant, ct) => RunInferenceProbeAsync(binary, model, variant, ct),
+                cancellationToken);
+        }
+
+        /// <summary>
+        /// The Qwen3-ASR counterpart of <see cref="DownloadModelAsync"/>: same download, checks and
+        /// promotion, applied to <see cref="Configuration.PluginConfiguration.Qwen3ModelPath"/> and
+        /// probed with a Qwen3 inference. Caller must call TryAcquire("qwen3-model", ...) first.
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "HTTP download + Plugin.Instance + process validation")]
+        public Task DownloadQwen3ModelAsync(string? quantKey, CancellationToken cancellationToken)
+        {
+            var option = Qwen3Catalog.Resolve(quantKey);
+            return DownloadGgufModelAsync(
+                new GgufDownload("Qwen3-ASR", option.FileName, option.SizeBytes, option.Sha256, $"{Qwen3Catalog.HuggingFaceBaseUrl}/{option.FileName}"),
+                c => c.Qwen3ModelPath, (c, path) => c.Qwen3ModelPath = path,
+                (binary, model, variant, ct) => RunQwen3InferenceProbeAsync(binary, model, variant, ct),
+                cancellationToken);
+        }
+
+        /// <summary>
+        /// Downloads the Canary CTC aligner that gives Qwen3-ASR word timing. No inference probe: the
+        /// aligner only ever runs beside a Qwen3 model that was probed. Caller must call
+        /// TryAcquire("qwen3-aligner", ...) first.
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "HTTP download + Plugin.Instance")]
+        public Task DownloadQwen3AlignerAsync(CancellationToken cancellationToken)
+        {
+            var option = Qwen3Catalog.Aligner;
+            return DownloadGgufModelAsync(
+                new GgufDownload("Qwen3-ASR aligner", option.FileName, option.SizeBytes, option.Sha256, $"{Qwen3Catalog.AlignerHuggingFaceBaseUrl}/{option.FileName}"),
+                c => c.Qwen3AlignerModelPath, (c, path) => c.Qwen3AlignerModelPath = path,
+                probe: null,
+                cancellationToken);
+        }
+
+        /// <summary>One pinned GGUF to fetch: the engine name for messages, the file, its size, digest and URL.</summary>
+        internal readonly record struct GgufDownload(string Engine, string FileName, long SizeBytes, string Sha256, string Url);
+
+        [ExcludeFromCodeCoverage(Justification = "HTTP download + Plugin.Instance + process validation")]
+        private async Task DownloadGgufModelAsync(
+            GgufDownload download,
+            Func<Configuration.PluginConfiguration, string> readModelPath,
+            Action<Configuration.PluginConfiguration, string> writeModelPath,
+            Func<string, string, string, CancellationToken, Task<string?>>? probe,
+            CancellationToken cancellationToken)
+        {
+            var destPath = Path.Combine(ModelsDirectory, download.FileName);
             var tempPath = destPath + ".downloading";
             try
             {
                 Directory.CreateDirectory(ModelsDirectory);
-                var url = $"{CanaryCatalog.HuggingFaceBaseUrl}/{option.FileName}";
-                _logger.LogInformation("Downloading Canary model {Model} from {Url}", option.FileName, url);
+                var url = download.Url;
+                _logger.LogInformation("Downloading {Engine} model {Model} from {Url}", download.Engine, download.FileName, url);
 
                 using var downloadCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 downloadCts.CancelAfter(TimeSpan.FromHours(2));
@@ -170,29 +238,29 @@ namespace WhisperSubs.Setup
 
                 try
                 {
-                    await DownloadToFileAsync(url, tempPath, option.SizeBytes, option.FileName, downloadToken);
+                    await DownloadToFileAsync(url, tempPath, download.SizeBytes, download.FileName, downloadToken);
                 }
                 catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
                 {
-                    throw new TimeoutException("The Canary model download did not finish within 2 hours.", ex);
+                    throw new TimeoutException($"The {download.Engine} model download did not finish within 2 hours.", ex);
                 }
 
-                VocalSeparationSetupService.VerifySha256(tempPath, option.Sha256, option.FileName);
-                VocalSeparationSetupService.VerifyGgufMagic(tempPath, option.FileName);
+                VocalSeparationSetupService.VerifySha256(tempPath, download.Sha256, download.FileName);
+                VocalSeparationSetupService.VerifyGgufMagic(tempPath, download.FileName);
 
                 var modelBackupPath = VocalSeparationSetupService.PromoteDownloadedFile(tempPath, destPath);
 
                 var config = Plugin.Instance.Configuration;
-                var previousModelPath = config.CanaryModelPath;
+                var previousModelPath = readModelPath(config);
                 try
                 {
-                    config.CanaryModelPath = destPath;
+                    writeModelPath(config, destPath);
                     Plugin.Instance.SaveConfiguration();
                     VocalSeparationSetupService.CompleteDownloadedFilePromotion(modelBackupPath);
                 }
                 catch (Exception configurationError)
                 {
-                    config.CanaryModelPath = previousModelPath;
+                    writeModelPath(config, previousModelPath);
                     try
                     {
                         VocalSeparationSetupService.RollbackDownloadedFilePromotion(destPath, modelBackupPath);
@@ -207,16 +275,16 @@ namespace WhisperSubs.Setup
                     throw;
                 }
 
-                _logger.LogInformation("Canary model downloaded to {Path} and config updated", destPath);
+                _logger.LogInformation("{Engine} model downloaded to {Path} and config updated", download.Engine, destPath);
 
                 var binaryPath = config.CrispAsrBinaryPath;
-                if (!string.IsNullOrEmpty(binaryPath) && File.Exists(binaryPath))
+                if (probe != null && !string.IsNullOrEmpty(binaryPath) && File.Exists(binaryPath))
                 {
                     lock (_lock) { _progressMessage = "Checking that crispasr can run the model..."; }
-                    var probeError = await RunInferenceProbeAsync(binaryPath, destPath, config.CrispAsrBinaryVariant, cancellationToken);
+                    var probeError = await probe(binaryPath, destPath, config.CrispAsrBinaryVariant, cancellationToken);
                     if (probeError != null)
                     {
-                        var message = $"Model {option.FileName} is installed, but the installed crispasr build could not run it: {probeError} " +
+                        var message = $"Model {download.FileName} is installed, but the installed crispasr build could not run it: {probeError} " +
                                       "Download the binary again and pick the CPU variant.";
                         lock (_lock)
                         {
@@ -224,7 +292,7 @@ namespace WhisperSubs.Setup
                             _error = message;
                             _progressMessage = message;
                         }
-                        _logger.LogWarning("Canary inference probe failed after model download: {Error}", probeError);
+                        _logger.LogWarning("{Engine} inference probe failed after model download: {Error}", download.Engine, probeError);
                         return;
                     }
                 }
@@ -232,7 +300,7 @@ namespace WhisperSubs.Setup
                 lock (_lock)
                 {
                     _progress = 100;
-                    _progressMessage = $"Model {option.FileName} downloaded successfully.";
+                    _progressMessage = $"Model {download.FileName} downloaded successfully.";
                 }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -242,7 +310,7 @@ namespace WhisperSubs.Setup
                     _error = ex.Message;
                     _progressMessage = $"Error downloading model: {ex.Message}";
                 }
-                _logger.LogError(ex, "Error downloading Canary model {Model}", option.FileName);
+                _logger.LogError(ex, "Error downloading {Engine} model {Model}", download.Engine, download.FileName);
                 throw;
             }
             finally
@@ -536,14 +604,29 @@ namespace WhisperSubs.Setup
                 return $"Could not launch crispasr for validation: {ex.InnerException?.Message ?? ex.Message}";
             }
 
+            // Probe every model this binary will serve, so a GPU build that cannot run one of them is
+            // reported now. With neither installed, --help is all there is to check.
             var modelPath = Plugin.Instance?.Configuration?.CanaryModelPath;
-            if (string.IsNullOrEmpty(modelPath) || !File.Exists(modelPath))
+            var qwen3ModelPath = Plugin.Instance?.Configuration?.Qwen3ModelPath;
+            var canaryPresent = !string.IsNullOrEmpty(modelPath) && File.Exists(modelPath);
+            var qwen3Present = !string.IsNullOrEmpty(qwen3ModelPath) && File.Exists(qwen3ModelPath);
+            if (!canaryPresent && !qwen3Present)
             {
-                _logger.LogInformation("No Canary model installed yet; crispasr validated with --help only");
+                _logger.LogInformation("No Canary or Qwen3-ASR model installed yet; crispasr validated with --help only");
                 return null;
             }
 
-            return await RunInferenceProbeAsync(binaryPath, modelPath, variant, cancellationToken);
+            if (canaryPresent)
+            {
+                var canaryError = await RunInferenceProbeAsync(binaryPath, modelPath!, variant, cancellationToken);
+                if (canaryError != null) return canaryError;
+            }
+            if (qwen3Present)
+            {
+                var qwen3Error = await RunQwen3InferenceProbeAsync(binaryPath, qwen3ModelPath!, variant, cancellationToken);
+                if (qwen3Error != null) return qwen3Error;
+            }
+            return null;
         }
 
         /// <summary>
@@ -553,7 +636,17 @@ namespace WhisperSubs.Setup
         /// normal for silence) is a pass.
         /// </summary>
         [ExcludeFromCodeCoverage(Justification = "Spawns the binary for validation")]
-        internal async Task<string?> RunInferenceProbeAsync(string binaryPath, string modelPath, string variant, CancellationToken cancellationToken)
+        internal Task<string?> RunInferenceProbeAsync(string binaryPath, string modelPath, string variant, CancellationToken cancellationToken)
+            => RunInferenceProbeAsync(binaryPath, modelPath, variant, cancellationToken, BuildValidationArguments, "a Canary inference on silence", "Canary");
+
+        /// <summary>The Qwen3-ASR version of the inference probe: same silence, the Qwen3 flags.</summary>
+        internal Task<string?> RunQwen3InferenceProbeAsync(string binaryPath, string modelPath, string variant, CancellationToken cancellationToken)
+            => RunInferenceProbeAsync(binaryPath, modelPath, variant, cancellationToken, BuildQwen3ValidationArguments, "a Qwen3-ASR inference on silence", "Qwen3-ASR");
+
+        [ExcludeFromCodeCoverage(Justification = "Spawns the binary for validation")]
+        private async Task<string?> RunInferenceProbeAsync(
+            string binaryPath, string modelPath, string variant, CancellationToken cancellationToken,
+            Func<string, string, string, string, IReadOnlyList<string>> buildArguments, string probeName, string engine)
         {
             var probeDirectory = Path.Combine(RootDirectory, "probe-" + Guid.NewGuid().ToString("N"));
             try
@@ -572,20 +665,20 @@ namespace WhisperSubs.Setup
                     CreateNoWindow = true,
                     WorkingDirectory = probeDirectory
                 };
-                foreach (var arg in BuildValidationArguments(modelPath, wavPath, CacheDirectory, Path.Combine(probeDirectory, "out")))
+                foreach (var arg in buildArguments(modelPath, wavPath, CacheDirectory, Path.Combine(probeDirectory, "out")))
                 {
                     startInfo.ArgumentList.Add(arg);
                 }
 
-                _logger.LogInformation("Validating crispasr with a Canary inference: {Binary} {Arguments}",
-                    binaryPath, string.Join(" ", startInfo.ArgumentList));
+                _logger.LogInformation("Validating crispasr with {Probe}: {Binary} {Arguments}",
+                    probeName, binaryPath, string.Join(" ", startInfo.ArgumentList));
 
                 var result = await RunProcessAsync(startInfo, InferenceProbeTimeout, cancellationToken, "Could not launch crispasr.");
                 if (result.TimedOut)
                 {
-                    return $"crispasr did not finish a one-second Canary inference within {InferenceProbeTimeout.TotalMinutes:F0} minutes.";
+                    return $"crispasr did not finish a one-second {engine} inference within {InferenceProbeTimeout.TotalMinutes:F0} minutes.";
                 }
-                return DescribeProbeFailure(result.ExitCode, result.Stderr, variant, "a Canary inference on silence");
+                return DescribeProbeFailure(result.ExitCode, result.Stderr, variant, probeName);
             }
             catch (InvalidOperationException ex)
             {
@@ -614,6 +707,23 @@ namespace WhisperSubs.Setup
                 "-sl", "en",
                 "-tl", "es",
                 "--no-auto-aligner",
+                "--cache-dir", cacheDirectory,
+                "-osrt",
+                "-of", outputPrefix,
+            };
+
+        /// <summary>
+        /// The Qwen3-ASR validation command: the engine flags a real run uses (backend, explicit
+        /// language so no language-identification pass runs on silence, pinned cache), minus VAD and
+        /// progress. Pure.
+        /// </summary>
+        internal static IReadOnlyList<string> BuildQwen3ValidationArguments(string modelPath, string wavPath, string cacheDirectory, string outputPrefix)
+            => new[]
+            {
+                "--backend", "qwen3",
+                "-m", modelPath,
+                "-f", wavPath,
+                "-l", "en",
                 "--cache-dir", cacheDirectory,
                 "-osrt",
                 "-of", outputPrefix,
@@ -757,6 +867,19 @@ namespace WhisperSubs.Setup
         public string InstalledVersion { get; set; } = "";
         public string PinnedVersion { get; set; } = "";
         public string InstalledModelQuant { get; set; } = "";
+
+        /// <summary>The optional Qwen3-ASR transcription engine, which shares the binary above.</summary>
+        public bool Qwen3ModelFound { get; set; }
+        public string? Qwen3ModelPath { get; set; }
+        public string InstalledQwen3Quant { get; set; } = "";
+        /// <summary><c>whisper</c> or <c>qwen3</c>, the saved choice.</summary>
+        public string TranscriptionEngine { get; set; } = Qwen3Catalog.WhisperEngineKey;
+        /// <summary>True when Qwen3-ASR is selected and both its files exist, so it is what transcribes now.</summary>
+        public bool Qwen3Active { get; set; }
+        /// <summary>The optional word aligner for Qwen3-ASR cue timing, and whether it is switched on.</summary>
+        public bool Qwen3AlignerFound { get; set; }
+        public string? Qwen3AlignerPath { get; set; }
+        public bool Qwen3UseAligner { get; set; } = true;
         public GpuInfo Gpu { get; set; } = new();
 
         /// <summary>The selectable translation targets, so the settings page never keeps its own copy of the list.</summary>

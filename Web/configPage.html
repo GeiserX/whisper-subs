@@ -67,6 +67,110 @@
                     <div id="engineProgressText" class="fieldDescription" style="margin-top:0.5em;"></div>
                 </div>
 
+                <!-- Transcription engine: whisper-cli (default) or Qwen3-ASR through CrispASR -->
+                <div id="transcriptionEnginePanel" style="background:rgba(0,0,0,0.15); border-radius:6px; padding:1em; margin-bottom:1.5em;">
+                    <div style="display:flex; align-items:center; gap:0.5em; margin-bottom:0.5em;">
+                        <span id="qwen3EngineIcon" style="font-size:1.2em;">&#9744;</span>
+                        <strong>Transcription engine</strong>
+                        <span id="qwen3EngineText" style="opacity:0.8; margin-left:0.3em; font-size:0.9em;"></span>
+                    </div>
+                    <div class="selectContainer" style="margin-bottom:0.5em;">
+                        <select is="emby-select" id="selTranscriptionEngine" name="TranscriptionEngine" label="Engine for this server's transcriptions">
+                            <option value="whisper">Whisper (whisper-cli, default)</option>
+                            <option value="qwen3">Qwen3-ASR 1.7B through CrispASR (experimental)</option>
+                        </select>
+                        <div class="fieldDescription">
+                            Whole-title transcription on this server. Language detection, forced-subtitle detection and translation into English
+                            always run on the Whisper binary and model above, so keep those installed either way.
+                            <a href="https://huggingface.co/Qwen/Qwen3-ASR-1.7B" target="_blank" rel="noopener noreferrer">Qwen3-ASR</a>
+                            covers 30 languages and 22 Chinese dialects and runs through
+                            <a href="https://github.com/CrispStrobe/CrispASR" target="_blank" rel="noopener noreferrer">CrispASR</a>,
+                            the same binary the Canary targets use. Cue timing comes from the Silero VAD model.
+                            Workers in the pool keep their own engine.
+                        </div>
+                    </div>
+
+                    <div id="qwen3Section" style="display:none;">
+                        <div id="qwen3BinaryPanel" style="background:rgba(0,0,0,0.12); border-radius:6px; padding:1em; margin:0.75em 0;">
+                            <div style="display:flex; align-items:center; gap:0.5em; margin-bottom:0.5em;">
+                                <span id="qwen3BinaryIcon" style="font-size:1.2em;">&#9744;</span>
+                                <strong>crispasr Binary</strong>
+                                <span id="qwen3BinaryText" style="opacity:0.8; margin-left:0.3em; font-size:0.9em;"></span>
+                            </div>
+                            <div style="display:flex; gap:0.5em; align-items:flex-end; flex-wrap:wrap;">
+                                <select is="emby-select" id="qwen3BinaryVariant" aria-label="CrispASR binary variant" style="flex:1; min-width:220px; margin:0;">
+                                    <option value="cpu">CPU Only</option>
+                                </select>
+                                <button is="emby-button" type="button" id="btnQwen3DownloadBinary" class="raised" aria-label="Download CrispASR binary">
+                                    <span>Download</span>
+                                </button>
+                            </div>
+                            <div id="qwen3VariantDescription" class="fieldDescription" style="margin-top:0.4em;"></div>
+                            <div class="fieldDescription" style="margin-top:0.4em;">Shared with the Canary targets under Translation: one binary serves both. On an integrated GPU the CPU build was the fastest in testing.</div>
+                        </div>
+
+                        <div id="qwen3ModelPanel" style="background:rgba(0,0,0,0.12); border-radius:6px; padding:1em; margin:0.75em 0;">
+                            <div style="display:flex; align-items:center; gap:0.5em; margin-bottom:0.5em;">
+                                <span id="qwen3ModelIcon" style="font-size:1.2em;">&#9744;</span>
+                                <strong>Qwen3-ASR Model</strong>
+                                <span id="qwen3ModelText" style="opacity:0.8; margin-left:0.3em; font-size:0.9em;"></span>
+                            </div>
+                            <div style="display:flex; gap:0.5em; align-items:flex-end; flex-wrap:wrap;">
+                                <select is="emby-select" id="qwen3ModelSelect" aria-label="Qwen3-ASR model" style="flex:1; min-width:250px; margin:0;">
+                                </select>
+                                <button is="emby-button" type="button" id="btnQwen3DownloadModel" class="raised" aria-label="Download Qwen3-ASR model">
+                                    <span>Download</span>
+                                </button>
+                            </div>
+                            <div id="qwen3ModelHint" class="fieldDescription" style="margin-top:0.4em;"></div>
+                            <div id="qwen3ModelCatalogDescription" class="fieldDescription" style="margin-top:0.4em;"></div>
+                        </div>
+
+                        <div id="qwen3AlignerPanel" style="background:rgba(0,0,0,0.12); border-radius:6px; padding:1em; margin:0.75em 0;">
+                            <div style="display:flex; align-items:center; gap:0.5em; margin-bottom:0.5em;">
+                                <span id="qwen3AlignerIcon" style="font-size:1.2em;">&#9744;</span>
+                                <strong>Word timing (CTC aligner)</strong>
+                                <span id="qwen3AlignerText" style="opacity:0.8; margin-left:0.3em; font-size:0.9em;"></span>
+                            </div>
+                            <div style="display:flex; gap:0.5em; align-items:center; flex-wrap:wrap;">
+                                <div class="checkboxContainer" style="flex:1; min-width:250px; margin:0;">
+                                    <label>
+                                        <input is="emby-checkbox" type="checkbox" id="chkQwen3UseAligner" name="Qwen3UseAligner" />
+                                        <span>Time cues by word with the aligner</span>
+                                    </label>
+                                </div>
+                                <button is="emby-button" type="button" id="btnQwen3DownloadAligner" class="raised" aria-label="Download word aligner">
+                                    <span>Download</span>
+                                </button>
+                            </div>
+                            <div id="qwen3AlignerHint" class="fieldDescription" style="margin-top:0.4em;"></div>
+                            <div class="fieldDescription" style="margin-top:0.4em;">
+                                Qwen3-ASR returns text without timestamps. Without the aligner each cue is timed by its speech segment, and a segment that runs
+                                under music becomes a cue that starts early. The aligner (NVIDIA Canary CTC, 392 MB, CC-BY-4.0) places every word; it knows
+                                English and the 24 Canary languages, other languages keep segment timing. About twice the run time.
+                            </div>
+                        </div>
+
+                        <div id="qwen3ProgressContainer" style="display:none; margin-bottom:1em;">
+                            <div style="background:rgba(0,0,0,0.3); border-radius:4px; overflow:hidden; height:24px;">
+                                <div id="qwen3ProgressBar" role="progressbar" aria-label="Qwen3-ASR download progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" style="background:#52B54B; height:100%; width:0%; transition:width 0.3s ease;"></div>
+                            </div>
+                            <div id="qwen3ProgressText" class="fieldDescription" role="status" aria-live="polite" style="margin-top:0.5em;"></div>
+                        </div>
+
+                        <details style="margin-bottom:0.5em;">
+                            <summary style="cursor:pointer; font-weight:600; padding:0.4em 0;">Qwen3-ASR engine (advanced)</summary>
+                            <div style="margin-top:0.75em;">
+                                <div class="inputContainer">
+                                    <label class="inputLabel inputLabelUnfocused" for="txtQwen3ModelPath">Qwen3-ASR model path</label>
+                                    <input type="text" id="txtQwen3ModelPath" name="Qwen3ModelPath" class="emby-input" />
+                                    <div class="fieldDescription">Absolute path to a Qwen3-ASR GGUF file. Filled automatically by the model Download button. The binary path and thread count are the crispasr fields under Translation.</div>
+                                </div>
+                            </div>
+                        </details>
+                    </div>
+                </div>
+
                 <!-- Vocal Separation (BSRoformer.cpp) -->
                 <div style="display:flex; align-items:baseline; gap:0.8em;">
                     <h2 style="margin:0;">Vocal Separation</h2>
@@ -1849,8 +1953,22 @@
                             WhisperSubsConfig.renderTranslationTargets();
                             if (s.BinaryPath) document.querySelector('#txtCrispAsrBinaryPath').value = s.BinaryPath;
                             if (s.ModelPath) document.querySelector('#txtCanaryModelPath').value = s.ModelPath;
+                            if (s.Qwen3ModelPath) document.querySelector('#txtQwen3ModelPath').value = s.Qwen3ModelPath;
                             WhisperSubsConfig.renderCrispAsrBinaryStatus(s);
+                            WhisperSubsConfig.renderQwen3Status(s);
+                            WhisperSubsConfig.renderQwen3AlignerStatus(s);
                             WhisperSubsConfig.loadCrispAsrVariants(s.InstalledVariant, generation);
+                            WhisperSubsConfig.ajaxGet(ApiClient.getUrl('Plugins/WhisperSubs/Setup/CrispAsr/Qwen3/AvailableModels'))
+                                .then(function (models) {
+                                    if (!WhisperSubsConfig.isRoformerPageActive(generation)) return;
+                                    WhisperSubsConfig._qwen3CatalogModels = models || [];
+                                    WhisperSubsConfig.renderQwen3ModelStatus(s);
+                                })
+                                .catch(function () {
+                                    if (WhisperSubsConfig.isRoformerPageActive(generation)) {
+                                        WhisperSubsConfig._qwen3CatalogModels = [];
+                                    }
+                                });
                             WhisperSubsConfig.ajaxGet(ApiClient.getUrl('Plugins/WhisperSubs/Setup/CrispAsr/AvailableModels'))
                                 .then(function (models) {
                                     if (!WhisperSubsConfig.isRoformerPageActive(generation)) return;
@@ -1871,7 +1989,125 @@
                             WhisperSubsConfig.clearTranslationTargets();
                             var text = document.querySelector('#crispasrBinaryText');
                             if (text) { text.textContent = 'Status unavailable'; }
+                            var qwen3Text = document.querySelector('#qwen3BinaryText');
+                            if (qwen3Text) { qwen3Text.textContent = 'Status unavailable'; }
                         });
+                },
+
+                // ── Transcription engine (Qwen3-ASR through the same crispasr binary) ──
+                // The engine select is saved with the rest of the config; these panels only show
+                // the install state and run the two downloads, which share the CrispASR progress.
+                toggleQwen3Section: function () {
+                    var select = document.querySelector('#selTranscriptionEngine');
+                    var section = document.querySelector('#qwen3Section');
+                    if (!select || !section) return;
+                    section.style.display = select.value === 'qwen3' ? '' : 'none';
+                },
+
+                renderQwen3Status: function (status) {
+                    var icon = document.querySelector('#qwen3EngineIcon');
+                    var text = document.querySelector('#qwen3EngineText');
+                    var binIcon = document.querySelector('#qwen3BinaryIcon');
+                    var binText = document.querySelector('#qwen3BinaryText');
+                    if (!icon || !text || !binIcon || !binText) return;
+
+                    if (status.BinaryFound) {
+                        binIcon.innerHTML = '&#9745;';
+                        binIcon.style.color = '#52B54B';
+                        var name = status.BinaryPath ? status.BinaryPath.split(/[\\/]/).pop() : 'Installed';
+                        binText.textContent = name + (status.InstalledVersion ? ' ' + status.InstalledVersion : '')
+                            + (status.InstalledVariant ? ' (' + status.InstalledVariant + ')' : '');
+                    } else {
+                        binIcon.innerHTML = '&#9744;';
+                        binIcon.style.color = '#CC7B19';
+                        binText.textContent = 'Not installed';
+                    }
+
+                    // The saved engine, not the unsaved dropdown: what transcribes right now.
+                    if (status.TranscriptionEngine !== 'qwen3') {
+                        icon.innerHTML = '&#9745;';
+                        icon.style.color = '#52B54B';
+                        text.textContent = 'Whisper';
+                    } else if (status.Qwen3Active) {
+                        icon.innerHTML = '&#9745;';
+                        icon.style.color = '#52B54B';
+                        text.textContent = 'Qwen3-ASR';
+                    } else {
+                        icon.innerHTML = '&#9744;';
+                        icon.style.color = '#CC7B19';
+                        text.textContent = status.BinaryFound
+                            ? 'Qwen3-ASR selected, model missing: Whisper is used until it is downloaded'
+                            : 'Qwen3-ASR selected, crispasr missing: Whisper is used until it is downloaded';
+                    }
+                },
+
+                renderQwen3AlignerStatus: function (status) {
+                    var icon = document.querySelector('#qwen3AlignerIcon');
+                    var text = document.querySelector('#qwen3AlignerText');
+                    var chk = document.querySelector('#chkQwen3UseAligner');
+                    if (!icon || !text || !chk) return;
+                    if (status.Qwen3AlignerFound) {
+                        icon.innerHTML = '&#9745;';
+                        icon.style.color = '#52B54B';
+                        text.textContent = status.Qwen3AlignerPath ? status.Qwen3AlignerPath.split(/[\\/]/).pop() : 'Installed';
+                    } else {
+                        icon.innerHTML = '&#9744;';
+                        icon.style.color = '#CC7B19';
+                        text.textContent = 'Not installed';
+                    }
+                },
+
+                renderQwen3ModelStatus: function (status) {
+                    var icon = document.querySelector('#qwen3ModelIcon');
+                    var text = document.querySelector('#qwen3ModelText');
+                    var select = document.querySelector('#qwen3ModelSelect');
+                    if (!icon || !text || !select) return;
+                    if (status.Qwen3ModelFound) {
+                        icon.innerHTML = '&#9745;';
+                        icon.style.color = '#52B54B';
+                        text.textContent = status.Qwen3ModelPath ? status.Qwen3ModelPath.split(/[\\/]/).pop() : 'Installed';
+                    } else {
+                        icon.innerHTML = '&#9744;';
+                        icon.style.color = '#CC7B19';
+                        text.textContent = 'Not installed';
+                    }
+
+                    select.innerHTML = '';
+                    var catalog = WhisperSubsConfig._qwen3CatalogModels || [];
+                    catalog.forEach(function (m) {
+                        var opt = document.createElement('option');
+                        opt.value = m.Key;
+                        var sizeLabel = m.SizeMB >= 1000 ? (m.SizeMB / 1000).toFixed(2) + ' GB' : m.SizeMB + ' MB';
+                        opt.textContent = m.DisplayName + ' (' + sizeLabel + ')';
+                        if (m.IsRecommended) opt.textContent += ' ★';
+                        select.appendChild(opt);
+                    });
+                    var currentQuant = status.InstalledQwen3Quant;
+                    if (currentQuant && catalog.some(function (m) { return m.Key === currentQuant; })) {
+                        select.value = currentQuant;
+                    } else {
+                        var rec = catalog.find(function (m) { return m.IsRecommended; });
+                        if (rec) select.value = rec.Key;
+                    }
+                    WhisperSubsConfig.updateQwen3ModelDescription();
+                    WhisperSubsConfig.updateCrispAsrModelDownloadState();
+                },
+
+                updateQwen3ModelDescription: function () {
+                    var select = document.querySelector('#qwen3ModelSelect');
+                    var desc = document.querySelector('#qwen3ModelCatalogDescription');
+                    if (!select || !desc) return;
+                    var catalog = WhisperSubsConfig._qwen3CatalogModels || [];
+                    var match = catalog.find(function (m) { return m.Key === select.value; });
+                    desc.textContent = (match && match.Description) ? match.Description : '';
+                },
+
+                updateQwen3VariantDescription: function () {
+                    var select = document.querySelector('#qwen3BinaryVariant');
+                    var desc = document.querySelector('#qwen3VariantDescription');
+                    if (!select || !desc) return;
+                    var match = (WhisperSubsConfig._crispasrVariants || []).find(function (v) { return v.Id === select.value; });
+                    desc.textContent = (match && match.Description) ? match.Description : '';
                 },
 
                 // Paints one checkbox per Canary target once BOTH the catalog (Status response) and
@@ -1941,38 +2177,48 @@
                     WhisperSubsConfig.ajaxGet(ApiClient.getUrl('Plugins/WhisperSubs/Setup/CrispAsr/BinaryVariants'))
                         .then(function (variants) {
                             if (!WhisperSubsConfig.isRoformerPageActive(generation)) return;
-                            var select = document.querySelector('#crispasrBinaryVariant');
-                            var btn = document.querySelector('#btnCrispAsrDownloadBinary');
-                            select.innerHTML = '';
                             WhisperSubsConfig._crispasrVariants = variants || [];
-                            if (!variants || !Array.isArray(variants) || variants.length === 0) {
-                                var opt = document.createElement('option');
-                                opt.value = '';
-                                opt.textContent = 'No prebuilt binaries for this platform';
-                                select.appendChild(opt);
-                                select.disabled = true;
-                                btn.disabled = true;
-                                WhisperSubsConfig.updateCrispAsrVariantDescription();
-                                return;
-                            }
-                            select.disabled = false;
-                            btn.disabled = WhisperSubsConfig._crispasrDownloadRunning === true;
-                            variants.forEach(function (v) {
-                                var opt = document.createElement('option');
-                                opt.value = v.Id;
-                                opt.textContent = v.DisplayName;
-                                select.appendChild(opt);
+                            // The same list fills both binary panels: the Canary one under Translation
+                            // and the Qwen3-ASR one in the engine section. One binary serves both.
+                            var panels = [
+                                { select: '#crispasrBinaryVariant', button: '#btnCrispAsrDownloadBinary' },
+                                { select: '#qwen3BinaryVariant', button: '#btnQwen3DownloadBinary' }
+                            ];
+                            panels.forEach(function (ids) {
+                                var select = document.querySelector(ids.select);
+                                var btn = document.querySelector(ids.button);
+                                if (!select || !btn) return;
+                                select.innerHTML = '';
+                                if (!variants || !Array.isArray(variants) || variants.length === 0) {
+                                    var opt = document.createElement('option');
+                                    opt.value = '';
+                                    opt.textContent = 'No prebuilt binaries for this platform';
+                                    select.appendChild(opt);
+                                    select.disabled = true;
+                                    btn.disabled = true;
+                                    return;
+                                }
+                                select.disabled = false;
+                                btn.disabled = WhisperSubsConfig._crispasrDownloadRunning === true;
+                                variants.forEach(function (v) {
+                                    var opt = document.createElement('option');
+                                    opt.value = v.Id;
+                                    opt.textContent = v.DisplayName;
+                                    select.appendChild(opt);
+                                });
+                                var variantIds = variants.map(function (v) { return v.Id; });
+                                // CPU is the default on purpose (no GPU recommendation here): neither Canary
+                                // nor Qwen3-ASR gained anything from an integrated GPU, and the CPU build has
+                                // no driver dependency.
+                                var fallback = variants.find(function (v) { return v.IsDefault; });
+                                if (installedVariant && variantIds.indexOf(installedVariant) !== -1) {
+                                    select.value = installedVariant;
+                                } else if (fallback) {
+                                    select.value = fallback.Id;
+                                }
                             });
-                            var variantIds = variants.map(function (v) { return v.Id; });
-                            // CPU is the default on purpose (no GPU recommendation here): Canary gains
-                            // nothing from an integrated GPU, and the CPU build has no driver dependency.
-                            var fallback = variants.find(function (v) { return v.IsDefault; });
-                            if (installedVariant && variantIds.indexOf(installedVariant) !== -1) {
-                                select.value = installedVariant;
-                            } else if (fallback) {
-                                select.value = fallback.Id;
-                            }
                             WhisperSubsConfig.updateCrispAsrVariantDescription();
+                            WhisperSubsConfig.updateQwen3VariantDescription();
                         })
                         .catch(function (err) {
                             if (!WhisperSubsConfig.isRoformerPageActive(generation)) return;
@@ -2033,37 +2279,63 @@
                 },
 
                 updateCrispAsrModelDownloadState: function () {
-                    var btn = document.querySelector('#btnCrispAsrDownloadModel');
-                    var hint = document.querySelector('#crispasrModelHint');
                     var status = WhisperSubsConfig._crispasrStatus;
-                    if (WhisperSubsConfig._crispasrDownloadRunning === true) {
-                        btn.disabled = true;
-                        hint.textContent = 'A Canary download is in progress.';
-                        hint.style.color = '';
-                    } else if (!status || !status.BinaryFound) {
-                        btn.disabled = true;
-                        hint.textContent = 'Download the crispasr binary first.';
-                        hint.style.color = '#CC7B19';
-                    } else {
-                        btn.disabled = false;
-                        hint.textContent = '';
-                        hint.style.color = '';
-                    }
+                    [
+                        { button: '#btnCrispAsrDownloadModel', hint: '#crispasrModelHint', busy: 'A Canary download is in progress.' },
+                        { button: '#btnQwen3DownloadModel', hint: '#qwen3ModelHint', busy: 'A CrispASR download is in progress.' },
+                        { button: '#btnQwen3DownloadAligner', hint: '#qwen3AlignerHint', busy: 'A CrispASR download is in progress.' }
+                    ].forEach(function (ids) {
+                        var btn = document.querySelector(ids.button);
+                        var hint = document.querySelector(ids.hint);
+                        if (!btn || !hint) return;
+                        if (WhisperSubsConfig._crispasrDownloadRunning === true) {
+                            btn.disabled = true;
+                            hint.textContent = ids.busy;
+                            hint.style.color = '';
+                        } else if (!status || !status.BinaryFound) {
+                            btn.disabled = true;
+                            hint.textContent = 'Download the crispasr binary first.';
+                            hint.style.color = '#CC7B19';
+                        } else {
+                            btn.disabled = false;
+                            hint.textContent = '';
+                            hint.style.color = '';
+                        }
+                    });
                 },
 
-                startCrispAsrDownload: function (type) {
+                // The buttons of both panels (Canary under Translation, Qwen3-ASR in the engine
+                // section), disabled together while any CrispASR download runs.
+                _crispasrButtonIds: ['#btnCrispAsrDownloadBinary', '#btnCrispAsrDownloadModel', '#btnQwen3DownloadBinary', '#btnQwen3DownloadModel', '#btnQwen3DownloadAligner'],
+
+                // type: 'binary' (variant from variantSelectId, default the Canary panel's), 'model' (Canary), 'qwen3' or 'qwen3-aligner'.
+                startCrispAsrDownload: function (type, variantSelectId) {
                     var generation = WhisperSubsConfig._roformerPageGeneration;
-                    var binBtn = document.querySelector('#btnCrispAsrDownloadBinary');
-                    var modBtn = document.querySelector('#btnCrispAsrDownloadModel');
                     WhisperSubsConfig._crispasrDownloadRunning = true;
-                    binBtn.disabled = true;
-                    modBtn.disabled = true;
+                    WhisperSubsConfig._crispasrButtonIds.forEach(function (id) {
+                        var b = document.querySelector(id);
+                        if (b) b.disabled = true;
+                    });
 
                     var url;
+                    var busyBtn;
                     if (type === 'binary') {
-                        var variant = document.querySelector('#crispasrBinaryVariant').value || 'cpu';
-                        binBtn.innerHTML = '<span>Downloading…</span>';
+                        var variantSelect = document.querySelector(variantSelectId || '#crispasrBinaryVariant');
+                        var variant = (variantSelect && variantSelect.value) || 'cpu';
+                        busyBtn = document.querySelector(variantSelectId === '#qwen3BinaryVariant' ? '#btnQwen3DownloadBinary' : '#btnCrispAsrDownloadBinary');
                         url = ApiClient.getUrl('Plugins/WhisperSubs/Setup/CrispAsr/DownloadBinary', { variant: variant });
+                    } else if (type === 'qwen3') {
+                        var qwen3Quant = document.querySelector('#qwen3ModelSelect').value;
+                        if (!qwen3Quant) {
+                            WhisperSubsConfig.resetCrispAsrButtons();
+                            Dashboard.alert('Select a model first.');
+                            return;
+                        }
+                        busyBtn = document.querySelector('#btnQwen3DownloadModel');
+                        url = ApiClient.getUrl('Plugins/WhisperSubs/Setup/CrispAsr/Qwen3/DownloadModel', { quant: qwen3Quant });
+                    } else if (type === 'qwen3-aligner') {
+                        busyBtn = document.querySelector('#btnQwen3DownloadAligner');
+                        url = ApiClient.getUrl('Plugins/WhisperSubs/Setup/CrispAsr/Qwen3/DownloadAligner');
                     } else {
                         var quant = document.querySelector('#crispasrModelSelect').value;
                         if (!quant) {
@@ -2071,9 +2343,10 @@
                             Dashboard.alert('Select a model first.');
                             return;
                         }
-                        modBtn.innerHTML = '<span>Downloading…</span>';
+                        busyBtn = document.querySelector('#btnCrispAsrDownloadModel');
                         url = ApiClient.getUrl('Plugins/WhisperSubs/Setup/CrispAsr/DownloadModel', { quant: quant });
                     }
+                    if (busyBtn) busyBtn.innerHTML = '<span>Downloading…</span>';
                     ApiClient.ajax({ type: 'POST', url: url }).then(function () {
                         if (!WhisperSubsConfig.isRoformerPageActive(generation)) return;
                         WhisperSubsConfig.startCrispAsrProgressPolling(generation);
@@ -2084,23 +2357,32 @@
                     });
                 },
 
+                // One CrispASR download at a time, painted in both panels so the admin sees it
+                // wherever they started it.
                 showCrispAsrProgress: function (p) {
-                    var bar = document.querySelector('#crispasrProgressBar');
-                    var text = document.querySelector('#crispasrProgressText');
-                    document.querySelector('#crispasrProgressContainer').style.display = '';
-                    bar.style.width = Math.min(p.Percent, 100) + '%';
-                    bar.setAttribute('aria-valuenow', Math.min(p.Percent, 100));
-                    text.textContent = p.Message || '';
-                    text.style.color = p.Error ? '#CC7B19' : '';
+                    ['crispasr', 'qwen3'].forEach(function (prefix) {
+                        var bar = document.querySelector('#' + prefix + 'ProgressBar');
+                        var text = document.querySelector('#' + prefix + 'ProgressText');
+                        var container = document.querySelector('#' + prefix + 'ProgressContainer');
+                        if (!bar || !text || !container) return;
+                        container.style.display = '';
+                        bar.style.width = Math.min(p.Percent, 100) + '%';
+                        bar.setAttribute('aria-valuenow', Math.min(p.Percent, 100));
+                        text.textContent = p.Message || '';
+                        text.style.color = p.Error ? '#CC7B19' : '';
+                    });
                 },
 
                 startCrispAsrProgressPolling: function (generation) {
                     generation = generation === undefined ? WhisperSubsConfig._roformerPageGeneration : generation;
                     if (!WhisperSubsConfig.isRoformerPageActive(generation)) return;
                     document.querySelector('#crispasrProgressContainer').style.display = '';
+                    document.querySelector('#qwen3ProgressContainer').style.display = '';
                     WhisperSubsConfig._crispasrDownloadRunning = true;
-                    document.querySelector('#btnCrispAsrDownloadBinary').disabled = true;
-                    document.querySelector('#btnCrispAsrDownloadModel').disabled = true;
+                    WhisperSubsConfig._crispasrButtonIds.forEach(function (id) {
+                        var b = document.querySelector(id);
+                        if (b) b.disabled = true;
+                    });
                     WhisperSubsConfig.stopCrispAsrProgressPolling();
 
                     WhisperSubsConfig._crispasrProgressPollTimer = setInterval(function () {
@@ -2151,11 +2433,11 @@
                 },
 
                 resetCrispAsrButtons: function () {
-                    var binBtn = document.querySelector('#btnCrispAsrDownloadBinary');
-                    var modBtn = document.querySelector('#btnCrispAsrDownloadModel');
                     WhisperSubsConfig._crispasrDownloadRunning = false;
-                    if (binBtn) { binBtn.disabled = false; binBtn.innerHTML = '<span>Download</span>'; }
-                    if (modBtn) { modBtn.disabled = false; modBtn.innerHTML = '<span>Download</span>'; }
+                    WhisperSubsConfig._crispasrButtonIds.forEach(function (id) {
+                        var b = document.querySelector(id);
+                        if (b) { b.disabled = false; b.innerHTML = '<span>Download</span>'; }
+                    });
                     WhisperSubsConfig.updateCrispAsrModelDownloadState();
                 },
 
@@ -2395,6 +2677,10 @@
                             page.querySelector('#txtCrispAsrBinaryPath').value = config.CrispAsrBinaryPath || '';
                             page.querySelector('#txtCanaryModelPath').value = config.CanaryModelPath || '';
                             page.querySelector('#numCrispAsrThreadCount').value = (config.CrispAsrThreadCount > 0) ? config.CrispAsrThreadCount : '';
+                            page.querySelector('#selTranscriptionEngine').value = config.TranscriptionEngine === 'qwen3' ? 'qwen3' : 'whisper';
+                            page.querySelector('#txtQwen3ModelPath').value = config.Qwen3ModelPath || '';
+                            page.querySelector('#chkQwen3UseAligner').checked = config.Qwen3UseAligner !== false;
+                            WhisperSubsConfig.toggleQwen3Section();
                             WhisperSubsConfig._translationTargetsSelected = config.TranslationTargetLanguages || [];
                             WhisperSubsConfig.renderTranslationTargets();
                             // ── Requests & priority (#112) ──
@@ -2424,6 +2710,9 @@
                         config.WhisperBinaryPath = page.querySelector('#txtWhisperBinaryPath').value;
                         config.WhisperModelPath = page.querySelector('#txtWhisperModelPath').value;
                         config.WhisperThreadCount = parseInt(page.querySelector('#txtWhisperThreadCount').value, 10) || 0;
+                        config.TranscriptionEngine = page.querySelector('#selTranscriptionEngine').value === 'qwen3' ? 'qwen3' : 'whisper';
+                        config.Qwen3ModelPath = (page.querySelector('#txtQwen3ModelPath').value || '').trim();
+                        config.Qwen3UseAligner = page.querySelector('#chkQwen3UseAligner').checked;
                         config.SubtitleMaxLineLength = Math.max(0, parseInt(page.querySelector('#txtSubtitleMaxLineLength').value, 10) || 0);
                         config.CustomWhisperArgs = (page.querySelector('#txtCustomWhisperArgs').value || '').trim();
                         config.RemoteWhisperApiUrl = (page.querySelector('#txtRemoteWhisperApiUrl').value || '').trim();
@@ -3533,6 +3822,30 @@
 
             document.querySelector('#crispasrBinaryVariant').addEventListener('change', function () {
                 WhisperSubsConfig.updateCrispAsrVariantDescription();
+            });
+
+            document.querySelector('#selTranscriptionEngine').addEventListener('change', function () {
+                WhisperSubsConfig.toggleQwen3Section();
+            });
+
+            document.querySelector('#btnQwen3DownloadBinary').addEventListener('click', function () {
+                WhisperSubsConfig.startCrispAsrDownload('binary', '#qwen3BinaryVariant');
+            });
+
+            document.querySelector('#btnQwen3DownloadModel').addEventListener('click', function () {
+                WhisperSubsConfig.startCrispAsrDownload('qwen3');
+            });
+
+            document.querySelector('#btnQwen3DownloadAligner').addEventListener('click', function () {
+                WhisperSubsConfig.startCrispAsrDownload('qwen3-aligner');
+            });
+
+            document.querySelector('#qwen3ModelSelect').addEventListener('change', function () {
+                WhisperSubsConfig.updateQwen3ModelDescription();
+            });
+
+            document.querySelector('#qwen3BinaryVariant').addEventListener('change', function () {
+                WhisperSubsConfig.updateQwen3VariantDescription();
             });
 
             document.querySelector('#btnReinjectScript').addEventListener('click', function () {

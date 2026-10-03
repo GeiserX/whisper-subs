@@ -1700,7 +1700,7 @@ namespace WhisperSubs.Controller
                 // at provider creation, usually landing during the audio extraction above). Give it a
                 // bounded head start so the FIRST forced run uses it too — otherwise early chunks fall
                 // back to the slow transcription model. On timeout we proceed regardless. (Issue #95.)
-                if (provider is WhisperProvider whisperProvider)
+                if (AsWhisper(provider) is { } whisperProvider)
                 {
                     await whisperProvider.WaitForDetectionModelAsync(cancellationToken);
                 }
@@ -1722,7 +1722,7 @@ namespace WhisperSubs.Controller
                     },
                     // Only the local whisper-cli batches; a remote worker answers each chunk from a warm
                     // server already, so it keeps one request per chunk.
-                    provider is WhisperProvider batchProvider ? batchProvider.DetectLanguagesAsync : null,
+                    AsWhisper(provider) is { } batchProvider ? batchProvider.DetectLanguagesAsync : null,
                     provider.DetectLanguageAsync,
                     _logger,
                     item.Name,
@@ -1785,7 +1785,7 @@ namespace WhisperSubs.Controller
                 // Gate the turbo-model warning to local whisper runs — a remote provider can translate
                 // fine and shouldn't trigger a warning about the local model path. (CodeRabbit.)
                 if (translateForced
-                    && provider is WhisperProvider
+                    && AsWhisper(provider) != null
                     && !ModelCatalog.IsTranslationCapable(Plugin.Instance?.Configuration?.WhisperModelPath))
                 {
                     _logger.LogWarning(
@@ -1808,9 +1808,12 @@ namespace WhisperSubs.Controller
                         // span a few merged utterances); re-running whisper's VAD can filter a short
                         // window to zero segments and write an empty subtitle. Only WhisperProvider
                         // runs a local VAD pass; the remote provider ignores it.
-                        var srtContent = provider is WhisperProvider whisperProv
-                            ? await whisperProv.TranscribeAsync(segmentPath, segment.Language, cancellationToken, translateForced, applyVad: false)
-                            : await provider.TranscribeAsync(segmentPath, segment.Language, cancellationToken, translate: translateForced);
+                        var srtContent = provider switch
+                        {
+                            WhisperProvider whisperProv => await whisperProv.TranscribeAsync(segmentPath, segment.Language, cancellationToken, translateForced, applyVad: false),
+                            EngineSwitchProvider switchProv => await switchProv.TranscribeAsync(segmentPath, segment.Language, cancellationToken, translateForced, applyVad: false),
+                            _ => await provider.TranscribeAsync(segmentPath, segment.Language, cancellationToken, translate: translateForced),
+                        };
 
                         if (!string.IsNullOrWhiteSpace(srtContent))
                         {
@@ -1996,6 +1999,15 @@ namespace WhisperSubs.Controller
         /// Converts SRT subtitle content to LRC lyrics format.
         /// LRC uses [MM:SS.cc] timestamps (start only, no end timestamps).
         /// </summary>
+        /// <summary>
+        /// The local whisper-cli provider behind <paramref name="provider"/>, or null for a remote one.
+        /// This server's provider is an <see cref="EngineSwitchProvider"/> that wraps it; the detection
+        /// paths (batched chunk detection, the small detection-model wait) run on Whisper whatever the
+        /// transcription engine is, so they must see through the wrapper. Pure.
+        /// </summary>
+        internal static WhisperProvider? AsWhisper(ISubtitleProvider? provider)
+            => provider as WhisperProvider ?? (provider as EngineSwitchProvider)?.Whisper;
+
         internal static string ConvertSrtToLrc(string srtContent, string? title = null)
         {
             var sb = new StringBuilder();
