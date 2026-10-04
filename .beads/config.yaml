@@ -65,5 +65,5 @@
 # - linear.api_key  → use LINEAR_API_KEY env var instead
 # - github.token    → use GITHUB_TOKEN env var instead
 
-sync.remote: "git+ssh://git@gitea.geiser.cloud:2222/giteaer/whisper-subs-beads.git"
+sync.remote: "git+ssh://git@beads-tracker/giteaer/whisper-subs-beads.git"
 dolt.auto-commit: "on"
