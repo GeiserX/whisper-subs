@@ -546,6 +546,11 @@ namespace WhisperSubs.Providers
             var errorBuilder = new StringBuilder();
             var fileTimeout = DetectionFileTimeout;
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            // The per-file timer does not run while this job is suspended for playback: a stopped
+            // whisper-cli is not a stalled one.
+            var pauseScope = Controller.EngineProcessSuspender.Default.Current;
+            using var fileDeadline = new Controller.PausableDeadline(
+                fileTimeout, timeoutCts, () => pauseScope?.IsSuspended == true);
             int filesStarted = 0;
 
             process.OutputDataReceived += (_, e) => { if (e.Data != null) outputBuilder.AppendLine(e.Data); };
@@ -557,18 +562,19 @@ namespace WhisperSubs.Providers
                 // one file stalls, never because the whole batch is slow. A single file keeps one timer.
                 if (IsProcessingLine(e.Data) && Interlocked.Increment(ref filesStarted) > 1)
                 {
-                    try { timeoutCts.CancelAfter(fileTimeout); } catch (ObjectDisposedException) { }
+                    fileDeadline.Restart();
                 }
             };
 
             process.Start();
+            using var tracked = Controller.EngineProcessSuspender.Default.Track(process.Id);
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
 
             var timedOut = false;
             try
             {
-                timeoutCts.CancelAfter(fileTimeout);
+                fileDeadline.Restart();
                 await process.WaitForExitAsync(timeoutCts.Token);
             }
             catch (OperationCanceledException)

@@ -39,6 +39,7 @@ Plugin.cs                          Entry point, IHasWebPages (embeds config UI)
 │   ├── SubtitleManager.cs         Orchestrator: language detection -> audio extraction -> transcription -> save
 │   ├── SubtitleQueueService.cs    Named-tier priority queue feeding an N-slot worker-pool dispatcher (EnsureDispatching)
 │   ├── PriorityLanes.cs           Pure multi-lane FIFO priority engine, one lane per tier (#112)
+│   ├── EngineProcessSuspender.cs  SIGSTOP/SIGCONT for tracked engine processes (pause-on-playback, Linux only) + PausableDeadline
 │   └── Workers/                   v4.0 distributed transcription worker pool
 │       ├── WorkerPool.cs          Live pool: workers + in-flight counts behind a ΣMaxConcurrency semaphore (replaces the old TranscriptionLock)
 │       ├── WorkerRegistry.cs      Builds the pool from config (news up providers) — orchestration

@@ -120,7 +120,10 @@ namespace WhisperSubs.Providers
 
                 using var process = new Process { StartInfo = startInfo };
                 using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                timeoutCts.CancelAfter(deadline);
+                // The deadline does not run while generation is suspended for playback.
+                var pauseScope = Controller.EngineProcessSuspender.Default.Current;
+                using var pausableDeadline = new Controller.PausableDeadline(
+                    deadline, timeoutCts, () => pauseScope?.IsSuspended == true);
 
                 var stderrBuilder = new System.Text.StringBuilder();
                 process.ErrorDataReceived += (_, e) =>
@@ -133,6 +136,8 @@ namespace WhisperSubs.Providers
                 };
 
                 process.Start();
+                using var tracked = Controller.EngineProcessSuspender.Default.Track(process.Id);
+                pausableDeadline.Restart();
                 process.BeginErrorReadLine();
                 var stdoutTask = process.StandardOutput.ReadToEndAsync();
 
