@@ -137,17 +137,39 @@ namespace WhisperSubs.Providers
 
             // Never a WhisperLaunchException: the dispatcher parks the local worker on one, and a broken
             // crispasr must not stop the Whisper passes this worker still serves.
-            var srt = await SrtProcessRunner.RunAsync(
-                _logger,
-                startInfo,
-                "Qwen3-ASR",
-                tempOutputPrefix + ".srt",
-                alternateSrtPath: null,
-                (exitCode, stderr) => new InvalidOperationException(CanaryProvider.DescribeExitFailure(exitCode, stderr)),
-                CanaryProvider.DescribeMissingOutput,
-                cancellationToken);
-            return TrimCueLines(srt);
+            try
+            {
+                var srt = await SrtProcessRunner.RunAsync(
+                    _logger,
+                    startInfo,
+                    "Qwen3-ASR",
+                    tempOutputPrefix + ".srt",
+                    alternateSrtPath: null,
+                    (exitCode, stderr) => new InvalidOperationException(CanaryProvider.DescribeExitFailure(exitCode, stderr)),
+                    DescribeMissingOutput,
+                    cancellationToken);
+                return TrimCueLines(srt);
+            }
+            catch (InvalidOperationException ex) when (ex.Message == NoSpeechMarker)
+            {
+                // A window of music or silence: crispasr exits 0, warns and writes no file.
+                _logger.LogInformation("Qwen3-ASR found no speech in {AudioPath}", audioPath);
+                return string.Empty;
+            }
         }
+
+        /// <summary>Message that marks "crispasr found no speech" on its way through the shared runner.</summary>
+        internal const string NoSpeechMarker = "crispasr found no speech in this audio";
+
+        /// <summary>
+        /// crispasr exited 0 without an SRT. "no speech detected" on stderr is a normal answer for a
+        /// stretch of music or silence, so it gets its own marker; anything else is described as for
+        /// Canary. Pure.
+        /// </summary>
+        internal static string? DescribeMissingOutput(string? stderr)
+            => (stderr ?? "").Contains("no speech detected", StringComparison.OrdinalIgnoreCase)
+                ? NoSpeechMarker
+                : CanaryProvider.DescribeMissingOutput(stderr);
 
         /// <summary>
         /// With the aligner, crispasr writes a continuation cue's text with the leading space of the
