@@ -669,7 +669,7 @@ namespace WhisperSubs.ScheduledTasks
             bool logged = false;
             var deadline = DateTime.UtcNow.AddHours(4);
             var queue = SubtitleQueueService.Instance;
-            while (_sessionManager.Sessions.Any(s => s.NowPlayingItem != null))
+            while (_sessionManager.Sessions.Any(s => IsPlaying(s.NowPlayingItem != null, s.PlayState?.IsPaused)))
             {
                 if (DateTime.UtcNow >= deadline)
                 {
@@ -742,12 +742,21 @@ namespace WhisperSubs.ScheduledTasks
         /// <summary>
         /// Polls sessions every 10 seconds. Returns (completes) when playback is detected.
         /// </summary>
+        /// <summary>
+        /// Whether a session counts as playback for "Pause generation during playback": it holds an item
+        /// and is not paused. A client parked on a paused title (TV apps keep reporting one for hours)
+        /// uses neither the GPU nor the disk, and counting it stalled generation for as long as the TV
+        /// sat there. A session that does not report its pause state counts as playing. Pure.
+        /// </summary>
+        internal static bool IsPlaying(bool hasNowPlayingItem, bool? isPaused)
+            => hasNowPlayingItem && isPaused != true;
+
         private async Task MonitorPlaybackAsync(CancellationToken cancellationToken)
         {
             while (!cancellationToken.IsCancellationRequested)
             {
                 await Task.Delay(TimeSpan.FromSeconds(10), cancellationToken);
-                if (_sessionManager.Sessions.Any(s => s.NowPlayingItem != null))
+                if (_sessionManager.Sessions.Any(s => IsPlaying(s.NowPlayingItem != null, s.PlayState?.IsPaused)))
                 {
                     return;
                 }
