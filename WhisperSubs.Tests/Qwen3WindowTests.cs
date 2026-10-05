@@ -42,6 +42,21 @@ public class Qwen3WindowTests
         Assert.Equal(expected, SubtitleManager.WindowReachesEnd(start, window, duration));
     }
 
+    // A 620 s title: the first window "reaches the end" by the 30 s slack, so it must be extracted
+    // uncapped or its last 20 s would never be transcribed.
+    [Fact]
+    public void FinalWindow_IsExtractedToTheEnd_NotCapped()
+    {
+        var moreRemains = !SubtitleManager.WindowReachesEnd(0, 600, 620);
+        Assert.False(moreRemains);
+        Assert.Equal(0, SubtitleManager.ExtractionCapSeconds(moreRemains, 600));
+
+        var first = !SubtitleManager.WindowReachesEnd(0, 600, 7174);
+        Assert.True(first);
+        Assert.Equal(600, SubtitleManager.ExtractionCapSeconds(first, 600));
+        Assert.Equal(0, SubtitleManager.ExtractionCapSeconds(true, 0));   // no windowing: never a cap
+    }
+
     private const string ThreeCues =
         "1\n00:00:05,000 --> 00:00:07,000\nFirst line.\n\n2\n00:04:10,500 --> 00:04:12,000\nSecond line.\n\n3\n00:09:58,250 --> 00:10:00,000\nCut off mid";
 

@@ -695,9 +695,12 @@ namespace WhisperSubs.Controller
                     containerStartTime,
                     effectiveAudioOffset);
                 SubtitleQueueService.Instance.ReportPhase("Extracting audio");
+                // The last window is extracted to the end of the file, not capped: "reaches the end" allows
+                // 30 s of slack, and a cap there would leave that tail untranscribed.
+                var moreRemains = !WindowReachesEnd(resumeOffsetSeconds, windowSeconds, windowMediaDuration);
                 await ExtractAudioForTranscriptionAsync(
                     mediaPath, tempAudioPath, lang, cancellationToken, extractionOffset, audioStreamIndex,
-                    maxDurationSeconds: windowSeconds);
+                    maxDurationSeconds: ExtractionCapSeconds(moreRemains, windowSeconds));
                 SubtitleQueueService.Instance.ReportPhase("Transcribing");
                 string srtContent = await provider.TranscribeAsync(tempAudioPath, lang, cancellationToken);
                 if (!string.IsNullOrWhiteSpace(srtContent))
@@ -714,7 +717,6 @@ namespace WhisperSubs.Controller
 
                 // More windows to go: hold back this window's last cue, which the cut may have clipped,
                 // and start the next window just before it.
-                var moreRemains = !WindowReachesEnd(resumeOffsetSeconds, windowSeconds, windowMediaDuration);
                 double nextWindowStart = -1;
                 if (moreRemains)
                 {
@@ -735,6 +737,10 @@ namespace WhisperSubs.Controller
                 if (!string.IsNullOrWhiteSpace(srtContent))
                 {
                     await WriteTextAtomicAsync(srtPath, srtContent, CancellationToken.None);
+                    // The legacy-named resume source is now contained in srtPath. Remove it here, after
+                    // the first write, because a later window of this run finds srtPath and would no
+                    // longer know the legacy file existed.
+                    RemoveLegacyResumeSource(existingSrtPath, srtPath);
                 }
 
                 if (moreRemains)
@@ -755,26 +761,6 @@ namespace WhisperSubs.Controller
                     return (GenerationOutcome.Skipped, null);
                 }
                 _logger.LogInformation("Saved full subtitle to {SrtPath}", srtPath);
-
-                // R2 back-compat: when we resumed from a LEGACY-named owned file that differs from the
-                // canonical path, the fresh complete write above lives at srtPath — remove the old legacy
-                // sidecar so an upgraded install isn't left with two owned full tracks for the language.
-                // Defensive: only after the successful save, and never throw (a failed delete just leaves
-                // the harmless duplicate rather than failing the generation).
-                if (existingSrtPath is not null
-                    && !string.Equals(existingSrtPath, srtPath, StringComparison.OrdinalIgnoreCase)
-                    && File.Exists(existingSrtPath))
-                {
-                    try
-                    {
-                        File.Delete(existingSrtPath);
-                        _logger.LogInformation("Removed legacy resume-source subtitle {LegacyPath} after writing {SrtPath}", existingSrtPath, srtPath);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "Failed to delete legacy resume-source subtitle {LegacyPath}; leaving it in place", existingSrtPath);
-                    }
-                }
 
                 return (GenerationOutcome.Succeeded, null);
             }
@@ -2092,6 +2078,40 @@ namespace WhisperSubs.Controller
         /// </summary>
         internal static string FfmpegSeconds(double seconds, int decimals)
             => seconds.ToString("F" + decimals.ToString(System.Globalization.CultureInfo.InvariantCulture), System.Globalization.CultureInfo.InvariantCulture);
+
+        /// <summary>
+        /// R2 back-compat: when a run resumed from a LEGACY-named owned file that differs from the
+        /// canonical path, the write that just succeeded holds its content at <paramref name="srtPath"/>,
+        /// so the old sidecar goes, or an upgraded install keeps two owned full tracks for the language.
+        /// Only after a successful save, and never throws: a failed delete leaves a harmless duplicate.
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Filesystem delete with logging; the condition is the same one the single-pass path always used")]
+        private void RemoveLegacyResumeSource(string? existingSrtPath, string srtPath)
+        {
+            if (existingSrtPath is null
+                || string.Equals(existingSrtPath, srtPath, StringComparison.OrdinalIgnoreCase)
+                || !File.Exists(existingSrtPath))
+            {
+                return;
+            }
+            try
+            {
+                File.Delete(existingSrtPath);
+                _logger.LogInformation("Removed legacy resume-source subtitle {LegacyPath} after writing {SrtPath}", existingSrtPath, srtPath);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to delete legacy resume-source subtitle {LegacyPath}; leaving it in place", existingSrtPath);
+            }
+        }
+
+        /// <summary>
+        /// The duration cap for one extraction: the window while more windows follow, none for the last
+        /// one, which reads to the end of the file so the slack <see cref="WindowReachesEnd"/> allows is
+        /// still transcribed. Pure.
+        /// </summary>
+        internal static double ExtractionCapSeconds(bool moreRemains, double windowSeconds)
+            => moreRemains && windowSeconds > 0 ? windowSeconds : 0;
 
         /// <summary>Seconds of audio per window for an engine that keeps no partial output.</summary>
         internal const double EngineWindowSeconds = 600;
