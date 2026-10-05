@@ -546,10 +546,11 @@ namespace WhisperSubs.Providers
             var errorBuilder = new StringBuilder();
             var fileTimeout = DetectionFileTimeout;
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            // The per-file timer does not run while generation is suspended for playback: a stopped
+            // The per-file timer does not run while this job is suspended for playback: a stopped
             // whisper-cli is not a stalled one.
+            var pauseScope = Controller.EngineProcessSuspender.Default.Current;
             using var fileDeadline = new Controller.PausableDeadline(
-                fileTimeout, timeoutCts, () => Controller.EngineProcessSuspender.Default.IsSuspended);
+                fileTimeout, timeoutCts, () => pauseScope?.IsSuspended == true);
             int filesStarted = 0;
 
             process.OutputDataReceived += (_, e) => { if (e.Data != null) outputBuilder.AppendLine(e.Data); };

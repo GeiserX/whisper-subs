@@ -22,20 +22,21 @@ public class EngineProcessSuspenderTests
     }
 
     [Fact]
-    public void SuspendAndResume_SignalEveryTrackedProcess()
+    public void SuspendAndResume_SignalEveryProcessOfTheJob()
     {
         var (s, sent) = Fake();
+        using var job = s.BeginScope();
         using var a = s.Track(101);
         using var b = s.Track(202);
         Assert.Empty(sent);
 
-        s.Suspend();
-        Assert.True(s.IsSuspended);
+        job.Suspend();
+        Assert.True(job.IsSuspended);
         Assert.Equal(new[] { (101, 19), (202, 19) }, sent.ToArray());
 
         sent.Clear();
-        s.Resume();
-        Assert.False(s.IsSuspended);
+        job.Resume();
+        Assert.False(job.IsSuspended);
         Assert.Equal(new[] { (101, 18), (202, 18) }, sent.ToArray());
     }
 
@@ -43,9 +44,10 @@ public class EngineProcessSuspenderTests
     public void SuspendAndResume_AreIdempotent()
     {
         var (s, sent) = Fake();
+        using var job = s.BeginScope();
         using var a = s.Track(101);
-        s.Suspend(); s.Suspend();
-        s.Resume(); s.Resume();
+        job.Suspend(); job.Suspend();
+        job.Resume(); job.Resume();
         Assert.Equal(new[] { (101, 19), (101, 18) }, sent.ToArray());
     }
 
@@ -54,11 +56,12 @@ public class EngineProcessSuspenderTests
     public void ProcessStartedWhileSuspended_IsStoppedAtOnce()
     {
         var (s, sent) = Fake();
-        s.Suspend();
+        using var job = s.BeginScope();
+        job.Suspend();
         using var late = s.Track(303);
         Assert.Equal(new[] { (303, 19) }, sent.ToArray());
         sent.Clear();
-        s.Resume();
+        job.Resume();
         Assert.Equal(new[] { (303, 18) }, sent.ToArray());
     }
 
@@ -66,12 +69,76 @@ public class EngineProcessSuspenderTests
     public void UntrackedProcess_IsLeftAlone()
     {
         var (s, sent) = Fake();
+        using var job = s.BeginScope();
         var handle = s.Track(101);
         handle.Dispose();
         handle.Dispose();   // twice is fine
-        s.Suspend();
-        s.Resume();
+        job.Suspend();
+        job.Resume();
         Assert.Empty(sent);
+    }
+
+    // A job on a remote worker opens no scope: the FFmpeg it runs on this server is not tracked and
+    // nothing can stop it.
+    [Fact]
+    public void WithoutAScope_NothingIsTracked()
+    {
+        var (s, sent) = Fake();
+        Assert.Null(s.Current);
+        using var handle = s.Track(101);
+        handle.Dispose();
+        Assert.Empty(sent);
+    }
+
+    // Two jobs on this server: one job's pause never touches the other's processes.
+    [Fact]
+    public async System.Threading.Tasks.Task Scopes_AreIndependentAcrossJobs()
+    {
+        var (s, sent) = Fake();
+        EngineProcessSuspender.Scope? scopeA = null, scopeB = null;
+        var aTracked = new System.Threading.Tasks.TaskCompletionSource();
+        var release = new System.Threading.Tasks.TaskCompletionSource();
+
+        async System.Threading.Tasks.Task JobA()
+        {
+            using var scope = s.BeginScope();
+            scopeA = scope;
+            await System.Threading.Tasks.Task.Yield();
+            using var t = s.Track(111);            // lands in A's scope although awaited
+            aTracked.SetResult();
+            await release.Task;
+        }
+        async System.Threading.Tasks.Task JobB()
+        {
+            using var scope = s.BeginScope();
+            scopeB = scope;
+            await aTracked.Task;
+            using var t = s.Track(222);
+            scope.Suspend();
+            Assert.Equal(new[] { (222, 19) }, sent.ToArray());   // only B's process
+            Assert.False(scopeA!.IsSuspended);
+            scope.Resume();
+            release.SetResult();
+        }
+        await System.Threading.Tasks.Task.WhenAll(JobA(), JobB());
+        Assert.NotSame(scopeA, scopeB);
+        Assert.Null(s.Current);                     // neither job's scope leaks into the caller
+    }
+
+    [Fact]
+    public void DisposingAScope_ContinuesWhatWasStopped()
+    {
+        var (s, sent) = Fake();
+        var job = s.BeginScope();
+        using var a = s.Track(101);
+        job.Suspend();
+        sent.Clear();
+        job.Dispose();
+        Assert.Equal(new[] { (101, 18) }, sent.ToArray());
+        Assert.Null(s.Current);
+        using var after = s.Track(404);             // the closed scope takes nothing more
+        job.Suspend();
+        Assert.Equal(new[] { (101, 18) }, sent.ToArray());
     }
 
     [Fact]
@@ -80,10 +147,11 @@ public class EngineProcessSuspenderTests
         var sent = new List<(int, int)>();
         var s = new EngineProcessSuspender((pid, sig) => { sent.Add((pid, sig)); return 0; }, signals: null);
         Assert.False(s.Supported);
+        using var job = s.BeginScope();
         using var a = s.Track(101);
-        s.Suspend();
-        Assert.False(s.IsSuspended);
-        s.Resume();
+        job.Suspend();
+        Assert.False(job.IsSuspended);
+        job.Resume();
         Assert.Empty(sent);
     }
 
@@ -91,11 +159,12 @@ public class EngineProcessSuspenderTests
     public void KillThatThrows_DoesNotBreakThePause()
     {
         var s = new EngineProcessSuspender((_, _) => throw new InvalidOperationException("gone"), (19, 18));
+        using var job = s.BeginScope();
         using var a = s.Track(101);
-        s.Suspend();
-        Assert.True(s.IsSuspended);
-        s.Resume();
-        Assert.False(s.IsSuspended);
+        job.Suspend();
+        Assert.True(job.IsSuspended);
+        job.Resume();
+        Assert.False(job.IsSuspended);
     }
 
     [Fact]
@@ -116,11 +185,12 @@ public class EngineProcessSuspenderTests
         var suspender = EngineProcessSuspender.Default;
         if (!suspender.Supported) return;
 
+        using var job = suspender.BeginScope();
         using var process = Process.Start(new ProcessStartInfo("sleep", "2") { UseShellExecute = false })!;
         using var tracked = suspender.Track(process.Id);
         try
         {
-            suspender.Suspend();
+            job.Suspend();
             Thread.Sleep(300);
             Assert.StartsWith("T", StateOf(process.Id));           // stopped
             Assert.False(process.WaitForExit(2500));                // a stopped "sleep 2" outlives its 2 seconds
@@ -131,13 +201,13 @@ public class EngineProcessSuspenderTests
                 Assert.True(other.WaitForExit(5000));
             }
 
-            suspender.Resume();
+            job.Resume();
             Assert.True(process.WaitForExit(5000));                 // continued, it finishes
             Assert.Equal(0, process.ExitCode);
         }
         finally
         {
-            suspender.Resume();
+            job.Resume();
             try { if (!process.HasExited) process.Kill(); } catch { }
         }
     }

@@ -17,9 +17,7 @@ namespace WhisperSubs.Controller
     {
         private readonly Func<int, int, int> _kill;
         private readonly (int Stop, int Cont)? _signals;
-        private readonly HashSet<int> _pids = new();
-        private readonly object _gate = new();
-        private bool _suspended;
+        private readonly System.Threading.AsyncLocal<Scope?> _current = new();
 
         /// <summary>The process-wide instance, wired to libc's <c>kill</c>.</summary>
         public static EngineProcessSuspender Default { get; } = new(NativeKill, PlatformSignals());
@@ -41,49 +39,30 @@ namespace WhisperSubs.Controller
 
         public bool Supported => _signals != null;
 
-        public bool IsSuspended { get { lock (_gate) { return _suspended; } } }
+        /// <summary>
+        /// The scope of the job this call belongs to, or null. A scope follows the async flow that
+        /// opened it, so the processes one job starts land in that job's scope and in no other: a job
+        /// on a remote worker has none, and its FFmpeg extraction on this server is never stopped by
+        /// another job's pause.
+        /// </summary>
+        public Scope? Current => _current.Value;
 
         /// <summary>
-        /// Registers a running engine process until the returned handle is disposed. A process that
-        /// starts while generation is suspended is stopped at once, so a job between two phases does
-        /// not slip a new process past the pause.
+        /// Opens the scope for one job on this server. Call it from the method that then awaits the
+        /// job, so the job's own calls see it. Disposing continues anything still stopped.
         /// </summary>
-        public IDisposable Track(int pid)
+        public Scope BeginScope()
         {
-            lock (_gate)
-            {
-                _pids.Add(pid);
-                if (_suspended) Send(pid, stop: true);
-            }
-            return new Handle(this, pid);
+            var scope = new Scope(this);
+            _current.Value = scope;
+            return scope;
         }
 
-        /// <summary>Stops every tracked process. Idempotent.</summary>
-        public void Suspend()
-        {
-            lock (_gate)
-            {
-                if (_suspended || _signals == null) return;
-                _suspended = true;
-                foreach (var pid in _pids) Send(pid, stop: true);
-            }
-        }
-
-        /// <summary>Continues every tracked process. Idempotent.</summary>
-        public void Resume()
-        {
-            lock (_gate)
-            {
-                if (!_suspended) return;
-                _suspended = false;
-                foreach (var pid in _pids) Send(pid, stop: false);
-            }
-        }
-
-        private void Untrack(int pid)
-        {
-            lock (_gate) { _pids.Remove(pid); }
-        }
+        /// <summary>
+        /// Registers a running engine process with the current job's scope until the returned handle is
+        /// disposed. Outside a scope this does nothing.
+        /// </summary>
+        public IDisposable Track(int pid) => Current?.Track(pid) ?? NoHandle.Instance;
 
         private void Send(int pid, bool stop)
         {
@@ -92,24 +71,90 @@ namespace WhisperSubs.Controller
             catch { /* the process is gone, or libc is not there: nothing to stop */ }
         }
 
-        private sealed class Handle : IDisposable
+        /// <summary>One job's engine processes and whether they are stopped.</summary>
+        internal sealed class Scope : IDisposable
         {
             private readonly EngineProcessSuspender _owner;
-            private readonly int _pid;
+            private readonly HashSet<int> _pids = new();
+            private readonly object _gate = new();
+            private bool _suspended;
             private bool _disposed;
 
-            public Handle(EngineProcessSuspender owner, int pid)
+            internal Scope(EngineProcessSuspender owner) { _owner = owner; }
+
+            public bool IsSuspended { get { lock (_gate) { return _suspended; } } }
+
+            /// <summary>
+            /// Registers a process. One that starts while the job is suspended is stopped at once, so a
+            /// job between two phases does not slip a new process past the pause.
+            /// </summary>
+            public IDisposable Track(int pid)
             {
-                _owner = owner;
-                _pid = pid;
+                lock (_gate)
+                {
+                    if (_disposed) return NoHandle.Instance;
+                    _pids.Add(pid);
+                    if (_suspended) _owner.Send(pid, stop: true);
+                }
+                return new Handle(this, pid);
             }
 
+            /// <summary>Stops every process of this job. Idempotent.</summary>
+            public void Suspend()
+            {
+                lock (_gate)
+                {
+                    if (_suspended || _disposed || !_owner.Supported) return;
+                    _suspended = true;
+                    foreach (var pid in _pids) _owner.Send(pid, stop: true);
+                }
+            }
+
+            /// <summary>Continues every process of this job. Idempotent.</summary>
+            public void Resume()
+            {
+                lock (_gate)
+                {
+                    if (!_suspended) return;
+                    _suspended = false;
+                    foreach (var pid in _pids) _owner.Send(pid, stop: false);
+                }
+            }
+
+            private void Untrack(int pid)
+            {
+                lock (_gate) { _pids.Remove(pid); }
+            }
+
+            /// <summary>Continues anything still stopped and closes the scope.</summary>
             public void Dispose()
             {
-                if (_disposed) return;
-                _disposed = true;
-                _owner.Untrack(_pid);
+                Resume();
+                lock (_gate) { _disposed = true; _pids.Clear(); }
+                if (ReferenceEquals(_owner._current.Value, this)) _owner._current.Value = null;
             }
+
+            private sealed class Handle : IDisposable
+            {
+                private readonly Scope _scope;
+                private readonly int _pid;
+                private bool _released;
+
+                public Handle(Scope scope, int pid) { _scope = scope; _pid = pid; }
+
+                public void Dispose()
+                {
+                    if (_released) return;
+                    _released = true;
+                    _scope.Untrack(_pid);
+                }
+            }
+        }
+
+        private sealed class NoHandle : IDisposable
+        {
+            public static readonly NoHandle Instance = new();
+            public void Dispose() { }
         }
 
         [ExcludeFromCodeCoverage(Justification = "P/Invoke into libc")]
@@ -120,7 +165,7 @@ namespace WhisperSubs.Controller
     }
 
     /// <summary>
-    /// A deadline that does not run while generation is suspended. The per-file detection timeout and
+    /// A deadline that does not run while its job is suspended. The per-file detection timeout and
     /// the vocal-separation deadline used <c>CancelAfter</c>, which keeps counting through a pause and
     /// would kill a stopped process for being slow.
     /// </summary>

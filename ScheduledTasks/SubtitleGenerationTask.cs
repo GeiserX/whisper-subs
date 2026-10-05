@@ -717,8 +717,11 @@ namespace WhisperSubs.ScheduledTasks
             if (EngineProcessSuspender.Default.Supported)
             {
                 await WaitForPlaybackIdleAsync(cancellationToken);
+                // The scope belongs to this job alone: only the processes this job starts are stopped,
+                // never those a remote worker's job runs on this server, nor another local job's.
+                using var scope = EngineProcessSuspender.Default.BeginScope();
                 using var monitorCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                var suspendMonitor = SuspendWhilePlayingAsync(item.Name, monitorCts.Token);
+                var suspendMonitor = SuspendWhilePlayingAsync(scope, item.Name, monitorCts.Token);
                 try
                 {
                     await manager.GenerateSubtitleAsync(item, provider, language, cancellationToken, targetEngines: targetEngines);
@@ -730,6 +733,11 @@ namespace WhisperSubs.ScheduledTasks
                 }
                 return;
             }
+
+            // The producer no longer waits for idle when a remote worker is in the pool, so a job on
+            // this server waits here before it starts: started during playback it would run for a few
+            // seconds and be cancelled.
+            await WaitForPlaybackIdleAsync(cancellationToken);
 
             while (true)
             {
@@ -799,12 +807,11 @@ namespace WhisperSubs.ScheduledTasks
 
         /// <summary>
         /// Polls sessions every 10 seconds while a job runs on this server and suspends or continues
-        /// its engine processes. Always leaves them running when it ends.
+        /// that job's engine processes, through the job's own scope. Always leaves them running when it ends.
         /// </summary>
         [ExcludeFromCodeCoverage(Justification = "A session-polling loop over the unit-tested DecidePause and EngineProcessSuspender")]
-        private async Task SuspendWhilePlayingAsync(string itemName, CancellationToken cancellationToken)
+        private async Task SuspendWhilePlayingAsync(EngineProcessSuspender.Scope suspender, string itemName, CancellationToken cancellationToken)
         {
-            var suspender = EngineProcessSuspender.Default;
             var queue = SubtitleQueueService.Instance;
             DateTime? suspendedAt = null;
             string? phaseBefore = null;
