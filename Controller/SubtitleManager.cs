@@ -585,7 +585,7 @@ namespace WhisperSubs.Controller
         private async Task<(GenerationOutcome Outcome, Exception? Error)> GenerateFullSubtitleForLanguageAsync(
             BaseItem item, ISubtitleProvider provider, string lang,
             string mediaPath, bool force, CancellationToken cancellationToken,
-            double continueFromSeconds = -1)
+            double continueFromSeconds = -1, string? heldCueText = null, double heldCueDurationSeconds = 0)
         {
             var config = Plugin.Instance?.Configuration;
             var label = config?.SubtitleLabel ?? SubtitleNaming.DefaultLabel;
@@ -715,14 +715,26 @@ namespace WhisperSubs.Controller
                         cancellationToken);
                 }
 
+                // This window began just before a cue the previous window held back. If it did not
+                // transcribe that stretch again (no speech found, or its first cue starts later), the
+                // held cue goes back in, so holding a cue back can never lose it.
+                srtContent = RestoreHeldCue(srtContent, heldCueText, heldCueDurationSeconds);
+
                 // More windows to go: hold back this window's last cue, which the cut may have clipped,
                 // and start the next window just before it.
                 double nextWindowStart = -1;
+                string? nextHeldText = null;
+                double nextHeldDuration = 0;
                 if (moreRemains)
                 {
-                    var (head, lastCueStart, cueCount) = SplitOffLastCue(srtContent);
-                    var plan = PlanNextWindow(resumeOffsetSeconds, windowSeconds, cueCount, lastCueStart);
-                    if (plan.DropLastCue) srtContent = head;
+                    var split = SplitOffLastCue(srtContent);
+                    var plan = PlanNextWindow(resumeOffsetSeconds, windowSeconds, split.CueCount, split.LastCueStartSeconds);
+                    if (plan.DropLastCue)
+                    {
+                        srtContent = split.Head;
+                        nextHeldText = split.LastCueText;
+                        nextHeldDuration = split.LastCueDurationSeconds;
+                    }
                     nextWindowStart = plan.NextStartSeconds;
                 }
 
@@ -750,7 +762,8 @@ namespace WhisperSubs.Controller
                         resumeOffsetSeconds, resumeOffsetSeconds + windowSeconds, windowMediaDuration, item.Name, lang, nextWindowStart);
                     try { if (File.Exists(tempAudioPath)) File.Delete(tempAudioPath); } catch { /* the finally retries */ }
                     var rest = await GenerateFullSubtitleForLanguageAsync(
-                        item, provider, lang, mediaPath, force, cancellationToken, continueFromSeconds: nextWindowStart);
+                        item, provider, lang, mediaPath, force, cancellationToken,
+                        continueFromSeconds: nextWindowStart, heldCueText: nextHeldText, heldCueDurationSeconds: nextHeldDuration);
                     // The top of that call may find the file complete and report a skip; for this run it is a success.
                     return rest.Outcome == GenerationOutcome.Skipped ? (GenerationOutcome.Succeeded, null) : rest;
                 }
@@ -2128,25 +2141,67 @@ namespace WhisperSubs.Controller
         internal static bool WindowReachesEnd(double windowStartSeconds, double windowSeconds, double mediaDurationSeconds)
             => windowSeconds <= 0 || mediaDurationSeconds <= 0 || windowStartSeconds + windowSeconds >= mediaDurationSeconds - 30;
 
+        /// <summary>The pad before a held-back cue at which the next window starts.</summary>
+        internal const double HeldCuePadSeconds = 0.2;
+
         /// <summary>
-        /// Splits the last cue off an SRT: the text without it, that cue's start in seconds, and how many
-        /// cues there were. With fewer than two cues nothing is split and the start is -1. Pure.
+        /// Splits the last cue off an SRT: the text without it, that cue's start in seconds, how many
+        /// cues there were, and the held cue's own text and length. With fewer than two cues nothing is
+        /// split and the start is -1. Pure.
         /// </summary>
-        internal static (string Head, double LastCueStartSeconds, int CueCount) SplitOffLastCue(string? srt)
+        internal static (string Head, double LastCueStartSeconds, int CueCount, string? LastCueText, double LastCueDurationSeconds) SplitOffLastCue(string? srt)
         {
-            if (string.IsNullOrWhiteSpace(srt)) return (srt ?? "", -1, 0);
+            if (string.IsNullOrWhiteSpace(srt)) return (srt ?? "", -1, 0, null, 0);
             var blocks = System.Text.RegularExpressions.Regex
                 .Split(srt.Replace("\r\n", "\n").Trim(), @"\n[ \t]*\n")
                 .Where(b => b.Contains("-->", StringComparison.Ordinal))
                 .ToList();
-            if (blocks.Count < 2) return (srt, -1, blocks.Count);
-            var m = System.Text.RegularExpressions.Regex.Match(blocks[^1], @"(\d{2}):(\d{2}):(\d{2})[,.](\d{3})\s*-->");
-            if (!m.Success) return (srt, -1, blocks.Count);
-            var start = int.Parse(m.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture) * 3600
-                + int.Parse(m.Groups[2].Value, System.Globalization.CultureInfo.InvariantCulture) * 60
-                + int.Parse(m.Groups[3].Value, System.Globalization.CultureInfo.InvariantCulture)
-                + int.Parse(m.Groups[4].Value, System.Globalization.CultureInfo.InvariantCulture) / 1000.0;
-            return (string.Join("\n\n", blocks.Take(blocks.Count - 1)), start, blocks.Count);
+            if (blocks.Count < 2) return (srt, -1, blocks.Count, null, 0);
+            var last = blocks[^1];
+            var m = System.Text.RegularExpressions.Regex.Match(last,
+                @"(\d{2}):(\d{2}):(\d{2})[,.](\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})[,.](\d{3})[^\n]*\n?");
+            if (!m.Success) return (srt, -1, blocks.Count, null, 0);
+            static double T(System.Text.RegularExpressions.Match x, int g)
+                => int.Parse(x.Groups[g].Value, System.Globalization.CultureInfo.InvariantCulture) * 3600
+                 + int.Parse(x.Groups[g + 1].Value, System.Globalization.CultureInfo.InvariantCulture) * 60
+                 + int.Parse(x.Groups[g + 2].Value, System.Globalization.CultureInfo.InvariantCulture)
+                 + int.Parse(x.Groups[g + 3].Value, System.Globalization.CultureInfo.InvariantCulture) / 1000.0;
+            var start = T(m, 1);
+            var end = T(m, 5);
+            var text = last[(m.Index + m.Length)..].Trim();
+            return (string.Join("\n\n", blocks.Take(blocks.Count - 1)), start, blocks.Count, text, Math.Max(0, end - start));
+        }
+
+        /// <summary>
+        /// Puts a held-back cue back at the head of the window that was meant to transcribe it again,
+        /// when that window did not: it has no cues, or its first cue starts more than a second after the
+        /// held cue would have ended. The window starts <see cref="HeldCuePadSeconds"/> before the held
+        /// cue, so in window time the cue runs from the pad for its own length. Otherwise the window is
+        /// returned unchanged, because it carries the stretch itself. Pure.
+        /// </summary>
+        internal static string RestoreHeldCue(string? windowSrt, string? heldCueText, double heldCueDurationSeconds)
+        {
+            var window = windowSrt ?? "";
+            if (string.IsNullOrWhiteSpace(heldCueText)) return window;
+            var heldEnd = HeldCuePadSeconds + Math.Max(heldCueDurationSeconds, 0.5);
+            var first = System.Text.RegularExpressions.Regex.Match(window, @"(\d{2}):(\d{2}):(\d{2})[,.](\d{3})\s*-->");
+            if (first.Success)
+            {
+                var firstStart = int.Parse(first.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture) * 3600
+                    + int.Parse(first.Groups[2].Value, System.Globalization.CultureInfo.InvariantCulture) * 60
+                    + int.Parse(first.Groups[3].Value, System.Globalization.CultureInfo.InvariantCulture)
+                    + int.Parse(first.Groups[4].Value, System.Globalization.CultureInfo.InvariantCulture) / 1000.0;
+                if (firstStart <= heldEnd + 1.0) return window;   // the window covers the held stretch
+            }
+            static string Stamp(double seconds)
+            {
+                var ms = (long)Math.Round(seconds * 1000);
+                return string.Format(System.Globalization.CultureInfo.InvariantCulture, "{0:00}:{1:00}:{2:00},{3:000}",
+                    ms / 3600000, ms / 60000 % 60, ms / 1000 % 60, ms % 1000);
+            }
+            var held = $"1\n{Stamp(HeldCuePadSeconds)} --> {Stamp(heldEnd)}\n{heldCueText.Trim()}";
+            if (!first.Success) return held;
+            return held + "\n\n" + Providers.WhisperProvider.OffsetSrt(window, 0, 2).Trim();
         }
 
         /// <summary>
@@ -2159,7 +2214,7 @@ namespace WhisperSubs.Controller
         internal static (double NextStartSeconds, bool DropLastCue) PlanNextWindow(
             double windowStartSeconds, double windowSeconds, int cueCount, double lastCueStartInWindow)
         {
-            const double pad = 0.2;
+            const double pad = HeldCuePadSeconds;
             if (cueCount >= 2 && lastCueStartInWindow - pad > 1.0)
             {
                 return (windowStartSeconds + lastCueStartInWindow - pad, true);

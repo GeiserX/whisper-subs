@@ -63,32 +63,68 @@ public class Qwen3WindowTests
     [Fact]
     public void SplitOffLastCue_ReturnsHeadStartAndCount()
     {
-        var (head, lastStart, count) = SubtitleManager.SplitOffLastCue(ThreeCues);
+        var (head, lastStart, count, heldText, heldDuration) = SubtitleManager.SplitOffLastCue(ThreeCues);
         Assert.Equal(3, count);
         Assert.Equal(598.25, lastStart, 3);
         Assert.DoesNotContain("Cut off mid", head);
         Assert.Contains("Second line.", head);
         Assert.Equal(2, WhisperProvider.CountSrtEntries(head));
+        Assert.Equal("Cut off mid", heldText);
+        Assert.Equal(1.75, heldDuration, 3);
+    }
+
+    // The next window starts 0.2 s before the held cue. If it comes back with no speech, the held cue
+    // goes back in at that position, so holding a cue back can never lose it.
+    [Fact]
+    public void RestoreHeldCue_EmptyWindow_GetsTheHeldCueBack()
+    {
+        var restored = SubtitleManager.RestoreHeldCue("", "Cut off mid", 1.75);
+        Assert.Equal("1\n00:00:00,200 --> 00:00:01,950\nCut off mid", restored);
+        Assert.Equal(restored, SubtitleManager.RestoreHeldCue(null, "Cut off mid", 1.75));
+    }
+
+    [Fact]
+    public void RestoreHeldCue_WindowThatStartsLater_GetsItPrependedAndRenumbered()
+    {
+        const string window = "1\n00:00:31,000 --> 00:00:33,000\nMuch later line.";
+        var restored = SubtitleManager.RestoreHeldCue(window, "Cut off mid", 1.75).Replace("\r\n", "\n");
+        Assert.StartsWith("1\n00:00:00,200 --> 00:00:01,950\nCut off mid\n\n2\n00:00:31,000 --> 00:00:33,000\nMuch later line.", restored);
+    }
+
+    [Theory]
+    [InlineData("1\n00:00:00,300 --> 00:00:02,400\nCut off mid sentence, now whole.")]   // re-transcribed
+    [InlineData("1\n00:00:02,900 --> 00:00:04,000\nStarts within a second of the held end.")]
+    public void RestoreHeldCue_WindowThatCoversIt_IsUnchanged(string window)
+    {
+        Assert.Equal(window, SubtitleManager.RestoreHeldCue(window, "Cut off mid", 1.75));
+    }
+
+    [Fact]
+    public void RestoreHeldCue_NothingHeld_IsUnchanged()
+    {
+        Assert.Equal("", SubtitleManager.RestoreHeldCue("", null, 0));
+        Assert.Equal("x", SubtitleManager.RestoreHeldCue("x", "  ", 3));
     }
 
     [Fact]
     public void SplitOffLastCue_FewerThanTwoCues_SplitsNothing()
     {
         const string one = "1\n00:00:05,000 --> 00:00:07,000\nOnly line.";
-        var (head, lastStart, count) = SubtitleManager.SplitOffLastCue(one);
+        var (head, lastStart, count, heldText, _) = SubtitleManager.SplitOffLastCue(one);
         Assert.Equal(one, head);
         Assert.Equal(-1, lastStart);
         Assert.Equal(1, count);
+        Assert.Null(heldText);
 
         var empty = SubtitleManager.SplitOffLastCue("");
-        Assert.Equal(("", -1d, 0), empty);
+        Assert.Equal(("", -1d, 0), (empty.Head, empty.LastCueStartSeconds, empty.CueCount));
         Assert.Equal(0, SubtitleManager.SplitOffLastCue(null).CueCount);
     }
 
     [Fact]
     public void SplitOffLastCue_HandlesWindowsLineEndings()
     {
-        var (head, lastStart, count) = SubtitleManager.SplitOffLastCue(ThreeCues.Replace("\n", "\r\n"));
+        var (head, lastStart, count, _, _) = SubtitleManager.SplitOffLastCue(ThreeCues.Replace("\n", "\r\n"));
         Assert.Equal(3, count);
         Assert.Equal(598.25, lastStart, 3);
         Assert.DoesNotContain("Cut off mid", head);
@@ -144,7 +180,7 @@ public class Qwen3WindowTests
     [Fact]
     public void WindowAppend_KeepsAbsoluteTimesAndIndices()
     {
-        var (head, lastStart, count) = SubtitleManager.SplitOffLastCue(ThreeCues);
+        var (head, lastStart, count, _, _) = SubtitleManager.SplitOffLastCue(ThreeCues);
         var (next, drop) = SubtitleManager.PlanNextWindow(0, 600, count, lastStart);
         Assert.True(drop);
         const string windowTwo = "1\n00:00:00,200 --> 00:00:03,000\nCut off mid sentence, now whole.";
