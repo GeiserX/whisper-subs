@@ -692,6 +692,9 @@ namespace WhisperSubs.ScheduledTasks
             hold ??= new PlaybackHold();
             var poll = TimeSpan.FromSeconds(15);
             var queue = SubtitleQueueService.Instance;
+            // Measured, not nominal: a delay that resumes late still counts in full against the budget.
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            var counted = TimeSpan.Zero;
             while (_sessionManager.Sessions.Any(s => IsPlaying(s.NowPlayingItem != null, s.PlayState?.IsPaused)))
             {
                 if (hold.Spent)
@@ -706,7 +709,9 @@ namespace WhisperSubs.ScheduledTasks
                     logged = true;
                 }
                 await Task.Delay(poll, cancellationToken);
-                hold.Add(poll);
+                var now = clock.Elapsed;
+                hold.Add(now - counted);
+                counted = now;
             }
             if (logged)
             {
@@ -847,12 +852,17 @@ namespace WhisperSubs.ScheduledTasks
             var poll = TimeSpan.FromSeconds(10);
             var suspended = false;
             string? phaseBefore = null;
+            // Measured, not nominal, as in WaitForPlaybackIdleAsync.
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            var counted = TimeSpan.Zero;
             try
             {
                 while (true)
                 {
                     await Task.Delay(poll, cancellationToken);
-                    if (suspended) hold.Add(poll);
+                    var now = clock.Elapsed;
+                    if (suspended) hold.Add(now - counted);
+                    counted = now;
                     var playing = _sessionManager.Sessions.Any(s => IsPlaying(s.NowPlayingItem != null, s.PlayState?.IsPaused));
                     switch (DecidePause(playing, suspended, hold.Held))
                     {
