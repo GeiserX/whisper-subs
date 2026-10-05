@@ -81,6 +81,9 @@ namespace WhisperSubs.Providers
                 SubtitleQueueService.Instance.ResetFileProgress();
 
                 process.Start();
+                // While tracked, "Pause generation during playback" can stop and continue the engine
+                // instead of killing it.
+                using var tracked = EngineProcessSuspender.Default.Track(process.Id);
                 process.BeginOutputReadLine();
                 process.BeginErrorReadLine();
 

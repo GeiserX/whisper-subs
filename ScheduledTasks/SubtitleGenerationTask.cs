@@ -264,8 +264,11 @@ namespace WhisperSubs.ScheduledTasks
                 // resumes from here instead of re-probing everything already done.
                 if (SweepBudgetExhausted()) break;
 
-                // Wait for active playback to finish before processing next item
-                if (config.PauseOnPlayback)
+                // Wait for active playback to finish before processing the next item, when every worker
+                // is this server. With a remote worker in the pool the producer keeps feeding it: that
+                // machine is not the one transcoding. A job that lands on this server waits for idle
+                // itself (TranscribeWithPlaybackMonitorAsync).
+                if (GateProducerOnPlayback(config.PauseOnPlayback, queue.SnapshotWorkers().Any(w => !w.IsLocal)))
                 {
                     await WaitForPlaybackIdleAsync(cancellationToken);
                 }
@@ -605,7 +608,8 @@ namespace WhisperSubs.ScheduledTasks
                 {
                     if (config.PauseOnPlayback)
                     {
-                        await TranscribeWithPlaybackMonitorAsync(manager, item, lease.Worker.Provider, new PoolTargetEngines(pool, lease, skipUnservedTargets: true), language, cancellationToken);
+                        await TranscribeWithPlaybackMonitorAsync(manager, item, lease.Worker.Provider, new PoolTargetEngines(pool, lease, skipUnservedTargets: true), language, cancellationToken,
+                            isLocalWorker: lease.Worker.Capabilities.IsLocal);
                     }
                     else
                     {
@@ -698,8 +702,35 @@ namespace WhisperSubs.ScheduledTasks
         /// </summary>
         private async Task TranscribeWithPlaybackMonitorAsync(
             SubtitleManager manager, BaseItem item, ISubtitleProvider provider, ITranslationTargetEngines targetEngines,
-            string language, CancellationToken cancellationToken)
+            string language, CancellationToken cancellationToken, bool isLocalWorker = true)
         {
+            // A remote worker is another machine. Playback on this server neither needs its GPU nor
+            // gains anything from stopping it, so its job simply runs.
+            if (!isLocalWorker)
+            {
+                await manager.GenerateSubtitleAsync(item, provider, language, cancellationToken, targetEngines: targetEngines);
+                return;
+            }
+
+            // Where the engine processes can be stopped and continued, a pause costs no work at all:
+            // the job is not cancelled, its processes are suspended until playback ends.
+            if (EngineProcessSuspender.Default.Supported)
+            {
+                await WaitForPlaybackIdleAsync(cancellationToken);
+                using var monitorCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                var suspendMonitor = SuspendWhilePlayingAsync(item.Name, monitorCts.Token);
+                try
+                {
+                    await manager.GenerateSubtitleAsync(item, provider, language, cancellationToken, targetEngines: targetEngines);
+                }
+                finally
+                {
+                    await monitorCts.CancelAsync();
+                    try { await suspendMonitor; } catch (OperationCanceledException) { }
+                }
+                return;
+            }
+
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -742,6 +773,81 @@ namespace WhisperSubs.ScheduledTasks
         /// <summary>
         /// Polls sessions every 10 seconds. Returns (completes) when playback is detected.
         /// </summary>
+        /// <summary>
+        /// Whether the sweep's producer itself waits for playback to stop before dispatching the next
+        /// item: only with the setting on and no remote worker to keep busy. Pure.
+        /// </summary>
+        internal static bool GateProducerOnPlayback(bool pauseOnPlayback, bool poolHasRemoteWorker)
+            => pauseOnPlayback && !poolHasRemoteWorker;
+
+        /// <summary>What the suspend monitor does on one poll.</summary>
+        public enum PauseAction { None, Suspend, Resume }
+
+        /// <summary>The longest one job stays suspended before it continues regardless, as the cancel path always did.</summary>
+        internal static readonly TimeSpan MaxSuspend = TimeSpan.FromHours(4);
+
+        /// <summary>
+        /// One poll of the suspend monitor: stop the engine when playback starts, continue it when
+        /// playback ends or the job has been held for <see cref="MaxSuspend"/>, and after that guard has
+        /// fired do not stop this job again, or a server that is never idle would hold it for ever. Pure.
+        /// </summary>
+        internal static PauseAction DecidePause(bool playing, bool suspended, TimeSpan suspendedFor, bool guardSpent)
+        {
+            if (!suspended) return playing && !guardSpent ? PauseAction.Suspend : PauseAction.None;
+            return !playing || suspendedFor >= MaxSuspend ? PauseAction.Resume : PauseAction.None;
+        }
+
+        /// <summary>
+        /// Polls sessions every 10 seconds while a job runs on this server and suspends or continues
+        /// its engine processes. Always leaves them running when it ends.
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "A session-polling loop over the unit-tested DecidePause and EngineProcessSuspender")]
+        private async Task SuspendWhilePlayingAsync(string itemName, CancellationToken cancellationToken)
+        {
+            var suspender = EngineProcessSuspender.Default;
+            var queue = SubtitleQueueService.Instance;
+            DateTime? suspendedAt = null;
+            string? phaseBefore = null;
+            var guardSpent = false;
+            try
+            {
+                while (true)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(10), cancellationToken);
+                    var playing = _sessionManager.Sessions.Any(s => IsPlaying(s.NowPlayingItem != null, s.PlayState?.IsPaused));
+                    var held = suspendedAt is { } since ? DateTime.UtcNow - since : TimeSpan.Zero;
+                    switch (DecidePause(playing, suspendedAt != null, held, guardSpent))
+                    {
+                        case PauseAction.Suspend:
+                            suspender.Suspend();
+                            suspendedAt = DateTime.UtcNow;
+                            phaseBefore = queue.CurrentPhase;
+                            queue.ReportPhase("Waiting for playback to stop");
+                            _logger.LogInformation("Playback started during transcription of {ItemName} — suspending", itemName);
+                            break;
+                        case PauseAction.Resume:
+                            guardSpent = playing;   // still playing: the 4-hour guard fired
+                            suspender.Resume();
+                            suspendedAt = null;
+                            if (phaseBefore != null) queue.ReportPhase(phaseBefore);
+                            if (guardSpent)
+                            {
+                                _logger.LogWarning("Playback still active after {Hours} hours — continuing {ItemName} to avoid an indefinite stall", MaxSuspend.TotalHours, itemName);
+                            }
+                            else
+                            {
+                                _logger.LogInformation("Playback stopped — continuing {ItemName}", itemName);
+                            }
+                            break;
+                    }
+                }
+            }
+            finally
+            {
+                if (suspendedAt != null) suspender.Resume();
+            }
+        }
+
         /// <summary>
         /// Whether a session counts as playback for "Pause generation during playback": it holds an item
         /// and is not paused. A client parked on a paused title (TV apps keep reporting one for hours)

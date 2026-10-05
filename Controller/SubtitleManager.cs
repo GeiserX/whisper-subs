@@ -2304,6 +2304,7 @@ namespace WhisperSubs.Controller
             process.ErrorDataReceived += (_, e) => { if (e.Data != null) errorBuilder.AppendLine(e.Data); };
 
             process.Start();
+            using var tracked = EngineProcessSuspender.Default.Track(process.Id);   // pause-on-playback stops it, never kills it
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
 
@@ -2500,6 +2501,7 @@ namespace WhisperSubs.Controller
             using var process = new Process { StartInfo = startInfo };
 
             process.Start();
+            using var tracked = EngineProcessSuspender.Default.Track(process.Id);   // pause-on-playback stops it, never kills it
             process.BeginErrorReadLine();
 
             try
@@ -2822,6 +2824,7 @@ namespace WhisperSubs.Controller
             };
 
             process.Start();
+            using var tracked = EngineProcessSuspender.Default.Track(process.Id);   // pause-on-playback stops it, never kills it
             process.BeginErrorReadLine();
 
             try

@@ -124,6 +124,14 @@ The fix is the **Word timing** download in the same panel: the Canary CTC aligne
 
 Qwen3-ASR does not translate, so **Translation to English** keeps using the Whisper model even with Qwen3-ASR selected, and a title that needs English still needs a Whisper model that can translate.
 
+## Pause during playback suspends on Linux only
+
+**Pause generation during playback** stops the engine processes (whisper-cli, crispasr, FFmpeg extraction, vocal separation) with SIGSTOP and continues them with SIGCONT, on Linux. Nothing is lost in any pass, including the forced-subtitle pass, which cannot resume from partial output. A job that has been held for four hours continues anyway and is not stopped again.
+
+On macOS and Windows the old behaviour stays: the job is cancelled and retried, which is cheap for a full subtitle (Whisper writes as it goes, Qwen3-ASR saves ten-minute windows) and expensive for a forced one. macOS is excluded on purpose: a stopped child process sends .NET's own child-process bookkeeping into a busy loop there, and every later wait on a process hangs.
+
+Two things to know on Linux. A suspended engine keeps its memory, GPU memory included, until it continues. And if Jellyfin is killed outright while an engine is suspended outside a container, that process stays stopped until you end it yourself; in a container it goes away with the container.
+
 ## Engine auto-download is Linux only
 
 The setup page downloads prebuilt `whisper-cli` binaries for two platforms:
