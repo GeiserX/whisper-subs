@@ -78,6 +78,12 @@ So the aligner ships as a managed, pinned download in the Qwen3 panel, on by def
 
 The limitation is documented in [limitations.md](../limitations.md#qwen3-asr-cues-are-timed-by-vad-unless-the-aligner-is-installed). The plugin's own speech alignment pass (`Align subtitles to speech`) snaps cue starts to speech afterwards.
 
+## Interruptions
+
+The first day in production found the gap. With **Pause generation during playback** on, a two-hour film was cancelled 20 times in a day: FFmpeg spent 26 minutes reading the 30 GB remux for its audio, Qwen3-ASR got a few minutes, a viewer pressed play. whisper-cli writes cues as it goes and the runner hands that partial back on cancel; crispasr writes when it finishes, so nothing was kept and every attempt began at zero.
+
+4.12.1 walks a Qwen3-ASR title in ten-minute windows (`SubtitleManager.WindowSecondsFor`). Each window is extracted with an input-side `-t`, so FFmpeg stops reading after it, transcribed, and appended to the partial file that the existing resume reads. Between windows of the same run the last cue is held back and the next window starts 0.2 s before it (`PlanNextWindow`), so a seam never cuts a sentence or repeats one; a window of silence or music, which crispasr answers with "no speech detected" and no file, counts as empty and the run moves on. The cost is one model load per window, about 15 s on the Vulkan build.
+
 ## Rollout
 
 1. The plugin: catalog, provider, switch, setup endpoints, settings panel, tests, this doc.

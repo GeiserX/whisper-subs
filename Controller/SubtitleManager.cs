@@ -584,7 +584,8 @@ namespace WhisperSubs.Controller
         [ExcludeFromCodeCoverage(Justification = "Orchestrates FFmpeg audio extraction and whisper transcription processes")]
         private async Task<(GenerationOutcome Outcome, Exception? Error)> GenerateFullSubtitleForLanguageAsync(
             BaseItem item, ISubtitleProvider provider, string lang,
-            string mediaPath, bool force, CancellationToken cancellationToken)
+            string mediaPath, bool force, CancellationToken cancellationToken,
+            double continueFromSeconds = -1, string? heldCueText = null, double heldCueDurationSeconds = 0)
         {
             var config = Plugin.Instance?.Configuration;
             var label = config?.SubtitleLabel ?? SubtitleNaming.DefaultLabel;
@@ -650,8 +651,31 @@ namespace WhisperSubs.Controller
                 }
             }
 
+            // An engine that writes its subtitle only when it finishes (Qwen3-ASR through crispasr) leaves
+            // nothing behind when playback cancels it, so a long title restarted from zero on every
+            // interruption and never finished. Such an engine goes through the title in windows: each
+            // one is extracted, transcribed and appended to the partial file on disk, which the resume
+            // logic above then picks up exactly as it does for whisper-cli's own partial output.
+            var windowSeconds = WindowSecondsFor(provider);
+            double windowMediaDuration = 0;
+            if (windowSeconds > 0)
+            {
+                windowMediaDuration = await GetMediaDurationAsync(mediaPath, cancellationToken);
+                if (windowMediaDuration <= 0) windowSeconds = 0;   // unknown length: one pass, as before
+            }
+            if (continueFromSeconds >= 0)
+            {
+                // The previous window of this same run chose where to continue: a cue boundary, so
+                // nothing is cut or repeated. Only a restart after an interruption uses the generic rule.
+                resumeOffsetSeconds = continueFromSeconds;
+                existingEntryCount = WhisperProvider.CountSrtEntries(existingSrt);
+            }
+
             var tempAudioPath = Path.Combine(Path.GetTempPath(), $"{item.Id}_{Guid.NewGuid()}.wav");
-            _logger.LogInformation("Generating full subtitle for {ItemName} [{Language}]", item.Name, lang);
+            if (continueFromSeconds < 0)
+            {
+                _logger.LogInformation("Generating full subtitle for {ItemName} [{Language}]", item.Name, lang);
+            }
 
             try
             {
@@ -671,47 +695,85 @@ namespace WhisperSubs.Controller
                     containerStartTime,
                     effectiveAudioOffset);
                 SubtitleQueueService.Instance.ReportPhase("Extracting audio");
+                // The last window is extracted to the end of the file, not capped: "reaches the end" allows
+                // 30 s of slack, and a cap there would leave that tail untranscribed.
+                var moreRemains = !WindowReachesEnd(resumeOffsetSeconds, windowSeconds, windowMediaDuration);
                 await ExtractAudioForTranscriptionAsync(
-                    mediaPath, tempAudioPath, lang, cancellationToken, extractionOffset, audioStreamIndex);
+                    mediaPath, tempAudioPath, lang, cancellationToken, extractionOffset, audioStreamIndex,
+                    maxDurationSeconds: ExtractionCapSeconds(moreRemains, windowSeconds));
                 SubtitleQueueService.Instance.ReportPhase("Transcribing");
                 string srtContent = await provider.TranscribeAsync(tempAudioPath, lang, cancellationToken);
-                srtContent = await ApplyTimingCorrectionsAsync(
-                    srtContent,
-                    mediaPath,
-                    tempAudioPath,
-                    resumeOffsetSeconds > 0,
-                    provider.RequiresSpeechAlignmentOptIn,
-                    effectiveAudioOffset,
-                    cancellationToken);
+                if (!string.IsNullOrWhiteSpace(srtContent))
+                {
+                    srtContent = await ApplyTimingCorrectionsAsync(
+                        srtContent,
+                        mediaPath,
+                        tempAudioPath,
+                        resumeOffsetSeconds > 0,
+                        provider.RequiresSpeechAlignmentOptIn,
+                        effectiveAudioOffset,
+                        cancellationToken);
+                }
 
-                if (resumeOffsetSeconds > 0 && !string.IsNullOrWhiteSpace(existingSrt))
+                // This window began just before a cue the previous window held back. If it did not
+                // transcribe that stretch again (no speech found, or its first cue starts later), the
+                // held cue goes back in, so holding a cue back can never lose it.
+                srtContent = RestoreHeldCue(srtContent, heldCueText, heldCueDurationSeconds);
+
+                // More windows to go: hold back this window's last cue, which the cut may have clipped,
+                // and start the next window just before it.
+                double nextWindowStart = -1;
+                string? nextHeldText = null;
+                double nextHeldDuration = 0;
+                if (moreRemains)
+                {
+                    var split = SplitOffLastCue(srtContent);
+                    var plan = PlanNextWindow(resumeOffsetSeconds, windowSeconds, split.CueCount, split.LastCueStartSeconds);
+                    if (plan.DropLastCue)
+                    {
+                        srtContent = split.Head;
+                        nextHeldText = split.LastCueText;
+                        nextHeldDuration = split.LastCueDurationSeconds;
+                    }
+                    nextWindowStart = plan.NextStartSeconds;
+                }
+
+                if (resumeOffsetSeconds > 0)
                 {
                     var offsetContent = WhisperProvider.OffsetSrt(srtContent, resumeOffsetSeconds, existingEntryCount + 1);
-                    srtContent = existingSrt.TrimEnd() + "\n\n" + offsetContent;
+                    srtContent = string.IsNullOrWhiteSpace(existingSrt) ? offsetContent
+                        : string.IsNullOrWhiteSpace(offsetContent) ? existingSrt.TrimEnd()
+                        : existingSrt.TrimEnd() + "\n\n" + offsetContent;
                 }
 
-                await WriteTextAtomicAsync(srtPath, srtContent, CancellationToken.None);
-                _logger.LogInformation("Saved full subtitle to {SrtPath}", srtPath);
-
-                // R2 back-compat: when we resumed from a LEGACY-named owned file that differs from the
-                // canonical path, the fresh complete write above lives at srtPath — remove the old legacy
-                // sidecar so an upgraded install isn't left with two owned full tracks for the language.
-                // Defensive: only after the successful save, and never throw (a failed delete just leaves
-                // the harmless duplicate rather than failing the generation).
-                if (existingSrtPath is not null
-                    && !string.Equals(existingSrtPath, srtPath, StringComparison.OrdinalIgnoreCase)
-                    && File.Exists(existingSrtPath))
+                if (!string.IsNullOrWhiteSpace(srtContent))
                 {
-                    try
-                    {
-                        File.Delete(existingSrtPath);
-                        _logger.LogInformation("Removed legacy resume-source subtitle {LegacyPath} after writing {SrtPath}", existingSrtPath, srtPath);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "Failed to delete legacy resume-source subtitle {LegacyPath}; leaving it in place", existingSrtPath);
-                    }
+                    await WriteTextAtomicAsync(srtPath, srtContent, CancellationToken.None);
+                    // The legacy-named resume source is now contained in srtPath. Remove it here, after
+                    // the first write, because a later window of this run finds srtPath and would no
+                    // longer know the legacy file existed.
+                    RemoveLegacyResumeSource(existingSrtPath, srtPath);
                 }
+
+                if (moreRemains)
+                {
+                    _logger.LogInformation(
+                        "Saved window {From:F0}-{To:F0}s of {Duration:F0}s for {ItemName} [{Language}]; continuing at {Next:F1}s",
+                        resumeOffsetSeconds, resumeOffsetSeconds + windowSeconds, windowMediaDuration, item.Name, lang, nextWindowStart);
+                    try { if (File.Exists(tempAudioPath)) File.Delete(tempAudioPath); } catch { /* the finally retries */ }
+                    var rest = await GenerateFullSubtitleForLanguageAsync(
+                        item, provider, lang, mediaPath, force, cancellationToken,
+                        continueFromSeconds: nextWindowStart, heldCueText: nextHeldText, heldCueDurationSeconds: nextHeldDuration);
+                    // The top of that call may find the file complete and report a skip; for this run it is a success.
+                    return rest.Outcome == GenerationOutcome.Skipped ? (GenerationOutcome.Succeeded, null) : rest;
+                }
+
+                if (string.IsNullOrWhiteSpace(srtContent))
+                {
+                    _logger.LogInformation("No speech found in {ItemName} [{Language}]; no subtitle written", item.Name, lang);
+                    return (GenerationOutcome.Skipped, null);
+                }
+                _logger.LogInformation("Saved full subtitle to {SrtPath}", srtPath);
 
                 return (GenerationOutcome.Succeeded, null);
             }
@@ -2030,6 +2092,136 @@ namespace WhisperSubs.Controller
         internal static string FfmpegSeconds(double seconds, int decimals)
             => seconds.ToString("F" + decimals.ToString(System.Globalization.CultureInfo.InvariantCulture), System.Globalization.CultureInfo.InvariantCulture);
 
+        /// <summary>
+        /// R2 back-compat: when a run resumed from a LEGACY-named owned file that differs from the
+        /// canonical path, the write that just succeeded holds its content at <paramref name="srtPath"/>,
+        /// so the old sidecar goes, or an upgraded install keeps two owned full tracks for the language.
+        /// Only after a successful save, and never throws: a failed delete leaves a harmless duplicate.
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Filesystem delete with logging; the condition is the same one the single-pass path always used")]
+        private void RemoveLegacyResumeSource(string? existingSrtPath, string srtPath)
+        {
+            if (existingSrtPath is null
+                || string.Equals(existingSrtPath, srtPath, StringComparison.OrdinalIgnoreCase)
+                || !File.Exists(existingSrtPath))
+            {
+                return;
+            }
+            try
+            {
+                File.Delete(existingSrtPath);
+                _logger.LogInformation("Removed legacy resume-source subtitle {LegacyPath} after writing {SrtPath}", existingSrtPath, srtPath);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to delete legacy resume-source subtitle {LegacyPath}; leaving it in place", existingSrtPath);
+            }
+        }
+
+        /// <summary>
+        /// The duration cap for one extraction: the window while more windows follow, none for the last
+        /// one, which reads to the end of the file so the slack <see cref="WindowReachesEnd"/> allows is
+        /// still transcribed. Pure.
+        /// </summary>
+        internal static double ExtractionCapSeconds(bool moreRemains, double windowSeconds)
+            => moreRemains && windowSeconds > 0 ? windowSeconds : 0;
+
+        /// <summary>Seconds of audio per window for an engine that keeps no partial output.</summary>
+        internal const double EngineWindowSeconds = 600;
+
+        /// <summary>
+        /// The window length for <paramref name="provider"/>, or 0 for one pass over the whole title.
+        /// Only this server's Qwen3-ASR engine needs windows: crispasr writes its subtitle when it
+        /// finishes, whisper-cli writes as it goes, and remote workers are not paused by playback. Pure.
+        /// </summary>
+        internal static double WindowSecondsFor(ISubtitleProvider? provider)
+            => provider is EngineSwitchProvider sw && sw.Current is Qwen3Provider ? EngineWindowSeconds : 0;
+
+        /// <summary>True when this window is the last one: no windows at all, or it covers the end (within the 30 s the completeness check allows). Pure.</summary>
+        internal static bool WindowReachesEnd(double windowStartSeconds, double windowSeconds, double mediaDurationSeconds)
+            => windowSeconds <= 0 || mediaDurationSeconds <= 0 || windowStartSeconds + windowSeconds >= mediaDurationSeconds - 30;
+
+        /// <summary>The pad before a held-back cue at which the next window starts.</summary>
+        internal const double HeldCuePadSeconds = 0.2;
+
+        /// <summary>
+        /// Splits the last cue off an SRT: the text without it, that cue's start in seconds, how many
+        /// cues there were, and the held cue's own text and length. With fewer than two cues nothing is
+        /// split and the start is -1. Pure.
+        /// </summary>
+        internal static (string Head, double LastCueStartSeconds, int CueCount, string? LastCueText, double LastCueDurationSeconds) SplitOffLastCue(string? srt)
+        {
+            if (string.IsNullOrWhiteSpace(srt)) return (srt ?? "", -1, 0, null, 0);
+            var blocks = System.Text.RegularExpressions.Regex
+                .Split(srt.Replace("\r\n", "\n").Trim(), @"\n[ \t]*\n")
+                .Where(b => b.Contains("-->", StringComparison.Ordinal))
+                .ToList();
+            if (blocks.Count < 2) return (srt, -1, blocks.Count, null, 0);
+            var last = blocks[^1];
+            var m = System.Text.RegularExpressions.Regex.Match(last,
+                @"(\d{2}):(\d{2}):(\d{2})[,.](\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})[,.](\d{3})[^\n]*\n?");
+            if (!m.Success) return (srt, -1, blocks.Count, null, 0);
+            static double T(System.Text.RegularExpressions.Match x, int g)
+                => int.Parse(x.Groups[g].Value, System.Globalization.CultureInfo.InvariantCulture) * 3600
+                 + int.Parse(x.Groups[g + 1].Value, System.Globalization.CultureInfo.InvariantCulture) * 60
+                 + int.Parse(x.Groups[g + 2].Value, System.Globalization.CultureInfo.InvariantCulture)
+                 + int.Parse(x.Groups[g + 3].Value, System.Globalization.CultureInfo.InvariantCulture) / 1000.0;
+            var start = T(m, 1);
+            var end = T(m, 5);
+            var text = last[(m.Index + m.Length)..].Trim();
+            return (string.Join("\n\n", blocks.Take(blocks.Count - 1)), start, blocks.Count, text, Math.Max(0, end - start));
+        }
+
+        /// <summary>
+        /// Puts a held-back cue back at the head of the window that was meant to transcribe it again,
+        /// when that window did not: it has no cues, or its first cue starts more than a second after the
+        /// held cue would have ended. The window starts <see cref="HeldCuePadSeconds"/> before the held
+        /// cue, so in window time the cue runs from the pad for its own length. Otherwise the window is
+        /// returned unchanged, because it carries the stretch itself. Pure.
+        /// </summary>
+        internal static string RestoreHeldCue(string? windowSrt, string? heldCueText, double heldCueDurationSeconds)
+        {
+            var window = windowSrt ?? "";
+            if (string.IsNullOrWhiteSpace(heldCueText)) return window;
+            var heldEnd = HeldCuePadSeconds + Math.Max(heldCueDurationSeconds, 0.5);
+            var first = System.Text.RegularExpressions.Regex.Match(window, @"(\d{2}):(\d{2}):(\d{2})[,.](\d{3})\s*-->");
+            if (first.Success)
+            {
+                var firstStart = int.Parse(first.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture) * 3600
+                    + int.Parse(first.Groups[2].Value, System.Globalization.CultureInfo.InvariantCulture) * 60
+                    + int.Parse(first.Groups[3].Value, System.Globalization.CultureInfo.InvariantCulture)
+                    + int.Parse(first.Groups[4].Value, System.Globalization.CultureInfo.InvariantCulture) / 1000.0;
+                if (firstStart <= heldEnd + 1.0) return window;   // the window covers the held stretch
+            }
+            static string Stamp(double seconds)
+            {
+                var ms = (long)Math.Round(seconds * 1000);
+                return string.Format(System.Globalization.CultureInfo.InvariantCulture, "{0:00}:{1:00}:{2:00},{3:000}",
+                    ms / 3600000, ms / 60000 % 60, ms / 1000 % 60, ms % 1000);
+            }
+            var held = $"1\n{Stamp(HeldCuePadSeconds)} --> {Stamp(heldEnd)}\n{heldCueText.Trim()}";
+            if (!first.Success) return held;
+            return held + "\n\n" + Providers.WhisperProvider.OffsetSrt(window, 0, 2).Trim();
+        }
+
+        /// <summary>
+        /// Where the next window starts. With two or more cues the last one is held back and the next
+        /// window starts 0.2 s before it, at a cue boundary, as long as that moves forward by more than a
+        /// second; otherwise (silence, one cue, or a cue that fills the window) the next window starts
+        /// where this one ended, so a run always advances. Times are media seconds;
+        /// <paramref name="lastCueStartInWindow"/> is relative to the window. Pure.
+        /// </summary>
+        internal static (double NextStartSeconds, bool DropLastCue) PlanNextWindow(
+            double windowStartSeconds, double windowSeconds, int cueCount, double lastCueStartInWindow)
+        {
+            const double pad = HeldCuePadSeconds;
+            if (cueCount >= 2 && lastCueStartInWindow - pad > 1.0)
+            {
+                return (windowStartSeconds + lastCueStartInWindow - pad, true);
+            }
+            return (windowStartSeconds + windowSeconds, false);
+        }
+
         internal static string ConvertSrtToLrc(string srtContent, string? title = null)
         {
             var sb = new StringBuilder();
@@ -2555,7 +2747,8 @@ namespace WhisperSubs.Controller
             CancellationToken cancellationToken,
             double startOffsetSeconds = 0,
             int audioStreamIndex = -1,
-            int sampleRate = 16000)
+            int sampleRate = 16000,
+            double maxDurationSeconds = 0)
         {
             var ffmpegPath = FindFfmpegExecutable();
             if (ffmpegPath == null)
@@ -2577,6 +2770,13 @@ namespace WhisperSubs.Controller
             {
                 extractInfo.ArgumentList.Add("-ss");
                 extractInfo.ArgumentList.Add(FfmpegSeconds(startOffsetSeconds, 1));
+            }
+            // An input-side -t: FFmpeg stops reading the container after the window, so a ten-minute
+            // window of a 30 GB remux costs minutes of disk, not the whole file.
+            if (maxDurationSeconds > 0)
+            {
+                extractInfo.ArgumentList.Add("-t");
+                extractInfo.ArgumentList.Add(FfmpegSeconds(maxDurationSeconds, 1));
             }
 
             extractInfo.ArgumentList.Add("-i");
@@ -2667,12 +2867,13 @@ namespace WhisperSubs.Controller
             string? targetLanguage,
             CancellationToken cancellationToken,
             double startOffsetSeconds = 0,
-            int audioStreamIndex = -1)
+            int audioStreamIndex = -1,
+            double maxDurationSeconds = 0)
         {
             var config = Plugin.Instance?.Configuration;
             if (config?.EnableVocalSeparation != true)
             {
-                await ExtractAudioAsync(videoPath, outputAudioPath, targetLanguage, cancellationToken, startOffsetSeconds, audioStreamIndex);
+                await ExtractAudioAsync(videoPath, outputAudioPath, targetLanguage, cancellationToken, startOffsetSeconds, audioStreamIndex, maxDurationSeconds: maxDurationSeconds);
                 return;
             }
 
@@ -2683,7 +2884,7 @@ namespace WhisperSubs.Controller
             if (!separationProvider.IsConfigured)
             {
                 _logger.LogDebug("Vocal separation enabled but binary/model not configured; using original audio.");
-                await ExtractAudioAsync(videoPath, outputAudioPath, targetLanguage, cancellationToken, startOffsetSeconds, audioStreamIndex);
+                await ExtractAudioAsync(videoPath, outputAudioPath, targetLanguage, cancellationToken, startOffsetSeconds, audioStreamIndex, maxDurationSeconds: maxDurationSeconds);
                 return;
             }
 
@@ -2696,7 +2897,7 @@ namespace WhisperSubs.Controller
                 {
                     await ExtractAudioAsync(
                         videoPath, rawPath, targetLanguage, cancellationToken, startOffsetSeconds, audioStreamIndex,
-                        sampleRate: VocalSeparationProvider.RequiredSampleRate);
+                        sampleRate: VocalSeparationProvider.RequiredSampleRate, maxDurationSeconds: maxDurationSeconds);
 
                     SubtitleQueueService.Instance.ReportPhase("Separating vocals");
                     var separated = await separationProvider.SeparateAsync(rawPath, vocalsPath, cancellationToken);

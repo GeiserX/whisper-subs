@@ -29,6 +29,8 @@ What stays on Whisper when Qwen3-ASR is selected:
 
 Thread count comes from the **Canary thread count** field under Translation, which is the crispasr `-t` for both engines. `0` keeps crispasr's default of 8.
 
+A Qwen3-ASR title is transcribed in ten-minute windows, and each finished window is written to the subtitle file at once. crispasr only writes its output when a run ends, so without windows an interruption (**Pause generation during playback**, a restart) threw the whole run away and a long film restarted from zero every time. With them an interruption costs at most one window and the next attempt resumes where the file ends, like Whisper. Each window starts at a cue boundary of the previous one, so nothing is cut or repeated at the seams.
+
 Qwen3-ASR returns text without timestamps. Without the aligner, cue timing comes from the Silero VAD model: each speech segment is one cue, split at **Maximum subtitle line length** in proportion to text, so a segment with music under it becomes a cue that starts early. With the aligner installed and on, crispasr places every word and cue starts land on the spoken word, for English and the 24 [Canary languages](#more-target-languages-experimental); other languages keep segment timing. The line length defaults to 42 characters for this engine, scaled for Cyrillic, Greek and CJK scripts because crispasr counts bytes. The [subtitle timing](#subtitle-timing) corrections apply afterwards like for Whisper, once **Align subtitles to speech** is on.
 
 ## Generation defaults
