@@ -247,15 +247,33 @@ public class EngineProcessSuspenderTests
     }
 
     [Theory]
-    [InlineData(true, false, 0, false, SubtitleGenerationTask.PauseAction.Suspend)]
-    [InlineData(false, false, 0, false, SubtitleGenerationTask.PauseAction.None)]
-    [InlineData(true, true, 600, false, SubtitleGenerationTask.PauseAction.None)]
-    [InlineData(false, true, 600, false, SubtitleGenerationTask.PauseAction.Resume)]
-    [InlineData(true, true, 4 * 3600, false, SubtitleGenerationTask.PauseAction.Resume)]   // the 4-hour guard
-    [InlineData(true, false, 0, true, SubtitleGenerationTask.PauseAction.None)]            // guard spent: do not stop this job again
-    public void DecidePause_Rules(bool playing, bool suspended, int heldSeconds, bool guardSpent, SubtitleGenerationTask.PauseAction expected)
+    [InlineData(true, false, 0, SubtitleGenerationTask.PauseAction.Suspend)]
+    [InlineData(false, false, 0, SubtitleGenerationTask.PauseAction.None)]
+    [InlineData(true, true, 600, SubtitleGenerationTask.PauseAction.None)]
+    [InlineData(false, true, 600, SubtitleGenerationTask.PauseAction.Resume)]
+    [InlineData(true, true, 4 * 3600, SubtitleGenerationTask.PauseAction.Resume)]    // the budget ran out while stopped
+    [InlineData(true, false, 4 * 3600, SubtitleGenerationTask.PauseAction.None)]     // and the job is never stopped again
+    [InlineData(true, false, 4 * 3600 - 1, SubtitleGenerationTask.PauseAction.Suspend)]
+    public void DecidePause_Rules(bool playing, bool suspended, int heldSeconds, SubtitleGenerationTask.PauseAction expected)
     {
-        Assert.Equal(expected, SubtitleGenerationTask.DecidePause(playing, suspended, TimeSpan.FromSeconds(heldSeconds), guardSpent));
+        Assert.Equal(expected, SubtitleGenerationTask.DecidePause(playing, suspended, TimeSpan.FromSeconds(heldSeconds)));
+    }
+
+    // One budget for the producer's wait, the job's own wait and its suspension: three hours waited
+    // leave one hour of suspension, not four more.
+    [Fact]
+    public void PlaybackHold_IsOneBudgetAcrossWaitAndSuspension()
+    {
+        var hold = new SubtitleGenerationTask.PlaybackHold();
+        Assert.False(hold.Spent);
+        hold.Add(TimeSpan.FromHours(3));                               // waited before the job started
+        Assert.Equal(SubtitleGenerationTask.PauseAction.Suspend, SubtitleGenerationTask.DecidePause(true, false, hold.Held));
+        hold.Add(TimeSpan.FromMinutes(59));
+        Assert.Equal(SubtitleGenerationTask.PauseAction.None, SubtitleGenerationTask.DecidePause(true, true, hold.Held));
+        hold.Add(TimeSpan.FromMinutes(1));
+        Assert.True(hold.Spent);
+        Assert.Equal(SubtitleGenerationTask.PauseAction.Resume, SubtitleGenerationTask.DecidePause(true, true, hold.Held));
+        Assert.Equal(SubtitleGenerationTask.PauseAction.None, SubtitleGenerationTask.DecidePause(true, false, hold.Held));
     }
 
     [Theory]
