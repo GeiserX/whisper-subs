@@ -143,7 +143,7 @@ Once a job starts, this is what happens.
 
 **8. Save the file.** The SRT is written with a temporary file and a rename, so a crash mid-write cannot leave a truncated subtitle. It lands next to the media when the library has **Save subtitles into media folders** on and that folder is writable. Otherwise it goes to the item's Jellyfin metadata folder, which Jellyfin scans for external subtitles just the same. That fallback is what makes read-only libraries work.
 
-**9. Refresh the item.** The plugin calls `RefreshMetadata` on the item so the new track appears without a library scan.
+**9. Refresh the item.** The plugin queues a metadata refresh of the item in Jellyfin's refresh queue, so the new track appears without a library scan. The job does not wait for it: Jellyfin's refresh lists the whole folder and follows every symbolic link in it, which in a large movie folder takes minutes, and the worker is free for the next title meanwhile.
 
 If every pass in a job failed, the job is reported as failed rather than quietly succeeding.
 
@@ -163,7 +163,7 @@ Filenames come from a template, `{name}.{lang}.{label}{.type}` by default, with 
 
 Subtitles written before v4 used `.generated.` and `.translated.` in place of the label. Those are still recognised as the plugin's own, so an upgraded install resumes and skips them correctly rather than writing a second copy.
 
-The `.noforeignlang` marker is worth understanding. When the forced pass analyses a file and finds no foreign dialogue anywhere in it, that is an expensive answer to compute and an empty subtitle would show up as a broken track in the player. So the plugin writes this empty marker instead, and every later run sees it and skips the analysis. Delete it to force a re-analysis. Note that its name is built directly from the media filename, so it stays `Movie.es.forced.noforeignlang` whatever you set the label and template to.
+The `.noforeignlang` marker is worth understanding. When the forced pass analyses a file and finds no foreign dialogue anywhere in it, or the stretches it flagged as foreign all come back from transcription with no speech in them (music, effects, a misread silence), that is an expensive answer to compute and an empty subtitle would show up as a broken track in the player. So the plugin writes this empty marker instead, and every later run sees it and skips the analysis. Delete it to force a re-analysis. Note that its name is built directly from the media filename, so it stays `Movie.es.forced.noforeignlang` whatever you set the label and template to.
 
 All of these follow the same save-location rule as the subtitles: media folder when it is writable and the library allows it, the item's metadata folder otherwise.
 

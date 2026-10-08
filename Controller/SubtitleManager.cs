@@ -16,6 +16,7 @@ using WhisperSubs.Providers;
 using WhisperSubs.Setup;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.Providers;
 using Microsoft.Extensions.Logging;
 
 namespace WhisperSubs.Controller
@@ -164,7 +165,7 @@ namespace WhisperSubs.Controller
             var files = new List<string>();
             foreach (var d in GeneratedArtifactDirectories(item, mediaDirectory))
             {
-                try { if (Directory.Exists(d)) files.AddRange(Directory.GetFiles(d, searchPattern)); }
+                try { if (Directory.Exists(d)) files.AddRange(MediaFolder.GetFiles(d, searchPattern)); }
                 catch { /* unreadable directory — skip */ }
             }
             return files;
@@ -309,7 +310,7 @@ namespace WhisperSubs.Controller
                     outcomes.FirstOrDefault(o => o.Outcome == GenerationOutcome.Failed).Error);
             }
 
-            await item.RefreshMetadata(cancellationToken);
+            QueueMetadataRefresh(item);
         }
 
         /// <summary>
@@ -372,7 +373,7 @@ namespace WhisperSubs.Controller
 
             if (result.Outcome == GenerationOutcome.Succeeded)
             {
-                await item.RefreshMetadata(cancellationToken);
+                QueueMetadataRefresh(item);
             }
             else
             {
@@ -877,7 +878,7 @@ namespace WhisperSubs.Controller
                     // helper keeps this in lockstep with the scheduled task / stream predicate.
                     var requireText = Plugin.Instance?.Configuration?.CountImageSubtitlesAsPresent != true;
                     var subtitleExts = SubtitleInventory.UsableSubtitleExtensions(requireText);
-                    var hasEnglishSubs = Directory.GetFiles(dir, baseName + ".*")
+                    var hasEnglishSubs = MediaFolder.GetFiles(dir, baseName + ".*")
                         .Any(f =>
                         {
                             var name = Path.GetFileName(f).ToLowerInvariant();
@@ -1857,6 +1858,7 @@ namespace WhisperSubs.Controller
                         item.Name, Path.GetFileName(Plugin.Instance?.Configuration?.WhisperModelPath));
                 }
 
+                var failedSegments = 0;
                 foreach (var segment in mergedSegments)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
@@ -1889,25 +1891,33 @@ namespace WhisperSubs.Controller
                     }
                     catch (Exception ex)
                     {
+                        failedSegments++;
                         _logger.LogError(ex, "Failed to transcribe foreign segment {Start:F1}s-{End:F1}s [{Language}]",
                             segment.Start, segment.End, segment.Language);
                     }
                 }
 
-                // Step 8: Save forced SRT
-                if (forcedSrt.Length > 0)
+                // Step 8: Save forced SRT. A cancelled run must not read its empty buffer as "no speech" and
+                // write the permanent marker: a killed whisper-cli returns what it had instead of throwing.
+                cancellationToken.ThrowIfCancellationRequested();
+                switch (EndOfForcedPass(forcedSrt.Length > 0, failedSegments))
                 {
-                    await WriteTextAtomicAsync(forcedSrtPath, forcedSrt.ToString(), CancellationToken.None);
-                    _logger.LogInformation("Saved forced subtitle to {Path} ({Entries} entries)",
-                        forcedSrtPath, entryNum - 1);
-                    return (GenerationOutcome.Succeeded, null);
-                }
-                else
-                {
-                    // Foreign chunks were detected but every transcription attempt produced nothing.
-                    _logger.LogInformation("Foreign segments detected but no content transcribed for {ItemName}", item.Name);
-                    return (GenerationOutcome.Failed,
-                        new InvalidOperationException($"Foreign segments were detected but produced no subtitle content: {item.Name}"));
+                    case ForcedPassEnd.Subtitle:
+                        await WriteTextAtomicAsync(forcedSrtPath, forcedSrt.ToString(), CancellationToken.None);
+                        _logger.LogInformation("Saved forced subtitle to {Path} ({Entries} entries)",
+                            forcedSrtPath, entryNum - 1);
+                        return (GenerationOutcome.Succeeded, null);
+                    case ForcedPassEnd.NoForeignSpeech:
+                        // Every foreign segment was transcribed and none held speech (music, effects, a stretch
+                        // the detector misread): the title has no foreign dialogue to subtitle.
+                        await File.WriteAllTextAsync(noForeignMarkerPath, "", CancellationToken.None);
+                        _logger.LogInformation("Foreign segments of {ItemName} held no speech ({Count} transcribed), wrote no-foreign marker",
+                            item.Name, mergedSegments.Count);
+                        return (GenerationOutcome.Skipped, null);
+                    default:
+                        _logger.LogInformation("Foreign segments detected but no content transcribed for {ItemName} ({Failed} failed)", item.Name, failedSegments);
+                        return (GenerationOutcome.Failed,
+                            new InvalidOperationException($"Foreign segments were detected but produced no subtitle content: {item.Name}"));
                 }
             }
             catch (OperationCanceledException)
@@ -1935,6 +1945,39 @@ namespace WhisperSubs.Controller
                 }
             }
         }
+
+        /// <summary>
+        /// Asks Jellyfin to pick up the new subtitle without making the job wait for it. A refresh lists the
+        /// title's folder with Jellyfin's own enumeration, which follows every symbolic link there: in a flat
+        /// movie folder full of links into a network share that took minutes per title, all of it while the job
+        /// still held its worker. Queued, it runs in Jellyfin's refresh queue and the worker moves on.
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Calls Jellyfin's provider manager")]
+        private void QueueMetadataRefresh(BaseItem item)
+        {
+            try
+            {
+                BaseItem.ProviderManager.QueueRefresh(
+                    item.Id, new MetadataRefreshOptions(new DirectoryService(BaseItem.FileSystem)), RefreshPriority.Normal);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not queue a metadata refresh for {ItemName}; Jellyfin shows the new subtitle after its next library scan", item.Name);
+            }
+        }
+
+        /// <summary>How a forced pass that transcribed its foreign segments ends.</summary>
+        internal enum ForcedPassEnd { Subtitle, NoForeignSpeech, Failed }
+
+        /// <summary>
+        /// Cues make a subtitle. No cues with every segment answered means those segments held no speech, so
+        /// the title has no foreign dialogue and gets the no-foreign marker instead of failing on every run.
+        /// No cues with a segment that failed is a failure, so the next run tries again. Pure.
+        /// </summary>
+        internal static ForcedPassEnd EndOfForcedPass(bool hasCues, int failedSegments)
+            => hasCues ? ForcedPassEnd.Subtitle
+                : failedSegments == 0 ? ForcedPassEnd.NoForeignSpeech
+                : ForcedPassEnd.Failed;
 
         // ────────────────────────────────────────────────────────────
         //  Lyrics (LRC) generation for Audio items
@@ -2006,7 +2049,7 @@ namespace WhisperSubs.Controller
                     $"Lyrics generation failed for \"{item.Name}\".", error);
             }
 
-            await item.RefreshMetadata(cancellationToken);
+            QueueMetadataRefresh(item);
         }
 
         [ExcludeFromCodeCoverage(Justification = "Orchestrates FFmpeg + whisper processes for lyrics track")]

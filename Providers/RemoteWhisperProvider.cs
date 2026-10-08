@@ -334,7 +334,7 @@ namespace WhisperSubs.Providers
             }
 
             var audioDurationSeconds = SourceAudioDurationSeconds(sourceAudioBytes);
-            var srt = RequireSrtCues(ConvertTranscriptionResponseToSrt(response, audioDurationSeconds, _wordCueMaxChars), canaryTarget);
+            var srt = TranscriptFromResponse(response, audioDurationSeconds, _wordCueMaxChars, canaryTarget);
 
             if (translate)
             {
@@ -344,8 +344,72 @@ namespace WhisperSubs.Providers
             {
                 Volatile.Write(ref _transcriptionResponseFormat, responseFormat);
             }
-            _logger.LogInformation("Remote transcription complete, received {Length} characters of SRT", srt.Length);
+            if (srt.Length == 0)
+            {
+                _logger.LogInformation("Remote worker heard no speech in this audio; no cues");
+            }
+            else
+            {
+                _logger.LogInformation("Remote transcription complete, received {Length} characters of SRT", srt.Length);
+            }
             return srt;
+        }
+
+        /// <summary>
+        /// The subtitle a successful answer carries. A timestamped JSON answer whose segments hold no text
+        /// means the worker listened and heard no speech: that is an empty transcript, not an error. A short or
+        /// silent stretch of a forced pass gets exactly this from a Qwen3-ASR server. Anything that is not a
+        /// transcript still fails, and so does an empty answer for a Canary target, which is how a CrispASR
+        /// server says it cannot serve that language. Pure.
+        /// </summary>
+        internal static string TranscriptFromResponse(string response, double audioDurationSeconds, int wordCueMaxChars, string? canaryTarget)
+        {
+            if (canaryTarget == null && HeardNoSpeech(response)) return string.Empty;
+            return RequireSrtCues(ConvertTranscriptionResponseToSrt(response, audioDurationSeconds, wordCueMaxChars), canaryTarget);
+        }
+
+        /// <summary>
+        /// True for a timestamped JSON answer that holds no words: a <c>segments</c> array whose every entry
+        /// has readable times and empty text, and no top-level text either. An empty body, untimed JSON or text without segments
+        /// is not this: those say nothing about the audio. Pure.
+        /// </summary>
+        internal static bool HeardNoSpeech(string? response)
+        {
+            if (string.IsNullOrWhiteSpace(response)) return false;
+            try
+            {
+                using var document = JsonDocument.Parse(response.TrimStart('﻿', ' ', '\t', '\r', '\n'));
+                var root = document.RootElement;
+                if (root.ValueKind != JsonValueKind.Object
+                    || !root.TryGetProperty("segments", out var segments)
+                    || segments.ValueKind != JsonValueKind.Array)
+                {
+                    return false;
+                }
+                if (root.TryGetProperty("text", out var text)
+                    && (text.ValueKind != JsonValueKind.String || !string.IsNullOrWhiteSpace(NormalizeCueText(text.GetString()))))
+                {
+                    return false;
+                }
+                foreach (var segment in segments.EnumerateArray())
+                {
+                    if (segment.ValueKind != JsonValueKind.Object
+                        || !TryReadSeconds(segment, "start", out var start)
+                        || !TryReadSeconds(segment, "end", out var end)
+                        || end < start
+                        || !segment.TryGetProperty("text", out var segmentText)
+                        || segmentText.ValueKind != JsonValueKind.String
+                        || !string.IsNullOrWhiteSpace(NormalizeCueText(segmentText.GetString())))
+                    {
+                        return false;
+                    }
+                }
+                return true;
+            }
+            catch (JsonException)
+            {
+                return false;
+            }
         }
 
         [ExcludeFromCodeCoverage(Justification = "HTTP/file I/O; response conversion is covered separately")]
