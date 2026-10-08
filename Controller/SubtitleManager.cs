@@ -2178,7 +2178,11 @@ namespace WhisperSubs.Controller
         /// finishes, whisper-cli writes as it goes, and remote workers are not paused by playback. Pure.
         /// </summary>
         internal static double WindowSecondsFor(ISubtitleProvider? provider)
-            => provider is EngineSwitchProvider sw && sw.Current is Qwen3Provider ? EngineWindowSeconds : 0;
+            => provider is EngineSwitchProvider sw && sw.Current is Qwen3Provider
+                // An akou job is never stopped for a later one, so a whole title would hold the server from
+                // its other clients for as long as it takes; a window bounds that, and it resumes like Qwen3's.
+                || provider is HostAssistedProvider { Remote: RemoteWhisperProvider { Dialect: WorkerDialect.Akou } }
+                ? EngineWindowSeconds : 0;
 
         /// <summary>True when this window is the last one: no windows at all, or it covers the end (within the 30 s the completeness check allows). Pure.</summary>
         internal static bool WindowReachesEnd(double windowStartSeconds, double windowSeconds, double mediaDurationSeconds)
