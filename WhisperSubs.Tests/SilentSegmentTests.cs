@@ -64,6 +64,8 @@ public class SilentSegmentTests
     [InlineData("""{"text":"untimed"}""")]               // untimed JSON cannot be synchronised
     [InlineData("""{"segments":[{"start":2,"end":1,"text":"x"}]}""")]   // broken timestamps
     [InlineData("""{"text":"hola","segments":[]}""")]                // text with no timing is not silence
+    [InlineData("""{"text":"","segments":[{"start":2,"end":1,"text":""}]}""")]   // unreadable timing is not silence either
+    [InlineData("""{"text":"","segments":[{"text":""}]}""")]
     public async Task AnswerThatIsNotATranscript_IsStillAFailure(string body)
     {
         var wav = SilentWav();

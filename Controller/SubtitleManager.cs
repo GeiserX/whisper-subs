@@ -1897,7 +1897,9 @@ namespace WhisperSubs.Controller
                     }
                 }
 
-                // Step 8: Save forced SRT
+                // Step 8: Save forced SRT. A cancelled run must not read its empty buffer as "no speech" and
+                // write the permanent marker: a killed whisper-cli returns what it had instead of throwing.
+                cancellationToken.ThrowIfCancellationRequested();
                 switch (EndOfForcedPass(forcedSrt.Length > 0, failedSegments))
                 {
                     case ForcedPassEnd.Subtitle:

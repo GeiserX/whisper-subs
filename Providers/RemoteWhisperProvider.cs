@@ -370,7 +370,7 @@ namespace WhisperSubs.Providers
 
         /// <summary>
         /// True for a timestamped JSON answer that holds no words: a <c>segments</c> array whose every entry
-        /// has empty text, and no top-level text either. An empty body, untimed JSON or text without segments
+        /// has readable times and empty text, and no top-level text either. An empty body, untimed JSON or text without segments
         /// is not this: those say nothing about the audio. Pure.
         /// </summary>
         internal static bool HeardNoSpeech(string? response)
@@ -394,6 +394,9 @@ namespace WhisperSubs.Providers
                 foreach (var segment in segments.EnumerateArray())
                 {
                     if (segment.ValueKind != JsonValueKind.Object
+                        || !TryReadSeconds(segment, "start", out var start)
+                        || !TryReadSeconds(segment, "end", out var end)
+                        || end < start
                         || !segment.TryGetProperty("text", out var segmentText)
                         || segmentText.ValueKind != JsonValueKind.String
                         || !string.IsNullOrWhiteSpace(NormalizeCueText(segmentText.GetString())))
