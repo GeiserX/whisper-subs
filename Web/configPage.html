@@ -785,6 +785,17 @@
                             </div>
                         </div>
 
+                        <div class="inputContainer">
+                            <input is="emby-input" type="number" id="txtRemoteTitlesPerRequestSlot" name="RemoteTitlesPerRequestSlot" label="Titles per remote request slot" min="1" max="4" step="1" />
+                            <div class="fieldDescription">
+                                Each title spends minutes on this server before a remote worker gets it (audio
+                                extraction, language detection). With 2, the next title is prepared here while the
+                                worker transcribes the current one, so the worker is not left waiting. A worker
+                                still receives at most its Max concurrency requests at a time. 1 to 4,
+                                <strong>1 by default</strong>. Takes effect on the next run of the task.
+                            </div>
+                        </div>
+
                         <div id="workerRows"></div>
 
                         <div id="workerDuplicateWarning" class="fieldDescription" style="color:#CC7B19; display:none; white-space:pre-line;"></div>
@@ -2696,6 +2707,7 @@
                             page.querySelector('#numUserRequestGlobalCap').value = (config.UserRequestGlobalCap != null && config.UserRequestGlobalCap >= 0) ? config.UserRequestGlobalCap : 500;
                             // Worker pool (v4.0). Absent/null Workers on older configs -> render nothing.
                             page.querySelector('#chkEnableLocalWorker').checked = config.EnableLocalWorker !== false;
+                            page.querySelector('#txtRemoteTitlesPerRequestSlot').value = config.RemoteTitlesPerRequestSlot || 1;
                             WhisperSubsConfig.renderWorkers(config.Workers || []);
                             updateTranslationVisibility();
                         }
@@ -2798,6 +2810,7 @@
 
                         // Worker pool (v4.0). Fully-blank rows are dropped; numbers are coerced.
                         config.EnableLocalWorker = page.querySelector('#chkEnableLocalWorker').checked;
+                        config.RemoteTitlesPerRequestSlot = Math.min(4, Math.max(1, parseInt(page.querySelector('#txtRemoteTitlesPerRequestSlot').value, 10) || 1));
                         config.Workers = WhisperSubsConfig.collectWorkers(page);
                         var workerTargetError = WhisperSubsConfig.validateWorkerTargets(config.Workers);
                         if (workerTargetError) {
@@ -3064,7 +3077,7 @@
 
                     row.appendChild(WhisperSubsConfig._workerSelect(
                         'Dialect', 'wkDialect',
-                        [['openai', 'OpenAI-compatible'], ['crispasr', 'CrispASR server (Canary)'], ['crispasr-qwen3', 'CrispASR server (Qwen3-ASR, transcribe only)']],
+                        [['openai', 'OpenAI-compatible'], ['crispasr', 'CrispASR server (Canary)'], ['crispasr-qwen3', 'CrispASR server (Qwen3-ASR, transcribe only)'], ['akou', 'akou server (low-priority jobs, transcribe only)']],
                         WhisperSubsConfig.normalizeDialect(w.Dialect),
                         'OpenAI-compatible covers whisper-server, OpenAI and Groq. CrispASR server (Canary) is crispasr --server with the Canary model, for the extra translation targets. CrispASR server (Qwen3-ASR) is crispasr --server with a Qwen3-ASR model: it only transcribes, cues are cut from its word timestamps, and this server\'s Whisper detects languages for it.'));
                     // Rows saved before this field existed carry only CanTranslate: migrate it to "en" or nothing.
@@ -3209,7 +3222,7 @@
                 // Mirrors WorkerTargets.Parse on the server.
                 normalizeDialect: function (value) {
                     var v = (value || '').trim().toLowerCase();
-                    return v === 'crispasr' || v === 'crispasr-qwen3' ? v : 'openai';
+                    return v === 'crispasr' || v === 'crispasr-qwen3' || v === 'akou' ? v : 'openai';
                 },
 
                 parseWorkerTargets: function (raw) {
@@ -3236,8 +3249,8 @@
                         if (unknown.length) {
                             return label + ': unknown translation target(s) ' + unknown.join(', ') + '. Use en and the Canary codes listed under Translation.';
                         }
-                        if (w.Dialect === 'crispasr-qwen3' && w.TranslateTargets.length) {
-                            return label + ': a Qwen3-ASR server cannot translate. Leave its translation targets blank.';
+                        if ((w.Dialect === 'crispasr-qwen3' || w.Dialect === 'akou') && w.TranslateTargets.length) {
+                            return label + ': a Qwen3-ASR or akou server cannot translate. Leave its translation targets blank.';
                         }
                         if (w.Dialect !== 'crispasr' && w.TranslateTargets.some(function (c) { return c !== 'en'; })) {
                             return label + ': only a CrispASR server can translate into languages other than en. Set the dialect to CrispASR server or keep only en.';

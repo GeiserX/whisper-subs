@@ -141,6 +141,14 @@ namespace WhisperSubs.Providers
         private readonly string _uploadCodec;
         private readonly string _dialect;
 
+        // At most this many requests in flight to the worker at once, however many titles the pool hands it:
+        // a title prepared ahead waits here, not in the worker's own queue, so its deadline only starts once
+        // the worker takes it. Null = no limit (the pool's slots were the only gate before pipelining).
+        private readonly SemaphoreSlim? _requestGate;
+
+        /// <summary>The worker's dialect, as normalised.</summary>
+        internal string Dialect => _dialect;
+
         /// <summary>
         /// Characters per cue when cues are cut from word timestamps (the Qwen3-ASR server dialect).
         /// 0 = segments as the server sent them.
@@ -167,9 +175,10 @@ namespace WhisperSubs.Providers
         public RemoteWhisperProvider(ILogger logger, string apiUrl, string model, string apiKey = "",
             double realtimeFactor = 6.0, int minTimeoutSeconds = 60, int maxTimeoutHours = 12,
             HttpClient? httpClient = null, long maxUploadBytes = 0, string? uploadCodec = null,
-            string? dialect = null, int wordCueMaxChars = 0)
+            string? dialect = null, int wordCueMaxChars = 0, int maxConcurrentRequests = 0)
         {
             _dialect = WorkerDialect.Normalize(dialect);
+            _requestGate = maxConcurrentRequests > 0 ? new SemaphoreSlim(maxConcurrentRequests, maxConcurrentRequests) : null;
             _wordCueMaxChars = wordCueMaxChars;
             _logger = logger;
             _apiUrl = apiUrl.TrimEnd('/');
@@ -207,9 +216,9 @@ namespace WhisperSubs.Providers
         {
             // Only a CrispASR server takes a non-English target; an OpenAI-compatible endpoint would answer
             // it with an English subtitle, so that dialect refuses before anything is uploaded.
-            if (_dialect == WorkerDialect.CrispAsrQwen3 && (translate || !string.IsNullOrWhiteSpace(targetLanguage)))
+            if (WorkerDialect.IsHostAssisted(_dialect) && (translate || !string.IsNullOrWhiteSpace(targetLanguage)))
             {
-                throw new NotSupportedException("A Qwen3-ASR server only transcribes; it is never given a translation.");
+                throw new NotSupportedException("A Qwen3-ASR or akou server only transcribes; it is never given a translation.");
             }
             if (_dialect != WorkerDialect.CrispAsr)
             {
@@ -218,6 +227,11 @@ namespace WhisperSubs.Providers
             if (!File.Exists(audioPath))
             {
                 throw new FileNotFoundException($"Audio file not found: {audioPath}");
+            }
+
+            if (_dialect == WorkerDialect.Akou)
+            {
+                return await TranscribeAkouJobAsync(audioPath, language, cancellationToken).ConfigureAwait(false);
             }
 
             var canaryTarget = CanaryTargetOrNull(translate, targetLanguage);
@@ -1143,40 +1157,15 @@ namespace WhisperSubs.Providers
         private async Task<string> PostAudioAsync(string endpoint, MultipartFormDataContent content, long sourceAudioBytes, CancellationToken cancellationToken)
         {
             using var request = new HttpRequestMessage(HttpMethod.Post, endpoint) { Content = content };
-            ApplyAuthorization(request);
 
+            using var turn = await TakeTurnAsync(cancellationToken).ConfigureAwait(false);
             var deadline = TranscriptionTimeout.Compute(sourceAudioBytes, _realtimeFactor, _minTimeoutSeconds, _maxTimeoutHours);
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeoutCts.CancelAfter(deadline);
 
             try
             {
-                // SECURITY-REVIEW: the configured endpoint is untrusted. Read headers first, then
-                // stream the body through explicit limits instead of HttpClient's default unbounded buffer.
-                using var response = await _httpClient.SendAsync(
-                    request, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token).ConfigureAwait(false);
-
-                if (!response.IsSuccessStatusCode)
-                {
-                    var errorBody = await ReadUtf8BoundedAsync(
-                        response.Content, MaxErrorResponseBytes, timeoutCts.Token, truncate: true).ConfigureAwait(false);
-                    // Echo the provider's own explanation, sanitized and media-type gated, so the admin can
-                    // see WHY without turning on debug logging (#138). The raw body is retained on the
-                    // exception for the response-format negotiation matcher. For a redirect the body is an
-                    // empty stub and the Location header is the real explanation (#157), so it wins.
-                    var detail = (int)response.StatusCode is >= 300 and < 400
-                        ? DescribeRedirectDetail(response.Headers.Location)
-                        : string.Empty;
-                    if (detail.Length == 0)
-                    {
-                        detail = DescribeUpstreamErrorBody(
-                            errorBody, _apiKey, response.Content.Headers.ContentType?.MediaType);
-                    }
-                    throw new RemoteApiException(response.StatusCode, errorBody, detail);
-                }
-
-                return await ReadUtf8BoundedAsync(
-                    response.Content, MaxTranscriptionResponseBytes, timeoutCts.Token).ConfigureAwait(false);
+                return await SendForBodyAsync(request, MaxTranscriptionResponseBytes, timeoutCts.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
@@ -1185,6 +1174,245 @@ namespace WhisperSubs.Providers
                 throw new TimeoutException(
                     $"Remote Whisper API call exceeded its {deadline.TotalSeconds:F0}s deadline (endpoint slow or unreachable): {UpstreamErrorSanitizer.SanitizeEndpoint(endpoint)}");
             }
+        }
+
+        /// <summary>
+        /// The priority an akou job is submitted at. akou runs the highest first and its other clients use the
+        /// default 0, so a subtitle job only runs when nothing of theirs is waiting. A running job is never
+        /// stopped for a later one, which is why long titles reach akou in windows.
+        /// </summary>
+        internal const int AkouJobPriority = -5;
+
+        private const int MaxAkouJobBytes = 256 * 1024;
+        private static readonly Regex AkouJobIdRegex = new("^[A-Za-z0-9_-]{1,128}$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+        /// <summary>
+        /// The akou dialect: submit the audio as a file job at <see cref="AkouJobPriority"/>, wait for it, read
+        /// the transcript as OpenAI <c>verbose_json</c>, and delete the job whatever happened, which removes
+        /// the uploaded audio and the result from the server. The whole exchange shares one deadline, counted
+        /// from when this worker's request gate lets it through.
+        /// </summary>
+        private async Task<string> TranscribeAkouJobAsync(string audioPath, string language, CancellationToken cancellationToken)
+        {
+            var sourceAudioBytes = new FileInfo(audioPath).Length;
+            var (uploadPath, uploadIsTemporary, effectiveCodec) = await RemoteAudioEncoder
+                .PrepareUploadAsync(audioPath, _uploadCodec, _logger, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var uploadBytes = new FileInfo(uploadPath).Length;
+                if (!UploadPreflight.IsAllowed(uploadBytes, _maxUploadBytes))
+                {
+                    throw new InvalidOperationException(
+                        UploadPreflight.ExplainIfBlocked(sourceAudioBytes, uploadBytes, _maxUploadBytes, effectiveCodec));
+                }
+
+                using var turn = await TakeTurnAsync(cancellationToken).ConfigureAwait(false);
+                var deadline = TranscriptionTimeout.Compute(sourceAudioBytes, _realtimeFactor, _minTimeoutSeconds, _maxTimeoutHours);
+                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                timeoutCts.CancelAfter(deadline);
+                var jobsEndpoint = _apiUrl + "/v1/jobs";
+                string? jobId = null;
+                try
+                {
+                    _logger.LogInformation("Sending audio to akou: {Endpoint} [lang={Language}, priority={Priority}]",
+                        UpstreamErrorSanitizer.SanitizeEndpoint(jobsEndpoint), language, AkouJobPriority);
+
+                    using (var content = new MultipartFormDataContent())
+                    {
+                        var fileContent = new StreamContent(File.OpenRead(uploadPath));
+                        fileContent.Headers.ContentType = new MediaTypeHeaderValue(RemoteUploadFormat.ContentType(effectiveCodec));
+                        content.Add(fileContent, "file", RemoteUploadFormat.FileName(effectiveCodec));
+                        foreach (var (name, value) in BuildAkouJobFields(_model, language))
+                        {
+                            content.Add(new StringContent(value), name);
+                        }
+                        using var submit = new HttpRequestMessage(HttpMethod.Post, jobsEndpoint) { Content = content };
+                        jobId = ParseAkouJob(await SendForBodyAsync(submit, MaxAkouJobBytes, timeoutCts.Token).ConfigureAwait(false)).Id;
+                    }
+
+                    var jobUrl = jobsEndpoint + "/" + jobId;
+                    while (true)
+                    {
+                        using var poll = new HttpRequestMessage(HttpMethod.Get, jobUrl + "?wait=60");
+                        var job = ParseAkouJob(await SendForBodyAsync(poll, MaxAkouJobBytes, timeoutCts.Token).ConfigureAwait(false));
+                        if (job.Status == "done") break;
+                        if (!AkouJobStillRunning(job.Status))
+                        {
+                            throw new InvalidOperationException($"The akou job ended {job.Status}: {job.Error ?? "no reason given"}");
+                        }
+                        // akou holds the poll up to 60 s; the pause only matters for a server that answers at once.
+                        await Task.Delay(TimeSpan.FromSeconds(1), timeoutCts.Token).ConfigureAwait(false);
+                    }
+
+                    using var read = new HttpRequestMessage(HttpMethod.Get, jobUrl + "/result?format=verbose_json");
+                    var body = await SendForBodyAsync(read, MaxTranscriptionResponseBytes, timeoutCts.Token).ConfigureAwait(false);
+                    var srt = TranscriptFromResponse(body, SourceAudioDurationSeconds(sourceAudioBytes), 0, null);
+                    if (srt.Length == 0)
+                    {
+                        _logger.LogInformation("akou heard no speech in this audio; no cues");
+                    }
+                    else
+                    {
+                        _logger.LogInformation("akou transcription complete, received {Length} characters of SRT", srt.Length);
+                    }
+                    return srt;
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    throw new TimeoutException(
+                        $"akou job exceeded its {deadline.TotalSeconds:F0}s deadline (server busy, slow or unreachable): {UpstreamErrorSanitizer.SanitizeEndpoint(jobsEndpoint)}");
+                }
+                finally
+                {
+                    if (jobId != null) await DeleteAkouJobAsync(jobsEndpoint + "/" + jobId).ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                if (uploadIsTemporary)
+                {
+                    RemoteAudioEncoder.TryDelete(uploadPath);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Deletes an akou job, which drops it if queued, stops it if running, and removes its audio and
+        /// result. Runs on its own short deadline, since the job's token may already be cancelled, and never
+        /// throws: a job it could not delete is logged, and akou drops it after its retention days.
+        /// </summary>
+        private async Task DeleteAkouJobAsync(string jobUrl)
+        {
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                using var delete = new HttpRequestMessage(HttpMethod.Delete, jobUrl)
+                {
+                    // akou answers a body-less DELETE with 415.
+                    Content = new StringContent("{}", System.Text.Encoding.UTF8, "application/json"),
+                };
+                await SendForBodyAsync(delete, MaxAkouJobBytes, cts.Token).ConfigureAwait(false);
+            }
+            catch (RemoteApiException ex) when (ex.StatusCode is HttpStatusCode.Gone or HttpStatusCode.NotFound)
+            {
+                // Already gone.
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning("Could not delete akou job {Job}: {Error}", UpstreamErrorSanitizer.SanitizeEndpoint(jobUrl), ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// The form fields of an akou job besides the file: the model or preset, the language when it is
+        /// known, <see cref="AkouJobPriority"/> and a title that names the client in akou's job list. Pure.
+        /// </summary>
+        internal static IReadOnlyList<(string Name, string Value)> BuildAkouJobFields(string model, string? language)
+        {
+            var fields = new List<(string Name, string Value)> { ("model", model) };
+            if (!string.IsNullOrWhiteSpace(language) && !string.Equals(language, "auto", StringComparison.OrdinalIgnoreCase))
+            {
+                fields.Add(("language", language.Trim()));
+            }
+            fields.Add(("priority", AkouJobPriority.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+            fields.Add(("title", "whisper-subs"));
+            return fields;
+        }
+
+        /// <summary>
+        /// Reads an akou job: its id, status and error message. The id goes into later URLs, so anything
+        /// but a plain token is refused. Pure.
+        /// </summary>
+        internal static (string Id, string Status, string? Error) ParseAkouJob(string json)
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(json);
+                var root = document.RootElement;
+                var id = root.TryGetProperty("id", out var idElement) && idElement.ValueKind == JsonValueKind.String ? idElement.GetString() : null;
+                var status = root.TryGetProperty("status", out var statusElement) && statusElement.ValueKind == JsonValueKind.String ? statusElement.GetString() : null;
+                if (id == null || !AkouJobIdRegex.IsMatch(id) || string.IsNullOrEmpty(status))
+                {
+                    throw new InvalidOperationException("akou answered without a usable job id and status.");
+                }
+                string? error = null;
+                if (root.TryGetProperty("error", out var errorElement) && errorElement.ValueKind == JsonValueKind.Object
+                    && errorElement.TryGetProperty("message", out var message) && message.ValueKind == JsonValueKind.String)
+                {
+                    error = message.GetString();
+                }
+                return (id, status, error);
+            }
+            catch (JsonException ex)
+            {
+                throw new InvalidOperationException("akou answered with malformed JSON instead of a job.", ex);
+            }
+        }
+
+        /// <summary>True while an akou job is still queued or running. Pure.</summary>
+        internal static bool AkouJobStillRunning(string status)
+            => status is "queued" or "running";
+
+        /// <summary>
+        /// Waits for this worker's request gate, when it has one; dispose the result to hand the turn back.
+        /// </summary>
+        private async Task<IDisposable> TakeTurnAsync(CancellationToken cancellationToken)
+        {
+            if (_requestGate == null) return NoTurn.Instance;
+            await _requestGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            return new Turn(_requestGate);
+        }
+
+        private sealed class Turn(SemaphoreSlim gate) : IDisposable
+        {
+            private int _released;
+            public void Dispose()
+            {
+                if (Interlocked.Exchange(ref _released, 1) == 0) gate.Release();
+            }
+        }
+
+        private sealed class NoTurn : IDisposable
+        {
+            public static readonly NoTurn Instance = new();
+            public void Dispose() { }
+        }
+
+        /// <summary>
+        /// Sends one request with the key and returns the body of a 2xx answer, read through
+        /// <paramref name="maxBytes"/>. Anything else throws a <see cref="RemoteApiException"/> carrying the
+        /// worker's own explanation, sanitised.
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "HTTP I/O; the error description helpers are unit-tested")]
+        private async Task<string> SendForBodyAsync(HttpRequestMessage request, int maxBytes, CancellationToken cancellationToken)
+        {
+            ApplyAuthorization(request);
+
+            // SECURITY-REVIEW: the configured endpoint is untrusted. Read headers first, then
+            // stream the body through explicit limits instead of HttpClient's default unbounded buffer.
+            using var response = await _httpClient.SendAsync(
+                request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorBody = await ReadUtf8BoundedAsync(
+                    response.Content, MaxErrorResponseBytes, cancellationToken, truncate: true).ConfigureAwait(false);
+                // Echo the provider's own explanation, sanitized and media-type gated, so the admin can
+                // see WHY without turning on debug logging (#138). The raw body is retained on the
+                // exception for the response-format negotiation matcher. For a redirect the body is an
+                // empty stub and the Location header is the real explanation (#157), so it wins.
+                var detail = (int)response.StatusCode is >= 300 and < 400
+                    ? DescribeRedirectDetail(response.Headers.Location)
+                    : string.Empty;
+                if (detail.Length == 0)
+                {
+                    detail = DescribeUpstreamErrorBody(
+                        errorBody, _apiKey, response.Content.Headers.ContentType?.MediaType);
+                }
+                throw new RemoteApiException(response.StatusCode, errorBody, detail);
+            }
+
+            return await ReadUtf8BoundedAsync(response.Content, maxBytes, cancellationToken).ConfigureAwait(false);
         }
 
         /// <param name="truncate">

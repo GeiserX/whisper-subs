@@ -99,12 +99,14 @@ Each row has these fields:
 | **Endpoint URL** | Base URL only, **no `/v1` suffix**. The plugin appends `/v1/audio/transcriptions` itself |
 | **API key** | Optional bearer token for this worker |
 | **Model** | Model name to request; empty means the worker's own default. Ignored by the bundled worker image |
-| **Max concurrency** | Simultaneous jobs. Keep `1` per single GPU |
+| **Max concurrency** | Requests the worker gets at once. Keep `1` per single GPU |
 | **Cost weight** | `0` = free, preferred. Above `0` = paid, used only to burst |
 | **Max upload size (MB)** | What this endpoint accepts. `0` (default) = unlimited |
 | **Upload format** | `WAV` (default), `FLAC` (lossless, ~half) or `Opus 24k` (~a tenth) |
-| **Dialect** | `OpenAI-compatible` (default) for whisper-server, OpenAI, Groq and OpenRouter. `CrispASR server (Canary)` for a [CrispASR server](#crispasr-server-workers) with the Canary model. `CrispASR server (Qwen3-ASR, transcribe only)` for a [Qwen3-ASR server](#qwen3-asr-server-workers) |
+| **Dialect** | `OpenAI-compatible` (default) for whisper-server, OpenAI, Groq and OpenRouter. `CrispASR server (Canary)` for a [CrispASR server](#crispasr-server-workers) with the Canary model. `CrispASR server (Qwen3-ASR, transcribe only)` for a [Qwen3-ASR server](#qwen3-asr-server-workers). `akou server` for an [akou server](#akou-server-workers) |
 | **Translation targets** | Comma-separated languages this worker translates into. `en` is Whisper translation and needs `/v1/audio/translations` on an OpenAI-compatible worker. Canary codes such as `nl` or `de` need the CrispASR dialect. Leave it blank for a transcribe-only worker |
+
+**Titles per remote request slot** (above the rows, default `1`) lets the pool give each remote worker more titles than its **Max concurrency**. Every title spends minutes on this server before a worker sees it: the audio is extracted, and for the forced-subtitle pass each chunk's language is detected. With `1` the worker waits through all of that. With `2` the next title is prepared here while the worker transcribes the current one. The worker still receives at most **Max concurrency** requests at a time; a prepared title waits on this server, and its timeout only starts once the worker takes it. This server does more work at once, so raise it only when this server has CPU to spare.
 
 Three timeout settings bound a remote call, so a slow-but-working pass is never cut off and a dead endpoint still fails: **Job timeout — real-time factor** (default `6`, multiplied by the audio length), **minimum seconds** (default `60`) and **maximum hours** (default `12`).
 
@@ -127,6 +129,12 @@ Then add a worker row with **Dialect** set to `CrispASR server (Qwen3-ASR, trans
 - Language detection for titles without tags, and the per-chunk detection of the forced-subtitle pass, run on this server's Whisper, not on the worker. The server reports `auto` as its language, so a row that detected there would guess.
 
 The server keeps one request at a time per loaded model, so **Max concurrency** stays at 1.
+
+## akou server workers
+
+An [akou](https://github.com/GeiserX/akou) server transcribes with Qwen3-ASR (its `best` preset) and serves other clients from the same queue. A row with **Dialect** `akou server` sends each request as a file job at priority -5, below akou's default of 0, so the server's other clients always go first. A running job is never stopped for another, so a title reaches akou in ten-minute windows: a client that arrives while a subtitle job runs waits ten minutes of audio at most, and an interrupted title resumes from its last window. Once the transcript is read the plugin deletes the job, which removes the uploaded audio and the result from the server; it deletes it on a failure or a timeout too.
+
+Set the base URL (no `/v1`), a key with the `jobs` scope (`akou keys create --name whisper-subs --scope jobs`), **Model** `best` (the default when blank), and leave **Translation targets** blank. Like a Qwen3-ASR server row, it only transcribes: this server's Whisper detects languages and translates for it. akou returns no word times for Qwen3-ASR, so cues are the segments akou sends.
 
 ## CrispASR server workers
 

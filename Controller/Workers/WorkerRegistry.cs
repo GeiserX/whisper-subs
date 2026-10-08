@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
@@ -93,17 +94,21 @@ namespace WhisperSubs.Controller.Workers
             long maxUploadBytes, string? uploadCodec,
             PluginConfiguration config, ILoggerFactory loggerFactory)
         {
-            var resolvedModel = string.IsNullOrWhiteSpace(model) ? "Systran/faster-whisper-large-v3" : model.Trim();
             var normalizedDialect = WorkerDialect.Normalize(dialect);
+            var resolvedModel = string.IsNullOrWhiteSpace(model)
+                ? (normalizedDialect == WorkerDialect.Akou ? "best" : "Systran/faster-whisper-large-v3")
+                : model.Trim();
             var qwen3Server = normalizedDialect == WorkerDialect.CrispAsrQwen3;
+            var requests = maxConcurrency < 1 ? 1 : maxConcurrency;
             ISubtitleProvider provider = new RemoteWhisperProvider(
                 loggerFactory.CreateLogger<RemoteWhisperProvider>(),
                 url, resolvedModel, key,
                 config.JobTimeoutRealtimeFactor, config.JobMinTimeoutSeconds, config.JobMaxTimeoutHours,
                 httpClient: null, maxUploadBytes: maxUploadBytes, uploadCodec: uploadCodec,
                 dialect: normalizedDialect,
-                wordCueMaxChars: qwen3Server ? WordCueMaxChars(config.SubtitleMaxLineLength) : 0);
-            if (qwen3Server)
+                wordCueMaxChars: qwen3Server ? WordCueMaxChars(config.SubtitleMaxLineLength) : 0,
+                maxConcurrentRequests: requests);
+            if (WorkerDialect.IsHostAssisted(normalizedDialect))
             {
                 // The server neither detects languages nor translates; this server's Whisper does both for the row.
                 provider = new HostAssistedProvider(provider, LocalWhisper(config, loggerFactory));
@@ -113,11 +118,24 @@ namespace WhisperSubs.Controller.Workers
             {
                 IsLocal = false,
                 CostWeight = costWeight,
-                MaxConcurrency = maxConcurrency < 1 ? 1 : maxConcurrency,
+                // Titles the pool may hand this worker at once. With more than one per request slot, a title's
+                // audio extraction and language detection on this server overlap another title's transcription;
+                // the provider's request gate still lets only `requests` reach the worker together.
+                MaxConcurrency = TitlesPerWorker(requests, config.RemoteTitlesPerRequestSlot),
                 TranslateTargets = translateTargets,
                 TranscribesItems = WorkerTargets.TranscribesItems(dialect, translateTargets),
             });
         }
+
+        /// <summary>
+        /// How many titles a remote worker that serves <paramref name="requests"/> requests at once is given:
+        /// <paramref name="titlesPerSlot"/> per request, at least 1 and at most <see cref="MaxTitlesPerSlot"/>. Pure.
+        /// </summary>
+        internal static int TitlesPerWorker(int requests, int titlesPerSlot)
+            => Math.Max(1, requests) * Math.Clamp(titlesPerSlot, 1, MaxTitlesPerSlot);
+
+        /// <summary>The most titles per request slot the setting allows.</summary>
+        internal const int MaxTitlesPerSlot = 4;
 
         /// <summary>
         /// Characters per cue for a Qwen3-ASR server row: the configured line length, or the same 42 the

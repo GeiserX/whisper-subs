@@ -731,9 +731,13 @@ namespace WhisperSubs.ScheduledTasks
         {
             hold ??= new PlaybackHold();
 
-            // A remote worker is another machine. Playback on this server neither needs its GPU nor
-            // gains anything from stopping it, so its job simply runs.
-            if (!isLocalWorker)
+            // A remote worker is another machine: playback here does not need its GPU, so its job starts at
+            // once and its requests keep running. What the job runs on this server is this server's load,
+            // though: the FFmpeg extraction, and this server's Whisper detecting languages for a Qwen3-ASR or
+            // akou row. With several remote workers that is several such jobs at once, so where processes can
+            // be stopped they are suspended during playback exactly like a local job's.
+            var plan = PlanForPlayback(isLocalWorker, EngineProcessSuspender.Default.Supported);
+            if (plan == PlaybackPlan.RunThrough)
             {
                 await manager.GenerateSubtitleAsync(item, provider, language, cancellationToken, targetEngines: targetEngines);
                 return;
@@ -741,11 +745,11 @@ namespace WhisperSubs.ScheduledTasks
 
             // Where the engine processes can be stopped and continued, a pause costs no work at all:
             // the job is not cancelled, its processes are suspended until playback ends.
-            if (EngineProcessSuspender.Default.Supported)
+            if (plan != PlaybackPlan.CancelAndRetry)
             {
-                await WaitForPlaybackIdleAsync(cancellationToken, hold);
+                if (plan == PlaybackPlan.WaitThenSuspend) await WaitForPlaybackIdleAsync(cancellationToken, hold);
                 // The scope belongs to this job alone: only the processes this job starts are stopped,
-                // never those a remote worker's job runs on this server, nor another local job's.
+                // never another job's.
                 using var scope = EngineProcessSuspender.Default.BeginScope();
                 using var monitorCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 var suspendMonitor = SuspendWhilePlayingAsync(scope, item.Name, hold, monitorCts.Token);
@@ -821,6 +825,35 @@ namespace WhisperSubs.ScheduledTasks
         /// </summary>
         internal static bool GateProducerOnPlayback(bool pauseOnPlayback, bool poolHasRemoteWorker)
             => pauseOnPlayback && !poolHasRemoteWorker;
+
+        /// <summary>How a job in the sweep meets playback on this server.</summary>
+        internal enum PlaybackPlan
+        {
+            /// <summary>Wait until nobody is playing, then run with this job's processes suspended during playback.</summary>
+            WaitThenSuspend,
+            /// <summary>Start at once; this job's processes on this server are suspended during playback.</summary>
+            Suspend,
+            /// <summary>Wait until nobody is playing, run, and cancel and retry when playback starts.</summary>
+            CancelAndRetry,
+            /// <summary>Run to the end whatever happens.</summary>
+            RunThrough,
+        }
+
+        /// <summary>
+        /// A local job waits for idle, then has its processes suspended through playback, or where processes
+        /// cannot be stopped is cancelled and retried. A remote job starts at once, since its transcription
+        /// runs on another machine, but its processes here (FFmpeg, this server's Whisper detecting for it)
+        /// are suspended through playback like a local job's; where they cannot be stopped it runs through,
+        /// as before. Pure.
+        /// </summary>
+        internal static PlaybackPlan PlanForPlayback(bool isLocalWorker, bool suspendSupported)
+            => (isLocalWorker, suspendSupported) switch
+            {
+                (true, true) => PlaybackPlan.WaitThenSuspend,
+                (true, false) => PlaybackPlan.CancelAndRetry,
+                (false, true) => PlaybackPlan.Suspend,
+                (false, false) => PlaybackPlan.RunThrough,
+            };
 
         /// <summary>What the suspend monitor does on one poll.</summary>
         public enum PauseAction { None, Suspend, Resume }

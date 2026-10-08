@@ -42,8 +42,7 @@ namespace WhisperSubs.Controller
         /// <summary>
         /// The scope of the job this call belongs to, or null. A scope follows the async flow that
         /// opened it, so the processes one job starts land in that job's scope and in no other: a job
-        /// on a remote worker has none, and its FFmpeg extraction on this server is never stopped by
-        /// another job's pause.
+        /// is never stopped by another job's pause.
         /// </summary>
         public Scope? Current => _current.Value;
 

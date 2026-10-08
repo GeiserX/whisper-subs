@@ -395,6 +395,16 @@ namespace WhisperSubs.Configuration
         /// </summary>
         public bool EnableLocalWorker { get; set; } = true;
 
+        /// <summary>
+        /// Titles a remote worker is given per request it serves at once (its Max concurrency). Each title
+        /// spends minutes on this server first (audio extraction, language detection), and with 1 the worker
+        /// waits through all of it. With 2, the next title is prepared here while the worker transcribes the
+        /// current one; the worker still never receives more than Max concurrency requests together. 1 to 4,
+        /// default 1 (one title per request slot, the behaviour before this setting). The host's own worker
+        /// is not affected.
+        /// </summary>
+        public int RemoteTitlesPerRequestSlot { get; set; } = 1;
+
         // ── Vocal separation (issue: separate vocals from background noise/music) ───────────
         // Runs BSRoformer.cpp (https://github.com/chenmozhijin/BSRoformer.cpp) as a standalone binary,
         // after audio extraction and before VAD/transcription, so whisper transcribes an isolated vocal

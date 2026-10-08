@@ -296,6 +296,9 @@ namespace WhisperSubs.Controller
 
             var sb = new StringBuilder();
             sb.Append("src=").Append(source).Append(";local=").Append(addLocal).Append(';');
+            // Left out at the default, so the signature of every install that never set it is unchanged.
+            if (config.RemoteTitlesPerRequestSlot > 1)
+                sb.Append("titles=").Append(config.RemoteTitlesPerRequestSlot).Append(';');
 
             if (source == WorkerSource.ExplicitList && config.Workers != null)
             {
