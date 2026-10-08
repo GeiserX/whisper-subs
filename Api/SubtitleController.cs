@@ -1708,7 +1708,7 @@ namespace WhisperSubs.Api
             {
                 // Check Jellyfin-standard track.lrc and language-tagged track.*.lrc
                 var exactLrc = System.IO.Path.Combine(dir, baseName + ".lrc");
-                return System.IO.File.Exists(exactLrc) || System.IO.Directory.GetFiles(dir, baseName + ".*.lrc").Length > 0;
+                return System.IO.File.Exists(exactLrc) || Controller.MediaFolder.GetFiles(dir, baseName + ".*.lrc").Length > 0;
             }
             catch { return false; }
         }

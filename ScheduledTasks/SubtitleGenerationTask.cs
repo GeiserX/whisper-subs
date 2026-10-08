@@ -317,7 +317,7 @@ namespace WhisperSubs.ScheduledTasks
                             {
                                 // Check Jellyfin-standard track.lrc and language-tagged track.*.lrc
                                 var exactLrc = System.IO.Path.Combine(audioDir, audioBase + ".lrc");
-                                if (System.IO.File.Exists(exactLrc) || System.IO.Directory.GetFiles(audioDir, audioBase + ".*.lrc").Length > 0)
+                                if (System.IO.File.Exists(exactLrc) || MediaFolder.GetFiles(audioDir, audioBase + ".*.lrc").Length > 0)
                                 {
                                     var done = Interlocked.Increment(ref completed);
                                     queue.ReportTaskProgress(null, done, allItems.Count, failed);
@@ -362,7 +362,7 @@ namespace WhisperSubs.ScheduledTasks
                         if (!hasFullSrt)
                         {
                             var subtitleExts = SubtitleInventory.UsableSubtitleExtensions(!config.CountImageSubtitlesAsPresent);
-                            hasFullSrt = System.IO.Directory.GetFiles(dir, baseName + ".*")
+                            hasFullSrt = MediaFolder.GetFiles(dir, baseName + ".*")
                                 .Any(f =>
                                 {
                                     var name = System.IO.Path.GetFileName(f);
