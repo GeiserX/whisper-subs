@@ -72,8 +72,8 @@ public class AkouWorkerTests
     [Fact]
     public async Task JobPastItsDeadline_TimesOut_AndIsStillDeleted()
     {
-        // The job never leaves the queue (akou busy with its other clients); the 1 s deadline ends the wait.
-        var akou = new FakeAkou(statuses: Enumerable.Repeat("queued", 1000).ToArray(), result: Done, pollDelay: TimeSpan.FromMilliseconds(400));
+        // The job runs and never finishes; the 1 s deadline ends the wait.
+        var akou = new FakeAkou(statuses: Enumerable.Repeat("running", 1000).ToArray(), result: Done, pollDelay: TimeSpan.FromMilliseconds(400));
         var wav = Wav();
         try
         {
@@ -89,6 +89,32 @@ public class AkouWorkerTests
             File.Delete(wav);
         }
     }
+
+    [Fact]
+    public async Task TimeQueuedBehindOtherClients_DoesNotCountAgainstTheDeadline()
+    {
+        // Queued for over 3 s behind akou's own clients with a 1 s deadline: the low priority asked for that wait.
+        var akou = new FakeAkou(statuses: new[] { "queued", "queued", "queued", "done" }, result: Done, pollDelay: TimeSpan.FromMilliseconds(100));
+        var wav = Wav();
+        try
+        {
+            var provider = new RemoteWhisperProvider(NullLogger.Instance, "http://akou:8476", "best", "key",
+                realtimeFactor: 0.0001, minTimeoutSeconds: 1, httpClient: new HttpClient(akou), dialect: "akou");
+
+            Assert.Contains("Hola.", await provider.TranscribeAsync(wav, "es", CancellationToken.None));
+        }
+        finally
+        {
+            File.Delete(wav);
+        }
+    }
+
+    [Theory]
+    [InlineData(12, 60, 12 * 3600)]
+    [InlineData(0, 60, 12 * 3600)]
+    [InlineData(1, 7200, 7200)]      // never shorter than the realtime deadline itself
+    public void AkouQueuedCap(int maxHours, int deadlineSeconds, int expectedSeconds)
+        => Assert.Equal(TimeSpan.FromSeconds(expectedSeconds), RemoteWhisperProvider.AkouQueuedCap(maxHours, TimeSpan.FromSeconds(deadlineSeconds)));
 
     [Fact]
     public async Task CancelledJob_IsStillDeleted()

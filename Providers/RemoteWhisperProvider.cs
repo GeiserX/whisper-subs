@@ -1189,8 +1189,9 @@ namespace WhisperSubs.Providers
         /// <summary>
         /// The akou dialect: submit the audio as a file job at <see cref="AkouJobPriority"/>, wait for it, read
         /// the transcript as OpenAI <c>verbose_json</c>, and delete the job whatever happened, which removes
-        /// the uploaded audio and the result from the server. The whole exchange shares one deadline, counted
-        /// from when this worker's request gate lets it through.
+        /// the uploaded audio and the result from the server. The realtime deadline starts when akou starts the
+        /// job: the time it waits behind akou's other clients is what the low priority asks for, so that wait is
+        /// bounded only by the job's maximum hours.
         /// </summary>
         private async Task<string> TranscribeAkouJobAsync(string audioPath, string language, CancellationToken cancellationToken)
         {
@@ -1208,8 +1209,10 @@ namespace WhisperSubs.Providers
 
                 using var turn = await TakeTurnAsync(cancellationToken).ConfigureAwait(false);
                 var deadline = TranscriptionTimeout.Compute(sourceAudioBytes, _realtimeFactor, _minTimeoutSeconds, _maxTimeoutHours);
+                var queuedCap = AkouQueuedCap(_maxTimeoutHours, deadline);
                 using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                timeoutCts.CancelAfter(deadline);
+                timeoutCts.CancelAfter(queuedCap);
+                var started = false;
                 var jobsEndpoint = _apiUrl + "/v1/jobs";
                 string? jobId = null;
                 try
@@ -1235,6 +1238,12 @@ namespace WhisperSubs.Providers
                     {
                         using var poll = new HttpRequestMessage(HttpMethod.Get, jobUrl + "?wait=60");
                         var job = ParseAkouJob(await SendForBodyAsync(poll, MaxAkouJobBytes, timeoutCts.Token).ConfigureAwait(false));
+                        if (!started && job.Status != "queued")
+                        {
+                            // From here the job runs: hold it to the realtime deadline, as any other worker.
+                            started = true;
+                            timeoutCts.CancelAfter(deadline);
+                        }
                         if (job.Status == "done") break;
                         if (!AkouJobStillRunning(job.Status))
                         {
@@ -1259,8 +1268,9 @@ namespace WhisperSubs.Providers
                 }
                 catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
                 {
-                    throw new TimeoutException(
-                        $"akou job exceeded its {deadline.TotalSeconds:F0}s deadline (server busy, slow or unreachable): {UpstreamErrorSanitizer.SanitizeEndpoint(jobsEndpoint)}");
+                    throw new TimeoutException(started
+                        ? $"akou job exceeded its {deadline.TotalSeconds:F0}s deadline once it started (server slow or unreachable): {UpstreamErrorSanitizer.SanitizeEndpoint(jobsEndpoint)}"
+                        : $"akou job waited {queuedCap.TotalHours:F1}h without starting (server busy with other clients, or unreachable): {UpstreamErrorSanitizer.SanitizeEndpoint(jobsEndpoint)}");
                 }
                 finally
                 {
@@ -1274,6 +1284,16 @@ namespace WhisperSubs.Providers
                     RemoteAudioEncoder.TryDelete(uploadPath);
                 }
             }
+        }
+
+        /// <summary>
+        /// How long an akou job may wait before akou starts it: the job's maximum hours, and never less than
+        /// the realtime deadline itself. Pure.
+        /// </summary>
+        internal static TimeSpan AkouQueuedCap(int maxTimeoutHours, TimeSpan deadline)
+        {
+            var cap = TimeSpan.FromHours(maxTimeoutHours > 0 ? maxTimeoutHours : 12);
+            return cap > deadline ? cap : deadline;
         }
 
         /// <summary>

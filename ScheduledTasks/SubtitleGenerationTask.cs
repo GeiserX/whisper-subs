@@ -855,6 +855,9 @@ namespace WhisperSubs.ScheduledTasks
                 (false, false) => PlaybackPlan.RunThrough,
             };
 
+        /// <summary>The phase the status panel shows while a job is held for playback.</summary>
+        private const string WaitingForPlayback = "Waiting for playback to stop";
+
         /// <summary>What the suspend monitor does on one poll.</summary>
         public enum PauseAction { None, Suspend, Resume }
 
@@ -902,14 +905,16 @@ namespace WhisperSubs.ScheduledTasks
                         case PauseAction.Suspend:
                             suspender.Suspend();
                             suspended = true;
-                            phaseBefore = queue.CurrentPhase;
-                            queue.ReportPhase("Waiting for playback to stop");
+                            // Several jobs can be suspended at once now that remote jobs are too: do not take another
+                            // job's waiting text as the phase to go back to.
+                            phaseBefore = queue.CurrentPhase == WaitingForPlayback ? null : queue.CurrentPhase;
+                            queue.ReportPhase(WaitingForPlayback);
                             _logger.LogInformation("Playback started during transcription of {ItemName} — suspending", itemName);
                             break;
                         case PauseAction.Resume:
                             suspender.Resume();
                             suspended = false;
-                            if (phaseBefore != null) queue.ReportPhase(phaseBefore);
+                            if (phaseBefore != null && queue.CurrentPhase == WaitingForPlayback) queue.ReportPhase(phaseBefore);
                             if (playing)
                             {
                                 _logger.LogWarning("Playback still active after {Hours} hours — continuing {ItemName} to avoid an indefinite stall", MaxSuspend.TotalHours, itemName);
