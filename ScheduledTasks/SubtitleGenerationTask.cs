@@ -81,6 +81,11 @@ namespace WhisperSubs.ScheduledTasks
 
             var queue = SubtitleQueueService.Instance;
 
+            // A job killed with Jellyfin left its audio and work folder behind; every live job was started
+            // by this process, so anything of ours from before it started is a leftover.
+            TempLeftovers.Sweep(System.IO.Path.GetTempPath(),
+                System.Diagnostics.Process.GetCurrentProcess().StartTime.ToUniversalTime(), _logger);
+
             // Mark the task running up front so the shared worker pool isn't rebuilt underneath it (v4.0),
             // then run the generation inside a try/finally that ALWAYS clears the flag — even if setup
             // (GetPool, library enumeration, the restored-items drain) throws before the main loop — so a
