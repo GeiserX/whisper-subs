@@ -45,6 +45,7 @@ public sealed class HostWhisperGateTests : IDisposable
         // prefix, a detected language on stderr).
         var script = $$"""
             #!/bin/bash
+            [ "$1" = "--version" ] && { echo "whisper.cpp version: 1.9.5"; exit 0; }
             model=""; prefix=""
             while [ $# -gt 0 ]; do
               case "$1" in -m) model="$2";; -of) prefix="$2";; esac

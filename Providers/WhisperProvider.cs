@@ -540,7 +540,7 @@ namespace WhisperSubs.Providers
             var executable = FindWhisperExecutable();
             if (executable == null) return false;
 
-            var key = GpuDetectionCheck.Key(executable, detectionModel);
+            var key = GpuDetectionCheck.Key(executable, detectionModel, await ReadVersionAsync(executable, cancellationToken));
             if (GpuDetectionCheck.TryGet(key, out var known)) return known;
 
             string clip;
@@ -565,7 +565,7 @@ namespace WhisperSubs.Providers
                 }
                 else
                 {
-                    _logger.LogWarning("GPU language detection failed its self-check with {Model}: an English clip came back {Answer} (exit {ExitCode}). Detection runs with --no-gpu until Jellyfin restarts or the whisper-cli file changes",
+                    _logger.LogWarning("GPU language detection failed its self-check with {Model}: an English clip came back {Answer} (exit {ExitCode}). Detection runs with --no-gpu until Jellyfin restarts or the whisper-cli binary changes",
                         Path.GetFileName(detectionModel), GpuDetectionCheck.Answer(output), exitCode);
                 }
 
@@ -592,6 +592,49 @@ namespace WhisperSubs.Providers
             finally
             {
                 try { File.Delete(clip); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            }
+        }
+
+        /// <summary>
+        /// What the binary prints for --version, stdout and stderr together, or "" when it cannot run or takes
+        /// more than 15 s. Part of the GPU verdict's key.
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Spawns whisper-cli --version")]
+        private static async Task<string> ReadVersionAsync(string executable, CancellationToken cancellationToken)
+        {
+            try
+            {
+                var startInfo = new ProcessStartInfo
+                {
+                    FileName = executable,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    WorkingDirectory = Path.GetDirectoryName(executable) ?? ""
+                };
+                startInfo.ArgumentList.Add("--version");
+                using var process = Process.Start(startInfo);
+                if (process == null) return "";
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                timeout.CancelAfter(TimeSpan.FromSeconds(15));
+                var stdout = process.StandardOutput.ReadToEndAsync(timeout.Token);
+                var stderr = process.StandardError.ReadToEndAsync(timeout.Token);
+                try
+                {
+                    await process.WaitForExitAsync(timeout.Token);
+                    return await stdout + "\n" + await stderr;
+                }
+                catch (OperationCanceledException)
+                {
+                    try { process.Kill(entireProcessTree: true); } catch { }
+                    cancellationToken.ThrowIfCancellationRequested();
+                    return "";
+                }
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or IOException or System.ComponentModel.Win32Exception)
+            {
+                return "";
             }
         }
 

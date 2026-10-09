@@ -12,8 +12,8 @@ namespace WhisperSubs.Providers
     /// while the same binary with --no-gpu was right; v1.9.5 matched the CPU on every chunk. So before the
     /// first detection with a given whisper-cli and model, one run on a short English clip (the JFK sample
     /// that ships with whisper.cpp, public domain) has to come back English with real confidence. If it does
-    /// not, detection with that pair runs with --no-gpu for the rest of the process. The verdict is kept per
-    /// binary and per model, each with its modification time, so a replaced file is checked again.
+    /// not, detection with that pair runs with --no-gpu for the rest of the process. A replaced binary, model,
+    /// or engine behind a wrapper script is checked again (<see cref="Key"/>).
     /// </summary>
     internal static class GpuDetectionCheck
     {
@@ -53,14 +53,30 @@ namespace WhisperSubs.Providers
             return m.Success ? $"{m.Groups["lang"].Value} (p = {m.Groups["p"].Value})" : "no language";
         }
 
-        internal static string Key(string executable, string model)
-            => executable + "|" + Stamp(executable) + "|" + model + "|" + Stamp(model);
+        /// <summary>
+        /// The verdict's key: the binary and the model, each with its modification time and size, plus what the
+        /// binary answers to --version. The configured binary is often a wrapper script that execs the real
+        /// whisper-cli, and swapping the engine behind it leaves the wrapper untouched; the version answer
+        /// (v1.9.5 prints "whisper.cpp version: 1.9.5", v1.8.4 rejects the flag and prints its usage) changes
+        /// with the engine. Pure apart from reading file metadata.
+        /// </summary>
+        internal static string Key(string executable, string model, string versionOutput)
+            => string.Join("|", executable, Stamp(executable), model, Stamp(model), Fingerprint(versionOutput));
 
         private static string Stamp(string path)
         {
-            try { return File.GetLastWriteTimeUtc(path).Ticks.ToString(CultureInfo.InvariantCulture); }
+            try
+            {
+                var info = new FileInfo(path);
+                return info.Exists
+                    ? info.LastWriteTimeUtc.Ticks.ToString(CultureInfo.InvariantCulture) + ":" + info.Length.ToString(CultureInfo.InvariantCulture)
+                    : "0";
+            }
             catch (Exception) { return "0"; }
         }
+
+        private static string Fingerprint(string text)
+            => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(text ?? "")));
 
         internal static bool TryGet(string key, out bool gpuOk) => Verdicts.TryGetValue(key, out gpuOk);
 

@@ -136,6 +136,30 @@ public sealed class GpuDetectionCheckTests : IDisposable
         Assert.Equal(2, Runs().Count(r => r.Check));
     }
 
+    [Fact]
+    public async Task ASwappedEngineBehindAnUnchangedWrapper_IsCheckedAgain()
+    {
+        if (OperatingSystem.IsWindows()) return;
+
+        // The configured binary is a wrapper that stays as it is; the engine behind it moves from v1.8.4 to v1.9.5.
+        File.WriteAllText(Path.Combine(_dir, "engine"), "whisper.cpp version: 1.8.4");
+        var exe = Executable(brokenGpu: false);
+        var whisper = Provider(exe);
+        await whisper.DetectLanguagesAsync(_chunks, CancellationToken.None);
+
+        var stamp = File.GetLastWriteTimeUtc(exe);
+        File.WriteAllText(Path.Combine(_dir, "engine"), "whisper.cpp version: 1.9.5");
+        File.SetLastWriteTimeUtc(exe, stamp);
+        var batch = await whisper.DetectLanguagesAsync(_chunks, CancellationToken.None);
+
+        var runs = Runs();
+        Assert.Equal(4, runs.Count);
+        Assert.False(runs[1].Gpu);                       // 1.8.4 failed the check: CPU
+        Assert.True(runs[2].Check && runs[2].Gpu);       // the new engine is checked
+        Assert.True(runs[3].Gpu);                        // and passes: GPU
+        Assert.All(batch.Results, r => Assert.Equal("es", r!.Value.Language));
+    }
+
     private WhisperProvider Provider(string exe)
         => new(NullLogger<WhisperProvider>.Instance, _model, exe, detectionModelPath: "");
 
@@ -149,6 +173,9 @@ public sealed class GpuDetectionCheckTests : IDisposable
     // A broken GPU says nl at p = 0.010 for everything; otherwise the check clip is English and chunks Spanish.
     private string Script(bool brokenGpu) => $$"""
         #!/bin/bash
+        if [ "$1" = "--version" ]; then cat "{{_dir}}/engine" 2>/dev/null; exit 0; fi
+        broken={{(brokenGpu ? 1 : 0)}}
+        if [ -f "{{_dir}}/engine" ]; then case "$(cat "{{_dir}}/engine")" in *1.8.4*) broken=1;; *) broken=0;; esac; fi
         gpu=1; files=()
         while [ $# -gt 0 ]; do
           case "$1" in --no-gpu) gpu=0;; -f) files+=("$2"); shift;; esac
@@ -157,7 +184,7 @@ public sealed class GpuDetectionCheckTests : IDisposable
         echo "$gpu ${files[*]}" >> "{{_log}}"
         for f in "${files[@]}"; do
           echo "main: processing '$f' (8000 samples, 0.5 sec), 4 threads, 1 processors, lang = auto, task = transcribe ..." >&2
-          if [ $gpu = 1 ] && [ {{(brokenGpu ? 1 : 0)}} = 1 ]; then
+          if [ $gpu = 1 ] && [ $broken = 1 ]; then
             echo "whisper_full_with_state: auto-detected language: nl (p = 0.010000)" >&2
           else
             case "$f" in *whispersubs_gpucheck_*) l=en;; *) l=es;; esac
