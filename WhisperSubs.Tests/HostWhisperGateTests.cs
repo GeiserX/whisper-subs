@@ -54,7 +54,7 @@ public sealed class HostWhisperGateTests : IDisposable
             kind=full; case "$model" in *ggml-base.bin) kind=detect;; esac
             touch "{{_dir}}/running/$kind/$$"
             echo "full $(ls "{{_dir}}/running/full" | wc -l) detect $(ls "{{_dir}}/running/detect" | wc -l)" >> "{{_log}}"
-            sleep 0.3
+            sleep ${STANDIN_SECONDS:-0.3}
             if [ -n "$prefix" ]; then printf '1\n00:00:00,000 --> 00:00:01,000\nHello.\n' > "$prefix.srt"; fi
             echo "whisper_full_with_state: auto-detected language: es (p = 0.910)" >&2
             rm -f "{{_dir}}/running/$kind/$$"
@@ -106,14 +106,17 @@ public sealed class HostWhisperGateTests : IDisposable
     {
         if (OperatingSystem.IsWindows()) return;
 
+        // Long runs, so two admitted together overlap even on a slow CI runner where a process takes a while to start.
         HostEngineGates.Apply(new Configuration.PluginConfiguration { MaxFullModelEngines = 2 });
+        Environment.SetEnvironmentVariable("STANDIN_SECONDS", "1.5");
         try
         {
-            var rows = Enumerable.Range(0, 5).Select(_ => Whisper(detectionModel: "")).ToList();
+            var rows = Enumerable.Range(0, 3).Select(_ => Whisper(detectionModel: "")).ToList();
             await Task.WhenAll(rows.SelectMany(TitleWork));
         }
         finally
         {
+            Environment.SetEnvironmentVariable("STANDIN_SECONDS", null);
             HostEngineGates.Reset();
         }
 
