@@ -510,6 +510,37 @@ namespace WhisperSubs.Providers
         private async Task<(int ExitCode, string Stdout, string Stderr, bool TimedOut)> RunDetectionProcessAsync(
             IReadOnlyList<string> audioPaths, bool keepOutputOnTimeout, CancellationToken cancellationToken)
         {
+            // The small detection model runs beside one full-model process; detection that falls back to
+            // the transcription model weighs as much as a transcription and queues with them. The turn is
+            // taken before the per-file deadline exists, so waiting for another run never counts as a stall.
+            var detectionModel = ChooseDetectionModel(
+                _modelPath, _detectionModelPath,
+                !string.IsNullOrEmpty(_detectionModelPath) && File.Exists(_detectionModelPath));
+            var gate = GateForDetection(detectionModel, _modelPath);
+            await gate.WaitAsync(cancellationToken);
+            try
+            {
+                return await RunDetectionProcessUngatedAsync(audioPaths, detectionModel, keepOutputOnTimeout, cancellationToken);
+            }
+            finally
+            {
+                gate.Release();
+            }
+        }
+
+        /// <summary>
+        /// The gate a detection run queues on: the small model's own, or the full-model gate when detection
+        /// runs on the transcription model. Pure.
+        /// </summary>
+        internal static SemaphoreSlim GateForDetection(string detectionModelPath, string transcriptionModelPath)
+            => string.Equals(detectionModelPath, transcriptionModelPath, StringComparison.Ordinal)
+                ? HostEngineGates.Model
+                : HostEngineGates.Detection;
+
+        [ExcludeFromCodeCoverage(Justification = "Spawns whisper-cli process for language detection")]
+        private async Task<(int ExitCode, string Stdout, string Stderr, bool TimedOut)> RunDetectionProcessUngatedAsync(
+            IReadOnlyList<string> audioPaths, string detectionModel, bool keepOutputOnTimeout, CancellationToken cancellationToken)
+        {
             var whisperExecutable = FindWhisperExecutable();
             if (whisperExecutable == null)
             {
@@ -527,12 +558,9 @@ namespace WhisperSubs.Providers
                 WorkingDirectory = Path.GetDirectoryName(whisperExecutable) ?? ""
             };
 
-            // Use the dedicated small detection model when available (checked live so a model that
-            // finished downloading after construction is picked up mid-run); else fall back to the
-            // transcription model. This keeps per-chunk detection under the timeout on slow CPUs. (#95)
-            var detectionModel = ChooseDetectionModel(
-                _modelPath, _detectionModelPath,
-                !string.IsNullOrEmpty(_detectionModelPath) && File.Exists(_detectionModelPath));
+            // The dedicated small detection model when available (chosen live by the caller, so a model that
+            // finished downloading after construction is picked up mid-run); else the transcription model.
+            // This keeps per-chunk detection under the timeout on slow CPUs. (#95)
             foreach (var arg in BuildDetectionArgs(detectionModel, audioPaths))
             {
                 startInfo.ArgumentList.Add(arg);
