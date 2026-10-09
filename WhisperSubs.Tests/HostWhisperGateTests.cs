@@ -18,6 +18,14 @@ namespace WhisperSubs.Tests;
 /// one night. However many titles and rows ask, one full-model engine process runs on this server at a
 /// time, and one detection run on the small model beside it.
 /// </summary>
+/// <summary>
+/// Tests that change the process-wide engine gates or count the processes running under them. The collection
+/// runs alone: a test in another class that transcribes through a gate (Canary, Qwen3-ASR, Whisper stand-ins)
+/// would otherwise hold a slot while these count peaks.
+/// </summary>
+[CollectionDefinition(nameof(HostEngineGates), DisableParallelization = true)]
+public sealed class HostEngineGatesCollection { }
+
 [Collection(nameof(HostEngineGates))]
 public sealed class HostWhisperGateTests : IDisposable
 {
