@@ -62,6 +62,7 @@ namespace WhisperSubs
             // ConfigurationChanged from UpdateConfiguration after the new config is persisted; the handler
             // swallows+logs any failure so a config save can never throw.
             ConfigurationChanged += OnConfigurationChanged;
+            Providers.HostEngineGates.Apply(Configuration);
 
             InjectClientScript();
         }
@@ -74,6 +75,8 @@ namespace WhisperSubs
         {
             try
             {
+                // Engine limits and the Vulkan device apply at once, to the next engine process started.
+                Providers.HostEngineGates.Apply(Configuration);
                 var count = SubtitleQueueService.Instance.ReconcileWorkers(Configuration, _loggerFactory);
                 _logger.LogDebug("WhisperSubs: reconciled worker pool after configuration change ({Count} worker(s))", count);
             }

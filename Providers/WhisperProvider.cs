@@ -7,6 +7,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
+using WhisperSubs.Configuration;
 using WhisperSubs.Controller;
 using Microsoft.Extensions.Logging;
 
@@ -24,6 +25,7 @@ namespace WhisperSubs.Providers
         private readonly int _maxLineLength;
         private readonly string _detectionModelPath;
         private string? _resolvedExecutable;
+        private readonly DetectionSettings _detection;
 
         private static readonly HashSet<string> DeniedArgs = new(StringComparer.OrdinalIgnoreCase)
         {
@@ -58,8 +60,10 @@ namespace WhisperSubs.Providers
 
         public bool RequiresSpeechAlignmentOptIn => UsesVad;
 
-        public WhisperProvider(ILogger<WhisperProvider> logger, string modelPath, string binaryPath = "", int threadCount = 0, string customArgs = "", string vadModelPath = "", string detectionModelPath = "", VadTuning? vadTuning = null, int maxLineLength = 0)
+        public WhisperProvider(ILogger<WhisperProvider> logger, string modelPath, string binaryPath = "", int threadCount = 0, string customArgs = "", string vadModelPath = "", string detectionModelPath = "", VadTuning? vadTuning = null, int maxLineLength = 0, DetectionSettings? detection = null)
         {
+            _detection = detection ?? DetectionSettings.Default;
+            DetectionFileTimeout = _detection.FileTimeout;
             _logger = logger;
             _modelPath = modelPath;
             _binaryPath = binaryPath;
@@ -171,6 +175,7 @@ namespace WhisperSubs.Providers
                 CreateNoWindow = true,
                 WorkingDirectory = Path.GetDirectoryName(whisperExecutable) ?? ""
             };
+            HostEngineGates.ApplyVulkanDevice(startInfo);
 
             // Resolve whether VAD applies (requested + model configured + present on disk). The
             // rule lives in the pure ShouldUseVad helper so "applyVad:false suppresses VAD even
@@ -232,7 +237,7 @@ namespace WhisperSubs.Providers
         /// and the batched path build their command here, so the two can never run with different flags.
         /// Never adds -np: the batch parser needs the per-file "processing '...'" line. Pure.
         /// </summary>
-        internal static List<string> BuildDetectionArgs(string modelPath, IReadOnlyList<string> audioPaths, int threads = 4)
+        internal static List<string> BuildDetectionArgs(string modelPath, IReadOnlyList<string> audioPaths, int threads = 4, bool cpuOnly = false)
         {
             var args = new List<string> { "-m", modelPath };
             foreach (var path in audioPaths)
@@ -248,9 +253,8 @@ namespace WhisperSubs.Providers
             args.Add("-t");
             args.Add(threads.ToString(CultureInfo.InvariantCulture));
             args.Add("--detect-language");
-            // Disable GPU for language detection: a fresh process pays the GPU backend init, which
-            // for short chunks cost more than the detection itself. Transcription still uses the GPU.
-            args.Add("--no-gpu");
+            // On the GPU unless the GPU failed its self-check for this binary and model (GpuDetectionCheck).
+            if (cpuOnly) args.Add("--no-gpu");
             return args;
         }
 
@@ -520,7 +524,8 @@ namespace WhisperSubs.Providers
             await gate.WaitAsync(cancellationToken);
             try
             {
-                return await RunDetectionProcessUngatedAsync(audioPaths, detectionModel, keepOutputOnTimeout, cancellationToken);
+                var cpuOnly = !await GpuDetectionWorksAsync(detectionModel, cancellationToken);
+                return await RunDetectionProcessUngatedAsync(audioPaths, detectionModel, cpuOnly, keepOutputOnTimeout, cancellationToken);
             }
             finally
             {
@@ -529,24 +534,144 @@ namespace WhisperSubs.Providers
         }
 
         /// <summary>
+        /// Whether detection with this binary and model may run on the GPU. The first call for a pair runs
+        /// whisper-cli on the English self-check clip without --no-gpu, inside the caller's gate, and keeps the
+        /// verdict for the life of the process (<see cref="GpuDetectionCheck"/>). A check that cannot start
+        /// leaves no verdict: the detection run that follows reports the real launch error.
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Spawns whisper-cli process for the GPU self-check")]
+        private async Task<bool> GpuDetectionWorksAsync(string detectionModel, CancellationToken cancellationToken)
+        {
+            switch (_detection.Device)
+            {
+                case DetectionDevice.Cpu: return false;
+                case DetectionDevice.Gpu: return true;
+            }
+
+            var executable = FindWhisperExecutable();
+            if (executable == null) return false;
+
+            var key = GpuDetectionCheck.Key(executable, detectionModel, await ReadVersionAsync(executable, cancellationToken));
+            if (GpuDetectionCheck.TryGet(key, out var known)) return known;
+
+            string clip;
+            try { clip = GpuDetectionCheck.WriteClip(); }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not write the GPU self-check clip; language detection runs on the CPU");
+                GpuDetectionCheck.Record(key, false, executable, detectionModel, "the clip could not be written");
+                return false;
+            }
+
+            try
+            {
+                var (exitCode, stdout, stderr, _) = await RunDetectionProcessUngatedAsync(
+                    new[] { clip }, detectionModel, cpuOnly: false, keepOutputOnTimeout: false, cancellationToken);
+                var output = stdout + "\n" + stderr;
+                var passed = exitCode == 0 && GpuDetectionCheck.Passed(output);
+                if (passed)
+                {
+                    _logger.LogInformation("Language detection runs on the GPU: the self-check clip came back {Answer} with {Model}",
+                        GpuDetectionCheck.Answer(output), Path.GetFileName(detectionModel));
+                }
+                else
+                {
+                    _logger.LogWarning("GPU language detection failed its self-check with {Model}: an English clip came back {Answer} (exit {ExitCode}). Detection runs with --no-gpu until Jellyfin restarts or the whisper-cli binary changes",
+                        Path.GetFileName(detectionModel), GpuDetectionCheck.Answer(output), exitCode);
+                }
+
+                GpuDetectionCheck.Record(key, passed, executable, detectionModel, GpuDetectionCheck.Answer(output));
+                return passed;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.LogWarning("GPU language detection self-check timed out with {Model}; detection runs with --no-gpu",
+                    Path.GetFileName(detectionModel));
+                GpuDetectionCheck.Record(key, false, executable, detectionModel, "timed out");
+                return false;
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or IOException or System.ComponentModel.Win32Exception)
+            {
+                _logger.LogWarning(ex, "GPU language detection self-check could not run with {Model}; this detection runs with --no-gpu",
+                    Path.GetFileName(detectionModel));
+                return false;
+            }
+            finally
+            {
+                try { File.Delete(clip); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            }
+        }
+
+        /// <summary>
+        /// What the binary prints for --version, stdout and stderr together, or "" when it cannot run or takes
+        /// more than 15 s. Part of the GPU verdict's key.
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Spawns whisper-cli --version")]
+        private static async Task<string> ReadVersionAsync(string executable, CancellationToken cancellationToken)
+        {
+            try
+            {
+                var startInfo = new ProcessStartInfo
+                {
+                    FileName = executable,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    WorkingDirectory = Path.GetDirectoryName(executable) ?? ""
+                };
+                startInfo.ArgumentList.Add("--version");
+                using var process = Process.Start(startInfo);
+                if (process == null) return "";
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                timeout.CancelAfter(TimeSpan.FromSeconds(15));
+                var stdout = process.StandardOutput.ReadToEndAsync(timeout.Token);
+                var stderr = process.StandardError.ReadToEndAsync(timeout.Token);
+                try
+                {
+                    await process.WaitForExitAsync(timeout.Token);
+                    return await stdout + "\n" + await stderr;
+                }
+                catch (OperationCanceledException)
+                {
+                    try { process.Kill(entireProcessTree: true); } catch { }
+                    cancellationToken.ThrowIfCancellationRequested();
+                    return "";
+                }
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or IOException or System.ComponentModel.Win32Exception)
+            {
+                return "";
+            }
+        }
+
+        /// <summary>
         /// Threads for a detection run: 4 for the small detection model, where more buy nothing; the configured
         /// thread count for the transcription model, which on 4 threads took about 21 s per chunk against
         /// about 13 s on 16. Pure.
         /// </summary>
-        internal static int DetectionThreads(string detectionModelPath, string transcriptionModelPath, int configuredThreads)
-            => configuredThreads > 0 && ReferenceEquals(GateForDetection(detectionModelPath, transcriptionModelPath), HostEngineGates.Model)
-                ? configuredThreads
+        internal static int DetectionThreads(string detectionModelPath, string transcriptionModelPath, int configuredThreads, int detectionThreads = 0)
+            => detectionThreads > 0 ? detectionThreads
+                : configuredThreads > 0 && IsTranscriptionModel(detectionModelPath, transcriptionModelPath) ? configuredThreads
                 : 4;
 
         /// <summary>
         /// The gate a detection run queues on: the small model's own, or the full-model gate when detection
-        /// runs on the transcription model. Pure.
+        /// runs on the transcription model or the settings keep small-model detection from running beside a
+        /// full model (<see cref="HostEngineGates.DetectionBesideFullModel"/>).
         /// </summary>
-        internal static SemaphoreSlim GateForDetection(string detectionModelPath, string transcriptionModelPath)
-            => string.Equals(FullPathOrSelf(detectionModelPath), FullPathOrSelf(transcriptionModelPath),
-                    OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)
+        internal static EngineGate GateForDetection(string detectionModelPath, string transcriptionModelPath)
+            => IsTranscriptionModel(detectionModelPath, transcriptionModelPath) || !HostEngineGates.DetectionBesideFullModel
                 ? HostEngineGates.Model
                 : HostEngineGates.Detection;
+
+        private static bool IsTranscriptionModel(string detectionModelPath, string transcriptionModelPath)
+            => string.Equals(FullPathOrSelf(detectionModelPath), FullPathOrSelf(transcriptionModelPath),
+                OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
 
         // Two spellings of one file ("model.bin", "./model.bin") are one model.
         private static string FullPathOrSelf(string path)
@@ -557,7 +682,7 @@ namespace WhisperSubs.Providers
 
         [ExcludeFromCodeCoverage(Justification = "Spawns whisper-cli process for language detection")]
         private async Task<(int ExitCode, string Stdout, string Stderr, bool TimedOut)> RunDetectionProcessUngatedAsync(
-            IReadOnlyList<string> audioPaths, string detectionModel, bool keepOutputOnTimeout, CancellationToken cancellationToken)
+            IReadOnlyList<string> audioPaths, string detectionModel, bool cpuOnly, bool keepOutputOnTimeout, CancellationToken cancellationToken)
         {
             var whisperExecutable = FindWhisperExecutable();
             if (whisperExecutable == null)
@@ -579,7 +704,8 @@ namespace WhisperSubs.Providers
             // The dedicated small detection model when available (chosen live by the caller, so a model that
             // finished downloading after construction is picked up mid-run); else the transcription model.
             // This keeps per-chunk detection under the timeout on slow CPUs. (#95)
-            foreach (var arg in BuildDetectionArgs(detectionModel, audioPaths, DetectionThreads(detectionModel, _modelPath, _threadCount)))
+            HostEngineGates.ApplyVulkanDevice(startInfo);
+            foreach (var arg in BuildDetectionArgs(detectionModel, audioPaths, DetectionThreads(detectionModel, _modelPath, _threadCount, _detection.Threads), cpuOnly))
             {
                 startInfo.ArgumentList.Add(arg);
             }

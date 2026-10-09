@@ -1,3 +1,4 @@
+using System;
 using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.Logging;
 using WhisperSubs.Configuration;
@@ -54,8 +55,15 @@ namespace WhisperSubs.Providers
             // detection falls back to the transcription model, preserving legacy behavior. (Issue #95.)
             // With "detect with the transcription model" on, no small model is handed over (the provider then
             // detects with the transcription model) and none is fetched.
-            var detectionModelPath = config.DetectLanguageWithTranscriptionModel ? "" : setup.DetectionModelPath;
-            if (!config.DetectLanguageWithTranscriptionModel && !System.IO.File.Exists(detectionModelPath)
+            var detectionModelPath = ResolveDetectionModel(
+                config.DetectLanguageWithTranscriptionModel, config.DetectionModelPath, setup.DetectionModelPath, System.IO.File.Exists);
+            if (!string.IsNullOrWhiteSpace(config.DetectionModelPath) && !config.DetectLanguageWithTranscriptionModel
+                && detectionModelPath == setup.DetectionModelPath)
+            {
+                loggerFactory.CreateLogger<WhisperProvider>().LogWarning(
+                    "The detection model {Path} was not found; language detection uses the small model instead", config.DetectionModelPath);
+            }
+            if (detectionModelPath == setup.DetectionModelPath && !System.IO.File.Exists(detectionModelPath)
                 && WhisperSetupService.TryAcquire("detect", "Downloading language-detection model..."))
             {
                 var logger = loggerFactory.CreateLogger<WhisperSetupService>();
@@ -77,13 +85,26 @@ namespace WhisperSubs.Providers
                 vadModelPath,
                 detectionModelPath,
                 vadTuning,
-                config.SubtitleMaxLineLength);
+                config.SubtitleMaxLineLength,
+                DetectionSettings.From(config));
 
             // The engine choice is read on every job, from the live configuration, so switching it on
             // the settings page needs no pool rebuild (the same reason the Canary install is live).
             var qwen3Logger = loggerFactory.CreateLogger<Qwen3Provider>();
             return new EngineSwitchProvider(whisper, () => CreateQwen3(Plugin.Instance?.Configuration ?? config, qwen3Logger),
                 loggerFactory.CreateLogger<EngineSwitchProvider>());
+        }
+
+        /// <summary>
+        /// The model language detection runs on: "" (the transcription model) when that is chosen; else the
+        /// custom model when one is set and exists; else the managed small model. Pure apart from
+        /// <paramref name="exists"/>.
+        /// </summary>
+        internal static string ResolveDetectionModel(bool useTranscriptionModel, string? customPath, string managedSmallModel, Func<string, bool> exists)
+        {
+            if (useTranscriptionModel) return "";
+            var custom = (customPath ?? "").Trim();
+            return custom.Length > 0 && exists(custom) ? custom : managedSmallModel;
         }
 
         /// <summary>

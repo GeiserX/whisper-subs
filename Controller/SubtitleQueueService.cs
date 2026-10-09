@@ -277,6 +277,18 @@ namespace WhisperSubs.Controller
             }
         }
 
+        // An akou row's job settings, left out at their defaults so the signature of every row saved before
+        // they existed is unchanged.
+        private static string AkouSignature(WhisperWorker w)
+        {
+            var languages = EngineOptions.Languages(w.Languages);
+            var sb = new StringBuilder();
+            if (w.Priority != EngineOptions.DefaultAkouPriority) sb.Append("|p=").Append(w.Priority);
+            if (w.WindowSeconds > 0) sb.Append("|win=").Append(w.WindowSeconds);
+            if (languages.Count > 0) sb.Append("|langs=").Append(string.Join(",", languages));
+            return sb.ToString();
+        }
+
         /// <summary>
         /// A stable signature of the CONFIGURED transcription workers (whisper-subs-9gq): the backward-compat
         /// composition decision (<see cref="WorkerPlan.Decide"/>) plus, per contributing worker, its routing
@@ -314,7 +326,8 @@ namespace WhisperSubs.Controller
                         $"w[{id}|{w.ApiUrl.Trim()}|{(w.Model ?? string.Empty).Trim()}|" +
                         $"{(w.MaxConcurrency < 1 ? 1 : w.MaxConcurrency)}|" +
                         $"{w.CostWeight.ToString(System.Globalization.CultureInfo.InvariantCulture)}|" +
-                        $"{WorkerTargets.Signature(WorkerTargets.ForRow(w))}|{WorkerDialect.Normalize(w.Dialect)}];");
+                        $"{WorkerTargets.Signature(WorkerTargets.ForRow(w))}|{WorkerDialect.Normalize(w.Dialect)}" +
+                        AkouSignature(w) + "];");
                 }
                 foreach (var seg in segments.OrderBy(s => s, System.StringComparer.Ordinal))
                     sb.Append(seg);

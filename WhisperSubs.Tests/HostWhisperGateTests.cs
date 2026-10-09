@@ -18,6 +18,14 @@ namespace WhisperSubs.Tests;
 /// one night. However many titles and rows ask, one full-model engine process runs on this server at a
 /// time, and one detection run on the small model beside it.
 /// </summary>
+/// <summary>
+/// Tests that change the process-wide engine gates or count the processes running under them. The collection
+/// runs alone: a test in another class that transcribes through a gate (Canary, Qwen3-ASR, Whisper stand-ins)
+/// would otherwise hold a slot while these count peaks.
+/// </summary>
+[CollectionDefinition(nameof(HostEngineGates), DisableParallelization = true)]
+public sealed class HostEngineGatesCollection { }
+
 [Collection(nameof(HostEngineGates))]
 public sealed class HostWhisperGateTests : IDisposable
 {
@@ -45,6 +53,7 @@ public sealed class HostWhisperGateTests : IDisposable
         // prefix, a detected language on stderr).
         var script = $$"""
             #!/bin/bash
+            [ "$1" = "--version" ] && { echo "whisper.cpp version: 1.9.5"; exit 0; }
             model=""; prefix=""
             while [ $# -gt 0 ]; do
               case "$1" in -m) model="$2";; -of) prefix="$2";; esac
@@ -53,7 +62,7 @@ public sealed class HostWhisperGateTests : IDisposable
             kind=full; case "$model" in *ggml-base.bin) kind=detect;; esac
             touch "{{_dir}}/running/$kind/$$"
             echo "full $(ls "{{_dir}}/running/full" | wc -l) detect $(ls "{{_dir}}/running/detect" | wc -l)" >> "{{_log}}"
-            sleep 0.3
+            sleep ${STANDIN_SECONDS:-0.3}
             if [ -n "$prefix" ]; then printf '1\n00:00:00,000 --> 00:00:01,000\nHello.\n' > "$prefix.srt"; fi
             echo "whisper_full_with_state: auto-detected language: es (p = 0.910)" >&2
             rm -f "{{_dir}}/running/$kind/$$"
@@ -78,8 +87,9 @@ public sealed class HostWhisperGateTests : IDisposable
 
         await Task.WhenAll(rows.SelectMany(TitleWork));
 
+        // Three runs per title, plus the one GPU self-check before the first detection with that model.
         var lines = Peaks();
-        Assert.Equal(15, lines.Count);
+        Assert.Equal(16, lines.Count);
         Assert.Equal(1, lines.Max(p => p.Full + p.Detect));
     }
 
@@ -92,10 +102,71 @@ public sealed class HostWhisperGateTests : IDisposable
 
         await Task.WhenAll(rows.SelectMany(TitleWork));
 
+        // Three runs per title, plus the one GPU self-check before the first detection with that model.
         var lines = Peaks();
-        Assert.Equal(15, lines.Count);
+        Assert.Equal(16, lines.Count);
         Assert.Equal(1, lines.Max(p => p.Full));
         Assert.Equal(1, lines.Max(p => p.Detect));
+    }
+
+    [Fact]
+    public async Task TwoFullModelEnginesAllowed_TwoRunTogether_NeverThree()
+    {
+        if (OperatingSystem.IsWindows()) return;
+
+        // Long runs, so two admitted together overlap even on a slow CI runner where a process takes a while to start.
+        HostEngineGates.Apply(new Configuration.PluginConfiguration { MaxFullModelEngines = 2 });
+        Environment.SetEnvironmentVariable("STANDIN_SECONDS", "1.5");
+        try
+        {
+            var rows = Enumerable.Range(0, 3).Select(_ => Whisper(detectionModel: "")).ToList();
+            await Task.WhenAll(rows.SelectMany(TitleWork));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("STANDIN_SECONDS", null);
+            HostEngineGates.Reset();
+        }
+
+        Assert.Equal(2, Peaks().Max(p => p.Full + p.Detect));
+    }
+
+    [Fact]
+    public async Task DetectionNotBesideFullModels_SmallModelQueuesWithThem()
+    {
+        if (OperatingSystem.IsWindows()) return;
+
+        HostEngineGates.Apply(new Configuration.PluginConfiguration { AllowDetectionBesideFullModel = false });
+        try
+        {
+            Assert.Same(HostEngineGates.Model, WhisperProvider.GateForDetection(_baseModel, _largeModel));
+            var rows = Enumerable.Range(0, 5).Select(_ => Whisper(detectionModel: _baseModel)).ToList();
+            await Task.WhenAll(rows.SelectMany(TitleWork));
+        }
+        finally
+        {
+            HostEngineGates.Reset();
+        }
+
+        Assert.Equal(1, Peaks().Max(p => p.Full + p.Detect));
+    }
+
+    [Fact]
+    public async Task LoweringTheLimit_LetsHoldersFinish_AndAdmitsNobodyUntilUnderIt()
+    {
+        var gate = new EngineGate(2);
+        await gate.WaitAsync();
+        await gate.WaitAsync();
+        gate.Limit = 1;
+        var third = gate.WaitAsync();
+        gate.Release();
+        Assert.False(third.IsCompleted);        // one still holds, and the limit is now 1
+        gate.Release();
+        await third.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(1, gate.Held);
+        gate.Limit = 3;
+        Assert.True(await gate.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.Throws<System.Threading.SemaphoreFullException>(() => { gate.Release(); gate.Release(); gate.Release(); });
     }
 
     [Fact]
@@ -195,7 +266,7 @@ public class DetectionModelChoiceTests
     [Fact]
     public void BuildDetectionArgs_CarriesTheThreadCount()
         => Assert.Equal(
-            new[] { "-m", "m.bin", "-f", "a.wav", "-l", "auto", "-t", "16", "--detect-language", "--no-gpu" },
+            new[] { "-m", "m.bin", "-f", "a.wav", "-l", "auto", "-t", "16", "--detect-language" },
             WhisperProvider.BuildDetectionArgs("m.bin", new[] { "a.wav" }, 16));
 
     [Fact]

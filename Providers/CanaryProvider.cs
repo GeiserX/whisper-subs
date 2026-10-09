@@ -119,6 +119,7 @@ namespace WhisperSubs.Providers
                 CreateNoWindow = true,
                 WorkingDirectory = Path.GetDirectoryName(_binaryPath) ?? ""
             };
+            HostEngineGates.ApplyVulkanDevice(startInfo);
             foreach (var arg in BuildArguments(_modelPath, audioPath, target, _threadCount, _vadModelPath, _vadTuning, _maxLineLength, _cacheDirectory, tempOutputPrefix))
             {
                 startInfo.ArgumentList.Add(arg);

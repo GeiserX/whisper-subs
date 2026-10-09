@@ -16,6 +16,8 @@ using Microsoft.Extensions.Logging;
 using WhisperSubs.Controller;
 using WhisperSubs.Controller.Workers;
 
+using WhisperSubs.Configuration;
+
 namespace WhisperSubs.Providers
 {
     public class RemoteWhisperProvider : ISubtitleProvider
@@ -175,8 +177,9 @@ namespace WhisperSubs.Providers
         public RemoteWhisperProvider(ILogger logger, string apiUrl, string model, string apiKey = "",
             double realtimeFactor = 6.0, int minTimeoutSeconds = 60, int maxTimeoutHours = 12,
             HttpClient? httpClient = null, long maxUploadBytes = 0, string? uploadCodec = null,
-            string? dialect = null, int wordCueMaxChars = 0, int maxConcurrentRequests = 0)
+            string? dialect = null, int wordCueMaxChars = 0, int maxConcurrentRequests = 0, AkouJobOptions? akou = null)
         {
+            _akou = akou ?? AkouJobOptions.Default;
             _dialect = WorkerDialect.Normalize(dialect);
             _requestGate = maxConcurrentRequests > 0 ? new SemaphoreSlim(maxConcurrentRequests, maxConcurrentRequests) : null;
             _wordCueMaxChars = wordCueMaxChars;
@@ -1181,7 +1184,12 @@ namespace WhisperSubs.Providers
         /// default 0, so a subtitle job only runs when nothing of theirs is waiting. A running job is never
         /// stopped for a later one, which is why long titles reach akou in windows.
         /// </summary>
-        internal const int AkouJobPriority = -5;
+        internal const int AkouJobPriority = EngineOptions.DefaultAkouPriority;
+
+        private readonly AkouJobOptions _akou;
+
+        /// <summary>Seconds of audio per akou job (the row's setting, 600 by default).</summary>
+        internal double AkouWindowSeconds => _akou.WindowSeconds;
 
         private const int MaxAkouJobBytes = 256 * 1024;
         private static readonly Regex AkouJobIdRegex = new("^[A-Za-z0-9_-]{1,128}$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
@@ -1218,14 +1226,14 @@ namespace WhisperSubs.Providers
                 try
                 {
                     _logger.LogInformation("Sending audio to akou: {Endpoint} [lang={Language}, priority={Priority}]",
-                        UpstreamErrorSanitizer.SanitizeEndpoint(jobsEndpoint), language, AkouJobPriority);
+                        UpstreamErrorSanitizer.SanitizeEndpoint(jobsEndpoint), language, _akou.Priority);
 
                     using (var content = new MultipartFormDataContent())
                     {
                         var fileContent = new StreamContent(File.OpenRead(uploadPath));
                         fileContent.Headers.ContentType = new MediaTypeHeaderValue(RemoteUploadFormat.ContentType(effectiveCodec));
                         content.Add(fileContent, "file", RemoteUploadFormat.FileName(effectiveCodec));
-                        foreach (var (name, value) in BuildAkouJobFields(_model, language))
+                        foreach (var (name, value) in BuildAkouJobFields(_model, language, _akou.Priority, _akou.Languages))
                         {
                             content.Add(new StringContent(value), name);
                         }
@@ -1325,16 +1333,23 @@ namespace WhisperSubs.Providers
 
         /// <summary>
         /// The form fields of an akou job besides the file: the model or preset, the language when it is
-        /// known, <see cref="AkouJobPriority"/> and a title that names the client in akou's job list. Pure.
+        /// known, the job priority (the row's, -5 by default), the languages an automatic language may be
+        /// (akou's <c>languages[]</c>, only when the language is not given) and a title that names the client in
+        /// akou's job list. Pure.
         /// </summary>
-        internal static IReadOnlyList<(string Name, string Value)> BuildAkouJobFields(string model, string? language)
+        internal static IReadOnlyList<(string Name, string Value)> BuildAkouJobFields(string model, string? language,
+            int priority = AkouJobPriority, IReadOnlyList<string>? languages = null)
         {
             var fields = new List<(string Name, string Value)> { ("model", model) };
             if (!string.IsNullOrWhiteSpace(language) && !string.Equals(language, "auto", StringComparison.OrdinalIgnoreCase))
             {
                 fields.Add(("language", language.Trim()));
             }
-            fields.Add(("priority", AkouJobPriority.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+            else
+            {
+                foreach (var code in languages ?? Array.Empty<string>()) fields.Add(("languages[]", code));
+            }
+            fields.Add(("priority", priority.ToString(System.Globalization.CultureInfo.InvariantCulture)));
             fields.Add(("title", "whisper-subs"));
             return fields;
         }

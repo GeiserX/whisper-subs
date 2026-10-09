@@ -127,7 +127,7 @@ Could not detect language. Ensure your whisper.cpp build supports --detect-langu
 
 The GPU initialised, printed its banner, and the process then died on an illegal instruction. The message is misleading. Nothing is wrong with `--detect-language`.
 
-Language detection runs **on the CPU on purpose**. It spawns one short process per audio chunk, and GPU initialisation costs more than the detection work itself, so the plugin disables the GPU for that pass. The result is that a GPU build still executes its AVX2 CPU code path here, even when GPU transcription would be fine.
+Language detection runs on the GPU, but a GPU build still executes AVX2 CPU code around the GPU work, and when the GPU fails the plugin's self-check (an English clip has to come back English) detection runs with `--no-gpu`, entirely on the CPU. Either path reaches an AVX2 instruction.
 
 Fix: `vulkan-noavx` or `cuda12-noavx`. You keep GPU transcription and get an AVX2-free CPU path for detection.
 
@@ -136,7 +136,7 @@ Fix: `vulkan-noavx` or `cuda12-noavx`. You keep GPU transcription and get an AVX
 This surprises people, so it is worth stating directly. Two independent reasons:
 
 1. **The GPU builds carry the same CPU baseline.** `vulkan` and `cuda12` are compiled with exactly the AVX2, FMA, F16C and BMI2 flags that `cpu` is. The GPU backend changes which kernels run the matrix maths; it does not remove the surrounding CPU code, and some of that code runs before the GPU backend is initialised at all.
-2. **Parts of the pipeline are CPU-only by design.** Language detection is the one that bites here.
+2. **Language detection can fall back to the CPU.** When the GPU fails its self-check, detection passes `--no-gpu`, and that path is AVX2 code from start to finish.
 
 Adding a faster GPU changes neither. The only fix is a binary compiled without those instructions.
 
@@ -159,7 +159,7 @@ Find the whisper exit code in the Jellyfin log and read it as a signal: 127 is a
 If you compile [whisper.cpp](https://github.com/ggml-org/whisper.cpp) for an old CPU, turning off AVX, AVX2, FMA and F16C is **not enough**. `GGML_BMI2` defaults to on, and Goldmont-class chips such as the Celeron J4125 have no BMI2 either. You get the identical exit 132, and it looks like your flags did nothing.
 
 ```bash
-git clone --depth 1 --branch v1.8.4 https://github.com/ggml-org/whisper.cpp.git
+git clone --depth 1 --branch v1.9.5 https://github.com/ggml-org/whisper.cpp.git
 cd whisper.cpp
 cmake -B build \
   -DCMAKE_BUILD_TYPE=Release \

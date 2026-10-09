@@ -482,15 +482,115 @@
                         </div>
                     </div>
 
-                    <div class="checkboxContainer checkboxContainer-withDescription">
-                        <label>
-                            <input is="emby-checkbox" type="checkbox" id="chkDetectLanguageWithTranscriptionModel" name="DetectLanguageWithTranscriptionModel" />
-                            <span>Detect languages with the transcription model</span>
-                        </label>
+                    <h3 style="margin-bottom:0.25em;">Language detection</h3>
+                    <div class="fieldDescription" style="margin-bottom:0.75em;">
+                        The forced-subtitle pass asks which language each stretch of speech is in, and keeps the stretches that are not in the title's language.
+                    </div>
+
+                    <div class="selectContainer">
+                        <label class="selectLabel" for="selDetectionModel">Detection model</label>
+                        <select is="emby-select" id="selDetectionModel" class="emby-select-withcolor emby-select">
+                            <option value="small">Small detection model (ggml-base, downloaded for you)</option>
+                            <option value="transcription">The Whisper transcription model</option>
+                            <option value="custom">A model file you choose</option>
+                        </select>
                         <div class="fieldDescription">
-                            The forced-subtitle pass asks which language each stretch of speech is in. Off, a small model answers (about a second a stretch). On, the Whisper transcription model answers: more accurate (86.6% of stretches named right against 79.6% on our test set; Spanish stretches wrongly called foreign drop from one in four to one in twelve), but about ten times slower. <strong>Off by default.</strong>
+                            The small model answers in about a second a stretch. The transcription model (for example large-v3) is more accurate, 86.6% of stretches named right against 79.6% on our test set, and calls far fewer Spanish stretches foreign (3 in 37 against 9), but takes 13 to 15 seconds a stretch. <strong>Small model by default.</strong>
                         </div>
                     </div>
+                    <div class="inputContainer" id="detectionModelPathContainer" style="display:none;">
+                        <input is="emby-input" type="text" id="txtDetectionModelPath" label="Detection model file" placeholder="/config/whisper/models/ggml-small.bin" />
+                        <div class="fieldDescription">Full path to a multilingual Whisper ggml model. If the file is missing, detection uses the small model and the log says so.</div>
+                    </div>
+
+                    <div class="selectContainer">
+                        <label class="selectLabel" for="selDetectionDevice">Detection device</label>
+                        <select is="emby-select" id="selDetectionDevice" class="emby-select-withcolor emby-select">
+                            <option value="Auto">Auto: GPU after a self-check, CPU if it fails</option>
+                            <option value="Gpu">GPU, without the self-check</option>
+                            <option value="Cpu">CPU</option>
+                        </select>
+                        <div class="fieldDescription">
+                            Auto runs a short English clip through the GPU before the first detection with each whisper-cli and model. If the answer is not English, detection runs on the CPU until Jellyfin restarts or the whisper-cli binary changes: whisper.cpp 1.8.4 on Vulkan with an Intel iGPU named every stretch Dutch. <strong>Auto by default.</strong>
+                        </div>
+                        <div id="gpuCheckStatus" class="fieldDescription" style="margin-top:0.4em;"></div>
+                        <div id="gpuWarning" class="fieldDescription" style="color:#CC7B19; display:none; margin-top:0.4em;"></div>
+                    </div>
+
+                    <h3 style="margin-bottom:0.25em;">Forced subtitles</h3>
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label>
+                            <input is="emby-checkbox" type="checkbox" id="chkTranslateForcedLinesToEnglish" />
+                            <span>Translate foreign lines into English on English titles</span>
+                        </label>
+                        <div class="fieldDescription">
+                            On an English title, the forced subtitle shows its foreign lines in English (Whisper translates them). Off, they are written in their own language. Titles in other languages always keep the original language, since Whisper only translates into English. <strong>On by default.</strong>
+                        </div>
+                    </div>
+                    <div class="selectContainer">
+                        <label class="selectLabel" for="selUncoveredForcedLines">Lines Qwen3-ASR cannot transcribe</label>
+                        <select is="emby-select" id="selUncoveredForcedLines" class="emby-select-withcolor emby-select">
+                            <option value="Whisper">Transcribe them with Whisper</option>
+                            <option value="Skip">Leave them out</option>
+                        </select>
+                        <div class="fieldDescription">
+                            On a title Qwen3-ASR transcribes (this server's Qwen3-ASR, or a Qwen3-ASR or akou worker), a foreign line in a language outside Qwen3-ASR's 30 (Catalan, Galician, Basque, Norwegian and others) goes to this server's Whisper model, which loads a full model for it. Leave them out when that costs too much, or when your detection often misnames your own language as one of those. <strong>Whisper by default.</strong>
+                        </div>
+                    </div>
+
+                    <details style="margin:1em 0;">
+                        <summary style="cursor:pointer; font-weight:600; padding:0.4em 0;">Detection and engines (advanced)</summary>
+
+                        <div class="inputContainer">
+                            <input is="emby-input" type="number" id="numDetectionThreadCount" label="Detection threads" min="0" max="256" step="1" />
+                            <div class="fieldDescription">CPU threads for a detection run. 0 = automatic: 4 for the small model, the Whisper thread count above for the transcription model. <strong>0 by default.</strong></div>
+                        </div>
+                        <div class="inputContainer">
+                            <input is="emby-input" type="number" id="numForcedLanguageMinProbability" label="Foreign-language confidence (0 to 1)" min="0" max="1" step="0.05" />
+                            <div class="fieldDescription">How sure detection must be before a stretch counts as foreign. Higher leaves out more uncertain stretches, and some real foreign lines with them; lower catches more and lets more wrong ones in. <strong>0.3 by default.</strong></div>
+                        </div>
+                        <div class="inputContainer">
+                            <input is="emby-input" type="number" id="numDetectionBatchSize" label="Stretches per detection run" min="1" max="64" step="1" />
+                            <div class="fieldDescription">How many stretches one whisper-cli run detects. Each run loads the model once, so bigger batches save loading time; a run that fails falls back to one stretch at a time. 1 to 64, <strong>32 by default.</strong></div>
+                        </div>
+                        <div class="inputContainer">
+                            <input is="emby-input" type="number" id="numDetectionTimeoutSeconds" label="Detection timeout per stretch (seconds)" min="30" max="3600" step="1" />
+                            <div class="fieldDescription">A detection run is stopped when one stretch takes longer than this. Raise it on a slow CPU with the transcription model. 30 to 3600, <strong>300 by default.</strong></div>
+                        </div>
+                        <div class="inputContainer">
+                            <input is="emby-input" type="text" id="txtVulkanDevice" label="Vulkan device for whisper.cpp and crispasr" placeholder="automatic" />
+                            <div class="fieldDescription">A Vulkan device index (0 is the first), or several separated by commas, passed to the engines as GGML_VK_VISIBLE_DEVICES. Empty lets the engine pick its first GPU. This cannot make an SR-IOV virtual function safe: pass only the physical function into the container. <strong>Empty by default.</strong></div>
+                        </div>
+                        <div class="inputContainer">
+                            <input is="emby-input" type="number" id="numMaxFullModelEngines" label="Full-model engines at once" min="1" max="8" step="1" />
+                            <div class="fieldDescription">How many processes with a full model (Whisper transcription or translation, Qwen3-ASR, Canary, detection on the transcription model) may run on this server together, whatever the worker pool asks. Measured on an Intel UHD 770 with Vulkan: Whisper large-v3 about 6.2 GB, crispasr with Qwen3-ASR and its aligner about 5.6 GB. Size it against your container's memory limit: two large-v3 runs need about 12.5 GB on top of Jellyfin itself. 1 to 8, <strong>1 by default.</strong></div>
+                        </div>
+                        <div class="checkboxContainer checkboxContainer-withDescription">
+                            <label>
+                                <input is="emby-checkbox" type="checkbox" id="chkAllowDetectionBesideFullModel" />
+                                <span>Let small-model detection run beside a full model</span>
+                            </label>
+                            <div class="fieldDescription">A detection run on the small model takes about 0.6 GB, so by default one runs beside the full-model engines. Off, it waits its turn with them. <strong>On by default.</strong></div>
+                        </div>
+                        <div class="inputContainer">
+                            <input is="emby-input" type="number" id="numLocalQwen3WindowSeconds" label="Qwen3-ASR window on this server (seconds)" min="60" max="7200" step="60" />
+                            <div class="fieldDescription">crispasr writes its subtitle only when it finishes, so this server's Qwen3-ASR goes through a title in windows of this length; playback then costs at most one window. 60 to 7200, <strong>600 by default.</strong></div>
+                        </div>
+                        <div class="checkboxContainer checkboxContainer-withDescription">
+                            <label>
+                                <input is="emby-checkbox" type="checkbox" id="chkCleanTempLeftoversAtStart" />
+                                <span>Remove leftover temp files when the task starts</span>
+                            </label>
+                            <div class="fieldDescription">A job killed by a Jellyfin restart leaves its extracted audio in the temp folder (one night of restarts once left 36 GB). The task removes this plugin's temp files that are older than the Jellyfin process. <strong>On by default.</strong></div>
+                        </div>
+                        <div class="checkboxContainer checkboxContainer-withDescription">
+                            <label>
+                                <input is="emby-checkbox" type="checkbox" id="chkSuspendRemoteJobsDuringPlayback" />
+                                <span>Pause a remote worker's jobs on this server during playback</span>
+                            </label>
+                            <div class="fieldDescription">With "Pause generation during playback" on, the audio extraction and language detection this server runs for a remote worker's job are paused while someone watches, like a local job's. The remote transcription itself keeps running. Off, those jobs run through playback. Linux only. <strong>On by default.</strong></div>
+                        </div>
+                    </details>
 
                     <h3 style="margin-bottom:0.25em;">Subtitle generation</h3>
                     <div class="fieldDescription" style="margin-bottom:0.5em;">
@@ -2675,7 +2775,24 @@
                             page.querySelector('#chkPauseOnPlayback').checked = config.PauseOnPlayback || false;
                             page.querySelector('#chkSkipIfSubtitleExists').checked = config.SkipIfSubtitleExists !== false;
                             page.querySelector('#chkIgnoreForcedSubtitles').checked = config.IgnoreForcedSubtitles !== false;
-                            page.querySelector('#chkDetectLanguageWithTranscriptionModel').checked = config.DetectLanguageWithTranscriptionModel === true;
+                            page.querySelector('#selDetectionModel').value = config.DetectLanguageWithTranscriptionModel === true
+                                ? 'transcription' : ((config.DetectionModelPath || '').trim() ? 'custom' : 'small');
+                            page.querySelector('#txtDetectionModelPath').value = config.DetectionModelPath || '';
+                            WhisperSubsConfig.toggleDetectionModelPath(page);
+                            page.querySelector('#selDetectionDevice').value = WhisperSubsConfig.enumName(config.DetectionDevice, ['Auto', 'Gpu', 'Cpu'], 'Auto');
+                            page.querySelector('#chkTranslateForcedLinesToEnglish').checked = config.TranslateForcedLinesToEnglish !== false;
+                            page.querySelector('#selUncoveredForcedLines').value = WhisperSubsConfig.enumName(config.UncoveredForcedLines, ['Whisper', 'Skip'], 'Whisper');
+                            page.querySelector('#numDetectionThreadCount').value = config.DetectionThreadCount > 0 ? config.DetectionThreadCount : 0;
+                            page.querySelector('#numForcedLanguageMinProbability').value = (config.ForcedLanguageMinProbability >= 0 && config.ForcedLanguageMinProbability <= 1) ? config.ForcedLanguageMinProbability : 0.3;
+                            page.querySelector('#numDetectionBatchSize').value = config.DetectionBatchSize > 0 ? config.DetectionBatchSize : 32;
+                            page.querySelector('#numDetectionTimeoutSeconds').value = config.DetectionTimeoutSeconds > 0 ? config.DetectionTimeoutSeconds : 300;
+                            page.querySelector('#txtVulkanDevice').value = config.VulkanDevice || '';
+                            page.querySelector('#numMaxFullModelEngines').value = config.MaxFullModelEngines > 0 ? config.MaxFullModelEngines : 1;
+                            page.querySelector('#chkAllowDetectionBesideFullModel').checked = config.AllowDetectionBesideFullModel !== false;
+                            page.querySelector('#numLocalQwen3WindowSeconds').value = config.LocalQwen3WindowSeconds > 0 ? config.LocalQwen3WindowSeconds : 600;
+                            page.querySelector('#chkCleanTempLeftoversAtStart').checked = config.CleanTempLeftoversAtStart !== false;
+                            page.querySelector('#chkSuspendRemoteJobsDuringPlayback').checked = config.SuspendRemoteJobsDuringPlayback !== false;
+                            WhisperSubsConfig.loadEnginesStatus(page);
                             page.querySelector('#chkGenerateOriginalLanguageSubtitles').checked = config.GenerateOriginalLanguageSubtitles !== false;
                             page.querySelector('#chkCountImageSubtitlesAsPresent').checked = config.CountImageSubtitlesAsPresent === true;
                             page.querySelector('#chkCacheSkippedItems').checked = config.CacheSkippedItems !== false;
@@ -2753,7 +2870,11 @@
                         config.PauseOnPlayback = page.querySelector('#chkPauseOnPlayback').checked;
                         config.SkipIfSubtitleExists = page.querySelector('#chkSkipIfSubtitleExists').checked;
                         config.IgnoreForcedSubtitles = page.querySelector('#chkIgnoreForcedSubtitles').checked;
-                        config.DetectLanguageWithTranscriptionModel = page.querySelector('#chkDetectLanguageWithTranscriptionModel').checked;
+                        var engineError = WhisperSubsConfig.readEngineSettings(page, config);
+                        if (engineError) {
+                            Dashboard.alert(engineError);
+                            return;
+                        }
                         config.GenerateOriginalLanguageSubtitles = page.querySelector('#chkGenerateOriginalLanguageSubtitles').checked;
                         config.CountImageSubtitlesAsPresent = page.querySelector('#chkCountImageSubtitlesAsPresent').checked;
                         config.CacheSkippedItems = page.querySelector('#chkCacheSkippedItems').checked;
@@ -2849,6 +2970,90 @@
                                 }).catch(function () {});
                             }
                         });
+                    });
+                },
+
+                // An enum setting by name; tolerates the numeric form and falls back for anything else.
+                enumName: function (value, names, fallback) {
+                    if (typeof value === 'number' && value >= 0 && value < names.length) return names[value];
+                    if (typeof value === 'string' && names.indexOf(value) !== -1) return value;
+                    return fallback;
+                },
+
+                toggleDetectionModelPath: function (page) {
+                    var custom = page.querySelector('#selDetectionModel').value === 'custom';
+                    page.querySelector('#detectionModelPathContainer').style.display = custom ? '' : 'none';
+                },
+
+                // Reads the detection and engine settings into config, or returns what is wrong with them.
+                // Mirrors the server's EngineOptions ranges; the server clamps anyway.
+                readEngineSettings: function (page, config) {
+                    var model = page.querySelector('#selDetectionModel').value;
+                    var customPath = (page.querySelector('#txtDetectionModelPath').value || '').trim();
+                    if (model === 'custom' && !customPath) return 'Detection model: enter the path of the model file, or choose another option.';
+                    config.DetectLanguageWithTranscriptionModel = model === 'transcription';
+                    config.DetectionModelPath = model === 'custom' ? customPath : '';
+                    config.DetectionDevice = page.querySelector('#selDetectionDevice').value || 'Auto';
+                    config.TranslateForcedLinesToEnglish = page.querySelector('#chkTranslateForcedLinesToEnglish').checked;
+                    config.UncoveredForcedLines = page.querySelector('#selUncoveredForcedLines').value || 'Whisper';
+                    var intIn = function (sel, def, min, max, label) {
+                        var raw = (page.querySelector(sel).value || '').trim();
+                        if (raw === '') return { value: def };
+                        var n = Number(raw);
+                        if (!Number.isInteger(n) || n < min || n > max) return { error: label + ' must be a whole number from ' + min + ' to ' + max + '.' };
+                        return { value: n };
+                    };
+                    var checks = [
+                        ['DetectionThreadCount', intIn('#numDetectionThreadCount', 0, 0, 256, 'Detection threads')],
+                        ['DetectionBatchSize', intIn('#numDetectionBatchSize', 32, 1, 64, 'Stretches per detection run')],
+                        ['DetectionTimeoutSeconds', intIn('#numDetectionTimeoutSeconds', 300, 30, 3600, 'Detection timeout')],
+                        ['MaxFullModelEngines', intIn('#numMaxFullModelEngines', 1, 1, 8, 'Full-model engines at once')],
+                        ['LocalQwen3WindowSeconds', intIn('#numLocalQwen3WindowSeconds', 600, 60, 7200, 'Qwen3-ASR window')]
+                    ];
+                    for (var i = 0; i < checks.length; i++) {
+                        if (checks[i][1].error) return checks[i][1].error;
+                        config[checks[i][0]] = checks[i][1].value;
+                    }
+                    var pRaw = (page.querySelector('#numForcedLanguageMinProbability').value || '').trim();
+                    var p = pRaw === '' ? 0.3 : Number(pRaw);
+                    if (isNaN(p) || p < 0 || p > 1) return 'Foreign-language confidence must be a number from 0 to 1.';
+                    config.ForcedLanguageMinProbability = p;
+                    var vulkan = (page.querySelector('#txtVulkanDevice').value || '').replace(/\s+/g, '');
+                    if (vulkan && !/^\d{1,2}(,\d{1,2})*$/.test(vulkan)) return 'Vulkan device must be a device index such as 0, or several such as 0,1. Leave it empty for automatic.';
+                    config.VulkanDevice = vulkan;
+                    config.AllowDetectionBesideFullModel = page.querySelector('#chkAllowDetectionBesideFullModel').checked;
+                    config.CleanTempLeftoversAtStart = page.querySelector('#chkCleanTempLeftoversAtStart').checked;
+                    config.SuspendRemoteJobsDuringPlayback = page.querySelector('#chkSuspendRemoteJobsDuringPlayback').checked;
+                    return null;
+                },
+
+                // Shows the GPU self-check results and warns about SR-IOV virtual functions or several GPUs.
+                // Every server string goes in through textContent.
+                loadEnginesStatus: function (page) {
+                    var statusEl = page.querySelector('#gpuCheckStatus');
+                    var warningEl = page.querySelector('#gpuWarning');
+                    if (!statusEl || !warningEl) return;
+                    WhisperSubsConfig.ajaxGet(ApiClient.getUrl('Plugins/WhisperSubs/Engines/Status')).then(function (status) {
+                        var checks = (status && status.GpuChecks) || [];
+                        if (!checks.length) {
+                            statusEl.textContent = 'Self-check: not run yet in this Jellyfin session. It runs before the first detection.';
+                        } else {
+                            statusEl.textContent = checks.map(function (c) {
+                                var model = (c.Model || '').split('/').pop();
+                                var when = c.CheckedAtUtc ? new Date(c.CheckedAtUtc).toLocaleString() : '';
+                                return 'Self-check ' + (c.Passed ? 'passed' : 'failed') + ' with ' + model + ': the English clip came back ' + c.Answer + (c.Passed ? ', detection runs on the GPU' : ', detection runs on the CPU') + (when ? ' (' + when + ')' : '') + '.';
+                            }).join('\n');
+                            statusEl.style.whiteSpace = 'pre-line';
+                        }
+                        if (status && status.GpuWarning) {
+                            warningEl.textContent = status.GpuWarning;
+                            warningEl.style.display = '';
+                        } else {
+                            warningEl.textContent = '';
+                            warningEl.style.display = 'none';
+                        }
+                    }).catch(function () {
+                        statusEl.textContent = '';
                     });
                 },
 
@@ -3092,6 +3297,29 @@
                         [['openai', 'OpenAI-compatible'], ['crispasr', 'CrispASR server (Canary)'], ['crispasr-qwen3', 'CrispASR server (Qwen3-ASR, transcribe only)'], ['akou', 'akou server (low-priority jobs, transcribe only)']],
                         WhisperSubsConfig.normalizeDialect(w.Dialect),
                         'OpenAI-compatible covers whisper-server, OpenAI and Groq. CrispASR server (Canary) is crispasr --server with the Canary model, for the extra translation targets. CrispASR server (Qwen3-ASR) is crispasr --server with a Qwen3-ASR model: it only transcribes, cues are cut from its word timestamps, and this server\'s Whisper detects languages for it.'));
+                    // akou rows only: job priority, seconds of audio per job, and the languages[] bound.
+                    var akouFields = document.createElement('div');
+                    akouFields.className = 'wkAkouFields';
+                    akouFields.appendChild(WhisperSubsConfig._workerField(
+                        'akou job priority', 'number', 'wkPriority', { min: '-10', max: '10', step: '1', placeholder: '-5' },
+                        (w.Priority != null && w.Priority !== -5) ? w.Priority : '',
+                        'Higher runs first on the akou server; its own clients use 0. -10 to 10, -5 by default, so subtitle jobs only run when nothing else waits.'));
+                    akouFields.appendChild(WhisperSubsConfig._workerField(
+                        'Seconds of audio per akou job', 'number', 'wkWindowSeconds', { min: '60', max: '7200', step: '60', placeholder: '600' },
+                        (w.WindowSeconds != null && w.WindowSeconds > 0) ? w.WindowSeconds : '',
+                        'akou never stops a running job for a later one, so a title goes in windows of this length and the server is free for its other clients in between. 60 to 7200, 600 by default.'));
+                    akouFields.appendChild(WhisperSubsConfig._workerField(
+                        'Languages akou may detect', 'text', 'wkLanguages', { placeholder: 'server default', maxlength: '512', spellcheck: 'false' },
+                        (w.Languages || []).join(', '),
+                        'Comma-separated ISO codes (for example es, en, fr) that bound the language akou picks when the job does not name one (akou languages[]). Blank leaves it to the server\'s own list.'));
+                    row.appendChild(akouFields);
+                    var dialectSelect = row.querySelector('.wkDialect');
+                    var toggleAkouFields = function () {
+                        akouFields.style.display = WhisperSubsConfig.normalizeDialect(dialectSelect.value) === 'akou' ? '' : 'none';
+                    };
+                    dialectSelect.addEventListener('change', toggleAkouFields);
+                    toggleAkouFields();
+
                     // Rows saved before this field existed carry only CanTranslate: migrate it to "en" or nothing.
                     var targetsValue = (w.TranslateTargets && w.TranslateTargets.length)
                         ? w.TranslateTargets.join(', ')
@@ -3264,6 +3492,16 @@
                         if ((w.Dialect === 'crispasr-qwen3' || w.Dialect === 'akou') && w.TranslateTargets.length) {
                             return label + ': a Qwen3-ASR or akou server cannot translate. Leave its translation targets blank.';
                         }
+                        if (w.Priority < -10 || w.Priority > 10) {
+                            return label + ': the akou job priority must be from -10 to 10.';
+                        }
+                        if (w.WindowSeconds !== 0 && (w.WindowSeconds < 60 || w.WindowSeconds > 7200)) {
+                            return label + ': seconds of audio per akou job must be from 60 to 7200, or blank for 600.';
+                        }
+                        var badLanguages = (w.Languages || []).filter(function (c) { return !/^[a-z]{2,3}$/.test(c); });
+                        if (badLanguages.length) {
+                            return label + ': ' + badLanguages.join(', ') + ' is not an ISO language code such as es or en.';
+                        }
                         if (w.Dialect !== 'crispasr' && w.TranslateTargets.some(function (c) { return c !== 'en'; })) {
                             return label + ': only a CrispASR server can translate into languages other than en. Set the dialect to CrispASR server or keep only en.';
                         }
@@ -3288,6 +3526,9 @@
                         var dialect = WhisperSubsConfig.normalizeDialect(row.querySelector('.wkDialect').value);
                         var targets = WhisperSubsConfig.parseWorkerTargets(row.querySelector('.wkTargets').value);
                         var enabled = row.querySelector('.wkEnabled').checked;
+                        var priorityRaw = (row.querySelector('.wkPriority').value || '').trim();
+                        var windowRaw = (row.querySelector('.wkWindowSeconds').value || '').trim();
+                        var languages = WhisperSubsConfig.parseWorkerTargets(row.querySelector('.wkLanguages').value);
 
                         // Skip a row the user never filled in (all text/number fields blank).
                         if (!name && !url && !key && !model && concRaw === '' && costRaw === '' && maxUploadRaw === '') {
@@ -3304,7 +3545,15 @@
                             ? 0
                             : Math.round(maxUploadMb * 1000000);
 
+                        var priority = parseInt(priorityRaw, 10);
+                        if (priorityRaw === '' || isNaN(priority)) priority = -5;
+                        var windowSeconds = parseInt(windowRaw, 10);
+                        if (windowRaw === '' || isNaN(windowSeconds)) windowSeconds = 0;
+
                         workers.push({
+                            Priority: priority,
+                            WindowSeconds: windowSeconds,
+                            Languages: languages,
                             Id: row.getAttribute('data-worker-id') || WhisperSubsConfig.genWorkerId(),
                             Name: name,
                             Enabled: enabled,
@@ -3786,6 +4035,9 @@
             }
 
             document.querySelector('#selectSubtitleMode').addEventListener('change', updateTranslationVisibility);
+            document.querySelector('#selDetectionModel').addEventListener('change', function () {
+                WhisperSubsConfig.toggleDetectionModelPath(document.querySelector('[data-role="page"]') || document);
+            });
 
             document.querySelector('[data-role="page"]').addEventListener('pageshow', function () {
                 WhisperSubsConfig._roformerPageActive = true;

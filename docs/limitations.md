@@ -110,6 +110,10 @@ A dedicated ~148 MB base model is downloaded for the detection pass specifically
 
 If you do not need foreign-dialogue-only tracks, use **Full** mode.
 
+## Language detection falls back to the CPU on a GPU that gets it wrong
+
+Language detection runs on the GPU. Before the first detection with a given `whisper-cli` and model, the plugin runs a short English clip through it, and the answer has to be English with real confidence. whisper.cpp v1.8.4 on Vulkan with an Intel UHD 770 failed that: it named every stretch Dutch at p = 0.010. When the check fails, the Jellyfin log says so once at Warning, and detection runs with `--no-gpu` until Jellyfin restarts or the `whisper-cli` binary changes, including an engine swapped behind a wrapper script. The bundled builds use whisper.cpp v1.9.5, which passes on that GPU. A binary you supply yourself goes through the same check.
+
 ## One worker still means one item at a time
 
 Transcription concurrency is capped by the pool's total concurrency, which is the sum of every worker's max concurrency. A default install has one local worker at max concurrency 1, so everything runs one item at a time: the scheduled task's queued requests, its library sweep, and manual **Generate** and **Generate All** alike.

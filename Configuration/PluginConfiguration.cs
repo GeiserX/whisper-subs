@@ -298,6 +298,86 @@ namespace WhisperSubs.Configuration
         /// </summary>
         public bool DetectLanguageWithTranscriptionModel { get; set; } = false;
 
+        /// <summary>
+        /// A Whisper model file for language detection instead of the managed small model, for example a
+        /// multilingual ggml-small.bin. Empty (default) uses the managed ggml-base.bin. Ignored while
+        /// <see cref="DetectLanguageWithTranscriptionModel"/> is on. A path that does not exist falls back to
+        /// the managed small model, with a warning in the log.
+        /// </summary>
+        public string DetectionModelPath { get; set; } = "";
+
+        /// <summary>
+        /// Where language detection runs: Auto (default) runs it on the GPU after a self-check on a short
+        /// English clip, and on the CPU when the check fails; Gpu skips the check; Cpu always passes --no-gpu.
+        /// </summary>
+        [JsonConverter(typeof(JsonStringEnumConverter))]
+        public DetectionDevice DetectionDevice { get; set; } = DetectionDevice.Auto;
+
+        /// <summary>
+        /// CPU threads for a detection run. 0 (default) = automatic: 4 for the small model, the Whisper
+        /// thread count for the transcription model.
+        /// </summary>
+        public int DetectionThreadCount { get; set; } = 0;
+
+        /// <summary>
+        /// How sure detection must be before a forced-subtitle stretch counts as foreign, 0 to 1. Default 0.3.
+        /// Higher leaves out more uncertain stretches; lower catches more and lets more wrong ones in.
+        /// </summary>
+        public float ForcedLanguageMinProbability { get; set; } = 0.3f;
+
+        /// <summary>Stretches sent to one whisper-cli detection run, 1 to 64. Default 32.</summary>
+        public int DetectionBatchSize { get; set; } = 32;
+
+        /// <summary>The longest one stretch may take in a detection run before the run is stopped, in seconds, 30 to 3600. Default 300.</summary>
+        public int DetectionTimeoutSeconds { get; set; } = 300;
+
+        /// <summary>
+        /// Which Vulkan device whisper.cpp and crispasr use on this server, as a device index ("0", or "0,1"),
+        /// passed as GGML_VK_VISIBLE_DEVICES. Empty (default) lets the engine choose (its first GPU).
+        /// </summary>
+        public string VulkanDevice { get; set; } = "";
+
+        /// <summary>
+        /// Engine processes with a full model (Whisper transcription or translation, Qwen3-ASR, Canary,
+        /// detection on the transcription model) allowed at once on this server, 1 to 8. Default 1. Each
+        /// takes several GB: large-v3 on Vulkan about 6.2 GB, crispasr Qwen3-ASR with its aligner about 5.6 GB.
+        /// </summary>
+        public int MaxFullModelEngines { get; set; } = 1;
+
+        /// <summary>
+        /// Lets a detection run on the small model (about 0.6 GB) run beside the full-model engines. Default
+        /// true. Off, it queues with them.
+        /// </summary>
+        public bool AllowDetectionBesideFullModel { get; set; } = true;
+
+        /// <summary>
+        /// What a forced line in a language Qwen3-ASR cannot transcribe gets on a Qwen3-ASR title: Whisper
+        /// (default) transcribes it with this server's Whisper model; Skip leaves it out.
+        /// </summary>
+        [JsonConverter(typeof(JsonStringEnumConverter))]
+        public UncoveredForcedLineAction UncoveredForcedLines { get; set; } = UncoveredForcedLineAction.Whisper;
+
+        /// <summary>
+        /// On a title whose primary language is English, translate its foreign lines into English for the
+        /// forced subtitle. Default true. Off, they are written in their own language.
+        /// </summary>
+        public bool TranslateForcedLinesToEnglish { get; set; } = true;
+
+        /// <summary>Seconds of audio per pass when this server's Qwen3-ASR transcribes, 60 to 7200. Default 600.</summary>
+        public int LocalQwen3WindowSeconds { get; set; } = 600;
+
+        /// <summary>
+        /// Remove this plugin's temp files left by jobs a Jellyfin restart killed, when the task starts.
+        /// Default true.
+        /// </summary>
+        public bool CleanTempLeftoversAtStart { get; set; } = true;
+
+        /// <summary>
+        /// With <see cref="PauseOnPlayback"/> on, also suspend what a remote worker's job runs on this server
+        /// (audio extraction, language detection) during playback. Default true. Off, remote jobs run through.
+        /// </summary>
+        public bool SuspendRemoteJobsDuringPlayback { get; set; } = true;
+
         public List<string> EnabledLibraries { get; set; } = new List<string>();
 
         // ── Subtitle request queue & named-tier priority (issue #112) ──────────────

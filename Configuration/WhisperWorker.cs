@@ -75,5 +75,17 @@ namespace WhisperSubs.Configuration
         /// </para>
         /// </summary>
         public string UploadCodec { get; set; } = "wav";
+
+        /// <summary>akou rows: the job priority, -10 to 10. Default -5, below akou's other clients (0).</summary>
+        public int Priority { get; set; } = -5;
+
+        /// <summary>akou rows: seconds of audio per job, 60 to 7200. 0 (default) = 600.</summary>
+        public int WindowSeconds { get; set; } = 0;
+
+        /// <summary>
+        /// akou rows: the languages a job's automatic language may be (akou's <c>languages[]</c>), ISO codes
+        /// such as es and en. Empty (default) leaves it to the server's own list.
+        /// </summary>
+        public System.Collections.Generic.List<string> Languages { get; set; } = new();
     }
 }

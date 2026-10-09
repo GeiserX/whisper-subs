@@ -51,7 +51,11 @@ namespace WhisperSubs.Controller.Workers
                             maxUploadBytes: w.MaxUploadBytes,
                             uploadCodec: w.UploadCodec,
                             config: config,
-                            loggerFactory: loggerFactory));
+                            loggerFactory: loggerFactory,
+                            akou: new AkouJobOptions(
+                                EngineOptions.AkouPriority(w.Priority),
+                                EngineOptions.WindowSeconds(w.WindowSeconds),
+                                EngineOptions.Languages(w.Languages))));
                     }
                     break;
 
@@ -92,7 +96,7 @@ namespace WhisperSubs.Controller.Workers
             string id, string name, string url, string key, string model,
             int maxConcurrency, double costWeight, IReadOnlySet<string> translateTargets, string? dialect,
             long maxUploadBytes, string? uploadCodec,
-            PluginConfiguration config, ILoggerFactory loggerFactory)
+            PluginConfiguration config, ILoggerFactory loggerFactory, AkouJobOptions? akou = null)
         {
             var normalizedDialect = WorkerDialect.Normalize(dialect);
             var resolvedModel = string.IsNullOrWhiteSpace(model)
@@ -107,7 +111,8 @@ namespace WhisperSubs.Controller.Workers
                 httpClient: null, maxUploadBytes: maxUploadBytes, uploadCodec: uploadCodec,
                 dialect: normalizedDialect,
                 wordCueMaxChars: qwen3Server ? WordCueMaxChars(config.SubtitleMaxLineLength) : 0,
-                maxConcurrentRequests: requests);
+                maxConcurrentRequests: requests,
+                akou: akou);
             if (WorkerDialect.IsHostAssisted(normalizedDialect))
             {
                 // The server neither detects languages nor translates; this server's Whisper does both for the row.
