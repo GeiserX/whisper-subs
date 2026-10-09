@@ -142,6 +142,7 @@ public sealed class HostWhisperGateTests : IDisposable
     [Theory]
     [InlineData("/m/ggml-large-v3.bin", "Model")]
     [InlineData("/m/ggml-base.bin", "Detection")]
+    [InlineData("/m/./ggml-large-v3.bin", "Model")]       // another spelling of the transcription model
     public void DetectionQueuesByTheModelItRuns(string detectionModel, string gate)
         => Assert.Same(
             gate == "Model" ? HostEngineGates.Model : HostEngineGates.Detection,

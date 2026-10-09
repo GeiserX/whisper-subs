@@ -533,9 +533,17 @@ namespace WhisperSubs.Providers
         /// runs on the transcription model. Pure.
         /// </summary>
         internal static SemaphoreSlim GateForDetection(string detectionModelPath, string transcriptionModelPath)
-            => string.Equals(detectionModelPath, transcriptionModelPath, StringComparison.Ordinal)
+            => string.Equals(FullPathOrSelf(detectionModelPath), FullPathOrSelf(transcriptionModelPath),
+                    OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)
                 ? HostEngineGates.Model
                 : HostEngineGates.Detection;
+
+        // Two spellings of one file ("model.bin", "./model.bin") are one model.
+        private static string FullPathOrSelf(string path)
+        {
+            try { return string.IsNullOrEmpty(path) ? path : Path.GetFullPath(path); }
+            catch (Exception) { return path; }
+        }
 
         [ExcludeFromCodeCoverage(Justification = "Spawns whisper-cli process for language detection")]
         private async Task<(int ExitCode, string Stdout, string Stderr, bool TimedOut)> RunDetectionProcessUngatedAsync(
