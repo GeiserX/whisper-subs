@@ -1859,9 +1859,17 @@ namespace WhisperSubs.Controller
                 }
 
                 var failedSegments = 0;
+                var qwenTranscribes = QwenTranscribes(provider);
                 foreach (var segment in mergedSegments)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
+                    if (SkipsUncoveredForcedLine(qwenTranscribes, translateForced, segment.Language))
+                    {
+                        _logger.LogInformation(
+                            "Leaving out foreign segment {Start:F1}s-{End:F1}s of {ItemName} [{Language}]: Qwen3-ASR does not cover that language, and it is not sent to Whisper instead",
+                            segment.Start, segment.End, item.Name, segment.Language);
+                        continue;
+                    }
                     var segDuration = segment.End - segment.Start;
                     var segmentPath = Path.Combine(tempDir, $"foreign_{segment.Start:F0}_{segment.End:F0}.wav");
 
@@ -1965,6 +1973,28 @@ namespace WhisperSubs.Controller
                 _logger.LogWarning(ex, "Could not queue a metadata refresh for {ItemName}; Jellyfin shows the new subtitle after its next library scan", item.Name);
             }
         }
+
+        /// <summary>
+        /// True when Qwen3-ASR transcribes this title: the local engine with Qwen3-ASR selected, or a
+        /// Qwen3-ASR or akou server row.
+        /// </summary>
+        internal static bool QwenTranscribes(ISubtitleProvider? provider)
+            => provider is HostAssistedProvider
+                || provider is EngineSwitchProvider { Current: Qwen3Provider };
+
+        /// <summary>
+        /// A foreign line of a forced subtitle that a Qwen3-ASR title leaves out: one in a language the
+        /// model does not cover. Such a line used to go to this server's Whisper large-v3. On a library of
+        /// Spanish titles every one of them in three days of logs (263 runs: Galician 146, Catalan 70,
+        /// Norwegian 31, Latin 7, others 9) was Spanish dialogue the small detection model had misread,
+        /// so the run cost a full model's memory for a wrong line. A translation into English (the foreign
+        /// lines of an English title) still goes to Whisper: Qwen3-ASR has no translate task. Pure.
+        /// </summary>
+        internal static bool SkipsUncoveredForcedLine(bool qwenTranscribes, bool translate, string? language)
+            => qwenTranscribes
+                && !translate
+                && Qwen3Provider.NormalizeLanguage(language) is { } code
+                && !Qwen3Catalog.Supports(code);
 
         /// <summary>How a forced pass that transcribed its foreign segments ends.</summary>
         internal enum ForcedPassEnd { Subtitle, NoForeignSpeech, Failed }
