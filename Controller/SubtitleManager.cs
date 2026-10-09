@@ -1970,10 +1970,16 @@ namespace WhisperSubs.Controller
                 EngineSwitchProvider switchProv => await switchProv.TranscribeAsync(segmentPath, language, cancellationToken, translateForced, applyVad: false),
                 // A Qwen3-ASR server row: the host's Whisper translates the foreign lines of an English
                 // title, and like every local run it must not re-run VAD on the chunk.
-                HostAssistedProvider assisted when translateForced => await assisted.Whisper.TranscribeAsync(segmentPath, language, cancellationToken, translateForced, applyVad: false),
+                // So does a line in a language the server's model does not cover.
+                HostAssistedProvider assisted when translateForced || !QwenCovers(language)
+                    => await assisted.Whisper.TranscribeAsync(segmentPath, language, cancellationToken, translateForced, applyVad: false),
                 _ => await provider.TranscribeAsync(segmentPath, language, cancellationToken, translate: translateForced),
             };
         }
+
+        /// <summary>True unless <paramref name="language"/> names a language Qwen3-ASR does not cover. Pure.</summary>
+        internal static bool QwenCovers(string? language)
+            => Qwen3Provider.NormalizeLanguage(language) is not { } code || Qwen3Catalog.Supports(code);
 
         /// <summary>How a forced pass that transcribed its foreign segments ends.</summary>
         internal enum ForcedPassEnd { Subtitle, NoForeignSpeech, Failed }

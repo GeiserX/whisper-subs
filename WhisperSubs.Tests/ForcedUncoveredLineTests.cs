@@ -50,7 +50,8 @@ public sealed class ForcedUncoveredLineTests : IDisposable
         try { Directory.Delete(_dir, recursive: true); } catch { /* best effort */ }
     }
 
-    private WhisperProvider Whisper() => new(NullLogger<WhisperProvider>.Instance, _model, _whisper);
+    // With a VAD model present, so a run that re-applies VAD to the already-trimmed line would show --vad.
+    private WhisperProvider Whisper() => new(NullLogger<WhisperProvider>.Instance, _model, _whisper, vadModelPath: _model);
 
     private ISubtitleProvider LocalQwen3Title()
     {
@@ -75,6 +76,7 @@ public sealed class ForcedUncoveredLineTests : IDisposable
         var call = File.ReadAllLines(_calls).Single();
         Assert.Contains($"-m {_model}", call);
         Assert.Contains("-l gl", call);
+        Assert.DoesNotContain("--vad", call);
     }
 
     [Fact]
@@ -98,4 +100,16 @@ public sealed class ForcedUncoveredLineTests : IDisposable
         Assert.Contains("Bos días.", await line);
         Assert.Contains("-l ca", File.ReadAllLines(_calls).Single());
     }
+}
+
+public class QwenCoversTests
+{
+    [Theory]
+    [InlineData("es", true)]
+    [InlineData("gl", false)]
+    [InlineData("ca", false)]
+    [InlineData("auto", true)]
+    [InlineData(null, true)]
+    public void QwenCovers(string? language, bool covered)
+        => Assert.Equal(covered, SubtitleManager.QwenCovers(language));
 }

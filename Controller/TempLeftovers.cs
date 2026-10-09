@@ -77,7 +77,9 @@ namespace WhisperSubs.Controller
         private static long SizeOf(string directory)
         {
             long total = 0;
-            foreach (var file in Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories))
+            // Links are not followed: one pointing back up the tree would make the walk endless.
+            var options = new EnumerationOptions { RecurseSubdirectories = true, AttributesToSkip = FileAttributes.ReparsePoint, IgnoreInaccessible = true };
+            foreach (var file in Directory.EnumerateFiles(directory, "*", options))
             {
                 try { total += new FileInfo(file).Length; } catch { /* gone meanwhile */ }
             }
