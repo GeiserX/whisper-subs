@@ -657,7 +657,8 @@ namespace WhisperSubs.Controller
             // interruption and never finished. Such an engine goes through the title in windows: each
             // one is extracted, transcribed and appended to the partial file on disk, which the resume
             // logic above then picks up exactly as it does for whisper-cli's own partial output.
-            var windowSeconds = WindowSecondsFor(provider);
+            var windowSeconds = WindowSecondsFor(provider,
+                EngineOptions.WindowSeconds(Plugin.Instance?.Configuration?.LocalQwen3WindowSeconds ?? 0));
             double windowMediaDuration = 0;
             if (windowSeconds > 0)
             {
@@ -1453,11 +1454,13 @@ namespace WhisperSubs.Controller
 
         /// <summary>
         /// True when a forced-subtitle chunk counts as foreign dialogue: its detected language differs
-        /// from the primary one and whisper is at least 30% sure of it. Pure.
+        /// from the primary one and whisper is at least <paramref name="minProbability"/> sure of it (the
+        /// setting, 0.3 by default). Pure.
         /// </summary>
-        internal static bool IsForeignDetection(string detectedLanguage, float probability, string primaryLanguage)
+        internal static bool IsForeignDetection(string detectedLanguage, float probability, string primaryLanguage,
+            float minProbability = EngineOptions.DefaultForcedLanguageMinProbability)
             => !string.Equals(detectedLanguage, primaryLanguage, StringComparison.OrdinalIgnoreCase)
-               && probability >= 0.3f;
+               && probability >= minProbability;
 
         /// <summary>
         /// Runs one batched language detection over the chunks of a forced-subtitle batch and returns
@@ -1536,8 +1539,12 @@ namespace WhisperSubs.Controller
             Func<string, CancellationToken, Task<(string Language, float Probability)>> detectOne,
             ILogger logger,
             string itemName,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            int batchSize = WhisperProvider.DetectionBatchSize,
+            float minProbability = EngineOptions.DefaultForcedLanguageMinProbability)
         {
+            batchSize = EngineOptions.DetectionBatchSize(batchSize);
+            minProbability = EngineOptions.ForcedLanguageMinProbability(minProbability);
             var foreignChunks = new List<(double Start, double End, string Language)>();
             int successfulDetections = 0;
             int consecutiveFailures = 0;
@@ -1546,10 +1553,10 @@ namespace WhisperSubs.Controller
             // Skip very short chunks (< 1s) — unreliable detection
             var eligible = Enumerable.Range(0, chunks.Count).Where(i => chunks[i].End - chunks[i].Start >= 1.0).ToList();
 
-            for (int batchStart = 0; batchStart < eligible.Count; batchStart += WhisperProvider.DetectionBatchSize)
+            for (int batchStart = 0; batchStart < eligible.Count; batchStart += batchSize)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                var batch = eligible.Skip(batchStart).Take(WhisperProvider.DetectionBatchSize).ToList();
+                var batch = eligible.Skip(batchStart).Take(batchSize).ToList();
 
                 // Extract the whole batch first. A failed extraction is recorded and counted as that
                 // chunk's failure, in order, below.
@@ -1604,7 +1611,7 @@ namespace WhisperSubs.Controller
                         logger.LogDebug("Chunk {Index}/{Total}: {Start:F1}s-{End:F1}s → {Language} (p={Prob:F3})",
                             i + 1, chunks.Count, chunk.Start, chunk.End, detectedLang, probability);
 
-                        if (IsForeignDetection(detectedLang, probability, primaryLanguage))
+                        if (IsForeignDetection(detectedLang, probability, primaryLanguage, minProbability))
                         {
                             foreignChunks.Add((chunk.Start, chunk.End, detectedLang));
                         }
@@ -1789,7 +1796,9 @@ namespace WhisperSubs.Controller
                     provider.DetectLanguageAsync,
                     _logger,
                     item.Name,
-                    cancellationToken);
+                    cancellationToken,
+                    Plugin.Instance?.Configuration?.DetectionBatchSize ?? WhisperProvider.DetectionBatchSize,
+                    Plugin.Instance?.Configuration?.ForcedLanguageMinProbability ?? EngineOptions.DefaultForcedLanguageMinProbability);
 
                 if (detection.Aborted)
                 {
@@ -1844,7 +1853,8 @@ namespace WhisperSubs.Controller
                 // English instead of the source language. For a non-English primary, whisper has no
                 // path to that language, so we keep the in-source transcription rather than write
                 // mislabeled English into a .<lang>.forced file. (Issue #95.)
-                var translateForced = LanguageIsEnglish(resolvedPrimary);
+                var translateForced = ShouldTranslateForced(
+                    Plugin.Instance?.Configuration?.TranslateForcedLinesToEnglish ?? true, resolvedPrimary);
                 // Gate the turbo-model warning to local whisper runs — a remote provider can translate
                 // fine and shouldn't trigger a warning about the local model path. (CodeRabbit.)
                 if (translateForced
@@ -1859,9 +1869,18 @@ namespace WhisperSubs.Controller
                 }
 
                 var failedSegments = 0;
+                var skipUncovered = Plugin.Instance?.Configuration?.UncoveredForcedLines == UncoveredForcedLineAction.Skip;
+                var qwenTranscribes = QwenTranscribes(provider);
                 foreach (var segment in mergedSegments)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
+                    if (skipUncovered && SkipsUncoveredForcedLine(qwenTranscribes, translateForced, segment.Language))
+                    {
+                        _logger.LogInformation(
+                            "Leaving out foreign segment {Start:F1}s-{End:F1}s of {ItemName} [{Language}]: Qwen3-ASR does not cover that language, and the settings skip such lines",
+                            segment.Start, segment.End, item.Name, segment.Language);
+                        continue;
+                    }
                     var segDuration = segment.End - segment.Start;
                     var segmentPath = Path.Combine(tempDir, $"foreign_{segment.Start:F0}_{segment.End:F0}.wav");
 
@@ -1980,6 +1999,32 @@ namespace WhisperSubs.Controller
         /// <summary>True unless <paramref name="language"/> names a language Qwen3-ASR does not cover. Pure.</summary>
         internal static bool QwenCovers(string? language)
             => Qwen3Provider.NormalizeLanguage(language) is not { } code || Qwen3Catalog.Supports(code);
+
+        /// <summary>
+        /// Whether a forced pass translates its foreign lines into English: only on an English title (Whisper
+        /// translates into English alone) and only while the setting is on. Pure.
+        /// </summary>
+        internal static bool ShouldTranslateForced(bool translateSetting, string? primaryLanguage)
+            => translateSetting && LanguageIsEnglish(primaryLanguage);
+
+        /// <summary>
+        /// True when Qwen3-ASR transcribes this title: the local engine with Qwen3-ASR selected, or a
+        /// Qwen3-ASR or akou server row.
+        /// </summary>
+        internal static bool QwenTranscribes(ISubtitleProvider? provider)
+            => provider is HostAssistedProvider
+                || provider is EngineSwitchProvider { Current: Qwen3Provider };
+
+        /// <summary>
+        /// A forced line that a Qwen3-ASR title leaves out when the settings skip uncovered lines: one in a
+        /// language the model does not cover, that is not being translated into English (Qwen3-ASR has no
+        /// translate task, so those always go to Whisper). Pure.
+        /// </summary>
+        internal static bool SkipsUncoveredForcedLine(bool qwenTranscribes, bool translate, string? language)
+            => qwenTranscribes
+                && !translate
+                && Qwen3Provider.NormalizeLanguage(language) is { } code
+                && !Qwen3Catalog.Supports(code);
 
         /// <summary>How a forced pass that transcribed its foreign segments ends.</summary>
         internal enum ForcedPassEnd { Subtitle, NoForeignSpeech, Failed }
@@ -2189,15 +2234,19 @@ namespace WhisperSubs.Controller
 
         /// <summary>
         /// The window length for <paramref name="provider"/>, or 0 for one pass over the whole title.
-        /// Only this server's Qwen3-ASR engine needs windows: crispasr writes its subtitle when it
-        /// finishes, whisper-cli writes as it goes, and remote workers are not paused by playback. Pure.
+        /// This server's Qwen3-ASR engine takes <paramref name="localQwen3WindowSeconds"/>: crispasr writes its
+        /// subtitle only when it finishes, so playback would cancel a whole title. An akou row takes its own
+        /// setting: an akou job is never stopped for a later one, so a whole title would hold the server from
+        /// its other clients for as long as it takes. whisper-cli writes as it goes, and other remote workers
+        /// are not paused by playback. Pure.
         /// </summary>
-        internal static double WindowSecondsFor(ISubtitleProvider? provider)
-            => provider is EngineSwitchProvider sw && sw.Current is Qwen3Provider
-                // An akou job is never stopped for a later one, so a whole title would hold the server from
-                // its other clients for as long as it takes; a window bounds that, and it resumes like Qwen3's.
-                || provider is HostAssistedProvider { Remote: RemoteWhisperProvider { Dialect: WorkerDialect.Akou } }
-                ? EngineWindowSeconds : 0;
+        internal static double WindowSecondsFor(ISubtitleProvider? provider, double localQwen3WindowSeconds = EngineWindowSeconds)
+            => provider switch
+            {
+                EngineSwitchProvider { Current: Qwen3Provider } => localQwen3WindowSeconds,
+                HostAssistedProvider { Remote: RemoteWhisperProvider { Dialect: WorkerDialect.Akou } akou } => akou.AkouWindowSeconds,
+                _ => 0,
+            };
 
         /// <summary>True when this window is the last one: no windows at all, or it covers the end (within the 30 s the completeness check allows). Pure.</summary>
         internal static bool WindowReachesEnd(double windowStartSeconds, double windowSeconds, double mediaDurationSeconds)

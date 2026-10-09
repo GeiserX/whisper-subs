@@ -143,6 +143,9 @@ namespace WhisperSubs.Controller.Workers
             Dialect = w.Dialect,
             MaxUploadBytes = w.MaxUploadBytes,
             UploadCodec = w.UploadCodec,
+            Priority = w.Priority,
+            WindowSeconds = w.WindowSeconds,
+            Languages = new System.Collections.Generic.List<string>(w.Languages ?? new System.Collections.Generic.List<string>()),
         };
     }
 }

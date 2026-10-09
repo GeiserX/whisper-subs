@@ -102,6 +102,63 @@ public sealed class HostWhisperGateTests : IDisposable
     }
 
     [Fact]
+    public async Task TwoFullModelEnginesAllowed_TwoRunTogether_NeverThree()
+    {
+        if (OperatingSystem.IsWindows()) return;
+
+        HostEngineGates.Apply(new Configuration.PluginConfiguration { MaxFullModelEngines = 2 });
+        try
+        {
+            var rows = Enumerable.Range(0, 5).Select(_ => Whisper(detectionModel: "")).ToList();
+            await Task.WhenAll(rows.SelectMany(TitleWork));
+        }
+        finally
+        {
+            HostEngineGates.Reset();
+        }
+
+        Assert.Equal(2, Peaks().Max(p => p.Full + p.Detect));
+    }
+
+    [Fact]
+    public async Task DetectionNotBesideFullModels_SmallModelQueuesWithThem()
+    {
+        if (OperatingSystem.IsWindows()) return;
+
+        HostEngineGates.Apply(new Configuration.PluginConfiguration { AllowDetectionBesideFullModel = false });
+        try
+        {
+            Assert.Same(HostEngineGates.Model, WhisperProvider.GateForDetection(_baseModel, _largeModel));
+            var rows = Enumerable.Range(0, 5).Select(_ => Whisper(detectionModel: _baseModel)).ToList();
+            await Task.WhenAll(rows.SelectMany(TitleWork));
+        }
+        finally
+        {
+            HostEngineGates.Reset();
+        }
+
+        Assert.Equal(1, Peaks().Max(p => p.Full + p.Detect));
+    }
+
+    [Fact]
+    public async Task LoweringTheLimit_LetsHoldersFinish_AndAdmitsNobodyUntilUnderIt()
+    {
+        var gate = new EngineGate(2);
+        await gate.WaitAsync();
+        await gate.WaitAsync();
+        gate.Limit = 1;
+        var third = gate.WaitAsync();
+        gate.Release();
+        Assert.False(third.IsCompleted);        // one still holds, and the limit is now 1
+        gate.Release();
+        await third.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(1, gate.Held);
+        gate.Limit = 3;
+        Assert.True(await gate.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.Throws<System.Threading.SemaphoreFullException>(() => { gate.Release(); gate.Release(); gate.Release(); });
+    }
+
+    [Fact]
     public async Task LocalQwen3_QueuesWithWhisper()
     {
         if (OperatingSystem.IsWindows()) return;

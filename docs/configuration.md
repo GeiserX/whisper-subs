@@ -96,7 +96,34 @@ Files written by older versions are still recognised. Anything containing `.gene
 | Pause generation during playback | Off | Pauses transcription on this server while any user is playing something, and continues when playback stops. A session paused on a title does not count. On Linux the running engine is suspended and continued, so a pause loses no work; on other systems the job is cancelled and retried from its partial output. A job on a remote worker starts at once and its requests keep running, but what it runs on this server (the audio extraction, and this server's Whisper detecting languages for a Qwen3-ASR or akou row) is suspended through playback on Linux like a local job. Useful when the same box transcodes and transcribes. |
 | Skip media that already has subtitles | On | The sweep skips media that already has a usable subtitle in the language it needs, embedded or external. For the translation pass, an existing English subtitle counts as already translated. |
 | Ignore forced subtitles when skipping | On | A forced subtitle track does not count as satisfying the need. Forced tracks only cover foreign-dialogue inserts, not the whole dialogue. |
-| Detect languages with the transcription model | Off | The forced pass detects each stretch's language with the Whisper transcription model instead of the small detection model. On 358 labelled stretches from a real library it named 86.6% right against 79.6%, and called 3 of 37 Spanish stretches foreign against 9. It takes about 13 s a stretch on 16 CPU threads, or about 15 s on an Intel UHD 770 GPU, against about 1.3 s, so a film's forced pass can spend half an hour on detection. Qwen3-ASR's own language ID through akou scored 78.2% on the same set: it cannot name Catalan or Galician, and it never called a Spanish stretch foreign. |
+
+## Language detection and forced subtitles
+
+The forced-subtitle pass asks which language each stretch of speech is in and keeps the stretches that are not in the title's language.
+
+| Setting | Default | What it does |
+|---|---|---|
+| Detection model | Small detection model | **Small detection model** is `ggml-base.bin`, downloaded for you, about 1.3 s a stretch. **The Whisper transcription model** is more accurate: on 358 labelled stretches from a real library it named 86.6% right against 79.6%, and called 3 of 37 Spanish stretches foreign against 9. It takes about 13 s a stretch on 16 CPU threads, or about 15 s on an Intel UHD 770 GPU, so a film's forced pass can spend half an hour on detection. **A model file you choose** takes the path of any multilingual Whisper ggml model; a missing file falls back to the small model with a warning in the log. Qwen3-ASR's own language ID through akou scored 78.2% on the same set: it cannot name Catalan or Galician, and it never called a Spanish stretch foreign. |
+| Detection device | Auto | **Auto** runs a short English clip (whisper.cpp's public-domain JFK sample) through the GPU before the first detection with each whisper-cli and model, and detects on the CPU (`--no-gpu`) when the answer is not English at 0.5 or more. The page shows the last result. **GPU** skips the check, **CPU** always passes `--no-gpu`. See [Limitations](limitations.md#language-detection-falls-back-to-the-cpu-on-a-gpu-that-gets-it-wrong). The page also warns when the container sees several GPUs or an SR-IOV virtual function. |
+| Translate foreign lines into English on English titles | On | On an English title the forced subtitle shows its foreign lines in English. Off, they are written in their own language. Other titles always keep the original language, since Whisper only translates into English. |
+| Lines Qwen3-ASR cannot transcribe | Transcribe them with Whisper | On a title Qwen3-ASR transcribes, a foreign line in a language outside Qwen3-ASR's 30 goes to this server's Whisper model, which loads a full model for it. **Leave them out** skips such lines. |
+
+### Detection and engines (advanced)
+
+| Setting | Default | What it does |
+|---|---|---|
+| Detection threads | `0` | CPU threads for a detection run. `0` is 4 for the small model and the Whisper thread count for the transcription model. |
+| Foreign-language confidence | `0.3` | How sure detection must be, 0 to 1, before a stretch counts as foreign. Higher leaves out more uncertain stretches; lower catches more and lets more wrong ones in. The translation pass's own English check keeps 0.3. |
+| Stretches per detection run | `32` | Stretches one whisper-cli run detects, 1 to 64. Each run loads the model once. |
+| Detection timeout per stretch | `300` | Seconds one stretch may take before the run is stopped, 30 to 3600. |
+| Vulkan device for whisper.cpp and crispasr | empty | A Vulkan device index, or several separated by commas, passed as `GGML_VK_VISIBLE_DEVICES` to whisper-cli and crispasr. Empty lets the engine pick its first GPU. It does not make an SR-IOV virtual function safe: give the container the physical function only (for an Intel iGPU, `/dev/dri/renderD128` and its `card` node rather than all of `/dev/dri`), because Vulkan compute on a virtual function can hang it. |
+| Full-model engines at once | `1` | Processes with a full model allowed on this server together, 1 to 8: Whisper transcription or translation, Qwen3-ASR, Canary, and detection on the transcription model. Measured on an Intel UHD 770 with Vulkan: large-v3 about 6.2 GB, crispasr with Qwen3-ASR and its aligner about 5.6 GB. Size it against the container's memory limit. Applies from the next engine started. |
+| Let small-model detection run beside a full model | On | A small-model detection run takes about 0.6 GB, so one runs beside the full-model engines. Off, it waits its turn with them. |
+| Qwen3-ASR window on this server | `600` | Seconds of audio per pass when this server's Qwen3-ASR transcribes, 60 to 7200. Playback or a restart costs at most one window. |
+| Remove leftover temp files when the task starts | On | Deletes this plugin's temp files older than the Jellyfin process, which only a job killed by a restart leaves behind. |
+| Pause a remote worker's jobs on this server during playback | On | With **Pause generation during playback** on, the audio extraction and detection this server runs for a remote worker's job are suspended while someone watches (Linux). Off, they run through. |
+
+Engine limits and the Vulkan device apply to the next engine process as soon as you save; the detection settings apply from the next run of the task.
 
 ## Subtitle generation
 
@@ -236,7 +263,7 @@ These sit under **Advanced / Manual Install** on the settings page.
 
 | Setting | Default | What it does |
 |---|---|---|
-| Whisper Thread Count | `0` | CPU threads for whisper inference. `0` emits no `-t` flag, so whisper.cpp uses its own default of 4. Set it to your core count. On a 16-thread i5-14500 a 2h15m film drops from an estimated 7 hours to 1h48m. Language detection is separately capped at 4 threads whatever you set here, because detection is a trivial workload that gains nothing from more parallelism and would only cause CPU spikes. |
+| Whisper Thread Count | `0` | CPU threads for whisper inference. `0` emits no `-t` flag, so whisper.cpp uses its own default of 4. Set it to your core count. On a 16-thread i5-14500 a 2h15m film drops from an estimated 7 hours to 1h48m. Language detection with the small model uses 4 threads unless **Detection threads** says otherwise. |
 | Maximum subtitle line length | `0` | Maximum characters per cue, emitted as `--max-len N` together with `--split-on-word` so a cap never breaks mid-word. `0` is unset, which leaves whisper.cpp's own default of unlimited; Canary translations run by the local `crispasr` binary use `42` when it is `0` (`84` for Bulgarian, Greek, Russian and Ukrainian), but a CrispASR server worker does not. For Canary the number counts bytes, so in those four languages each letter counts twice. Raise it if subtitles arrive as one enormous run-on line: broadcast subtitling caps a line near 42 characters and `47` is a good starting point. Applies to the local whisper-cli and the local `crispasr` only, since a remote worker, a CrispASR server included, owns its own segmentation. Set `WHISPER_MAX_LEN` on a whisper worker instead. |
 | Custom Whisper Arguments | empty | Extra space-separated arguments appended to every whisper-cli invocation, for example `--beam-size 8`. Local whisper-cli only. |
 

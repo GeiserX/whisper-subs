@@ -66,12 +66,15 @@ namespace WhisperSubs.ScheduledTasks
         {
             _logger.LogInformation("Starting subtitle generation task");
 
+            var config = Plugin.Instance.Configuration;
+
             // A job killed with Jellyfin left its audio and work folder behind; every live job was started
             // by this process, so anything of ours from before it started is a leftover.
-            TempLeftovers.Sweep(System.IO.Path.GetTempPath(),
-                System.Diagnostics.Process.GetCurrentProcess().StartTime.ToUniversalTime(), _logger);
-
-            var config = Plugin.Instance.Configuration;
+            if (config.CleanTempLeftoversAtStart)
+            {
+                TempLeftovers.Sweep(System.IO.Path.GetTempPath(),
+                    System.Diagnostics.Process.GetCurrentProcess().StartTime.ToUniversalTime(), _logger);
+            }
             if (!config.EnableAutoGeneration)
             {
                 _logger.LogInformation("Auto-generation is disabled in configuration");
@@ -741,7 +744,8 @@ namespace WhisperSubs.ScheduledTasks
             // though: the FFmpeg extraction, and this server's Whisper detecting languages for a Qwen3-ASR or
             // akou row. With several remote workers that is several such jobs at once, so where processes can
             // be stopped they are suspended during playback exactly like a local job's.
-            var plan = PlanForPlayback(isLocalWorker, EngineProcessSuspender.Default.Supported);
+            var plan = PlanForPlayback(isLocalWorker, EngineProcessSuspender.Default.Supported,
+                Plugin.Instance?.Configuration?.SuspendRemoteJobsDuringPlayback ?? true);
             if (plan == PlaybackPlan.RunThrough)
             {
                 await manager.GenerateSubtitleAsync(item, provider, language, cancellationToken, targetEngines: targetEngines);
@@ -849,14 +853,14 @@ namespace WhisperSubs.ScheduledTasks
         /// cannot be stopped is cancelled and retried. A remote job starts at once, since its transcription
         /// runs on another machine, but its processes here (FFmpeg, this server's Whisper detecting for it)
         /// are suspended through playback like a local job's; where they cannot be stopped it runs through,
-        /// as before. Pure.
+        /// as before, and also when <paramref name="suspendRemoteJobs"/> (the setting) is off. Pure.
         /// </summary>
-        internal static PlaybackPlan PlanForPlayback(bool isLocalWorker, bool suspendSupported)
+        internal static PlaybackPlan PlanForPlayback(bool isLocalWorker, bool suspendSupported, bool suspendRemoteJobs = true)
             => (isLocalWorker, suspendSupported) switch
             {
                 (true, true) => PlaybackPlan.WaitThenSuspend,
                 (true, false) => PlaybackPlan.CancelAndRetry,
-                (false, true) => PlaybackPlan.Suspend,
+                (false, true) => suspendRemoteJobs ? PlaybackPlan.Suspend : PlaybackPlan.RunThrough,
                 (false, false) => PlaybackPlan.RunThrough,
             };
 

@@ -126,6 +126,7 @@ namespace WhisperSubs.Providers
                 CreateNoWindow = true,
                 WorkingDirectory = Path.GetDirectoryName(_binaryPath) ?? ""
             };
+            HostEngineGates.ApplyVulkanDevice(startInfo);
             var aligner = AlignerFor(language, _alignerModelPath, File.Exists);
             foreach (var arg in BuildArguments(_modelPath, audioPath, language, _threadCount, applyVad ? _vadModelPath : null, _vadTuning, _maxLineLength, _cacheDirectory, tempOutputPrefix, aligner))
             {

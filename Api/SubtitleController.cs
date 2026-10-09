@@ -1040,6 +1040,26 @@ namespace WhisperSubs.Api
         /// <summary>
         /// Returns whether whisper binary and model are configured and reachable.
         /// </summary>
+        /// <summary>
+        /// What the engines on this server see and do: the GPU render nodes (and a warning about SR-IOV
+        /// virtual functions or several GPUs), the GPU self-check results for language detection, and the
+        /// engine gate's limit and holders.
+        /// </summary>
+        [HttpGet("Engines/Status")]
+        [Authorize(Policy = "RequiresElevation")]
+        public ActionResult GetEnginesStatus()
+        {
+            var gpus = Providers.GpuInventory.Scan();
+            return Ok(new
+            {
+                Gpus = gpus,
+                GpuWarning = Providers.GpuInventory.Warning(gpus),
+                GpuChecks = Providers.GpuDetectionCheck.LatestResults(),
+                VulkanDevice = Providers.HostEngineGates.VulkanDevice,
+                FullModelEngines = new { Limit = Providers.HostEngineGates.Model.Limit, Running = Providers.HostEngineGates.Model.Held },
+            });
+        }
+
         [HttpGet("Setup/Status")]
         [Authorize(Policy = "RequiresElevation")]
         public ActionResult GetSetupStatus()

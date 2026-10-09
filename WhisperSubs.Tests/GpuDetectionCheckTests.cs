@@ -5,6 +5,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging.Abstractions;
+using WhisperSubs.Configuration;
 using WhisperSubs.Providers;
 using Xunit;
 
@@ -160,8 +161,44 @@ public sealed class GpuDetectionCheckTests : IDisposable
         Assert.All(batch.Results, r => Assert.Equal("es", r!.Value.Language));
     }
 
-    private WhisperProvider Provider(string exe)
-        => new(NullLogger<WhisperProvider>.Instance, _model, exe, detectionModelPath: "");
+    [Theory]
+    [InlineData(DetectionDevice.Cpu, false)]
+    [InlineData(DetectionDevice.Gpu, true)]
+    public async Task ADeviceSetting_SkipsTheSelfCheck(DetectionDevice device, bool gpu)
+    {
+        if (OperatingSystem.IsWindows()) return;
+
+        var whisper = Provider(Executable(brokenGpu: true), new DetectionSettings(device, 0, TimeSpan.FromSeconds(300)));
+        await whisper.DetectLanguagesAsync(_chunks, CancellationToken.None);
+
+        var run = Assert.Single(Runs());
+        Assert.False(run.Check);
+        Assert.Equal(gpu, run.Gpu);
+    }
+
+    [Fact]
+    public async Task TheVulkanDevice_ReachesTheEngine()
+    {
+        if (OperatingSystem.IsWindows()) return;
+
+        var whisper = Provider(Executable(brokenGpu: false));
+        HostEngineGates.Apply(new PluginConfiguration { VulkanDevice = "0" });
+        try
+        {
+            await whisper.DetectLanguagesAsync(_chunks, CancellationToken.None);
+        }
+        finally
+        {
+            HostEngineGates.Reset();
+        }
+        await whisper.DetectLanguagesAsync(_chunks, CancellationToken.None);
+
+        var env = File.ReadAllLines(Path.Combine(_dir, "env.log"));
+        Assert.Equal(new[] { "0", "0", "unset" }, env);   // the self-check and the run with it set, then a run without
+    }
+
+    private WhisperProvider Provider(string exe, DetectionSettings? detection = null)
+        => new(NullLogger<WhisperProvider>.Instance, _model, exe, detectionModelPath: "", detection: detection);
 
     private List<(bool Gpu, bool Check, string[] Files)> Runs()
         => File.ReadAllLines(_log)
@@ -182,6 +219,7 @@ public sealed class GpuDetectionCheckTests : IDisposable
           shift
         done
         echo "$gpu ${files[*]}" >> "{{_log}}"
+        echo "${GGML_VK_VISIBLE_DEVICES:-unset}" >> "{{_dir}}/env.log"
         for f in "${files[@]}"; do
           echo "main: processing '$f' (8000 samples, 0.5 sec), 4 threads, 1 processors, lang = auto, task = transcribe ..." >&2
           if [ $gpu = 1 ] && [ $broken = 1 ]; then

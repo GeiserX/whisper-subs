@@ -7,6 +7,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
+using WhisperSubs.Configuration;
 using WhisperSubs.Controller;
 using Microsoft.Extensions.Logging;
 
@@ -24,6 +25,7 @@ namespace WhisperSubs.Providers
         private readonly int _maxLineLength;
         private readonly string _detectionModelPath;
         private string? _resolvedExecutable;
+        private readonly DetectionSettings _detection;
 
         private static readonly HashSet<string> DeniedArgs = new(StringComparer.OrdinalIgnoreCase)
         {
@@ -58,8 +60,10 @@ namespace WhisperSubs.Providers
 
         public bool RequiresSpeechAlignmentOptIn => UsesVad;
 
-        public WhisperProvider(ILogger<WhisperProvider> logger, string modelPath, string binaryPath = "", int threadCount = 0, string customArgs = "", string vadModelPath = "", string detectionModelPath = "", VadTuning? vadTuning = null, int maxLineLength = 0)
+        public WhisperProvider(ILogger<WhisperProvider> logger, string modelPath, string binaryPath = "", int threadCount = 0, string customArgs = "", string vadModelPath = "", string detectionModelPath = "", VadTuning? vadTuning = null, int maxLineLength = 0, DetectionSettings? detection = null)
         {
+            _detection = detection ?? DetectionSettings.Default;
+            DetectionFileTimeout = _detection.FileTimeout;
             _logger = logger;
             _modelPath = modelPath;
             _binaryPath = binaryPath;
@@ -171,6 +175,7 @@ namespace WhisperSubs.Providers
                 CreateNoWindow = true,
                 WorkingDirectory = Path.GetDirectoryName(whisperExecutable) ?? ""
             };
+            HostEngineGates.ApplyVulkanDevice(startInfo);
 
             // Resolve whether VAD applies (requested + model configured + present on disk). The
             // rule lives in the pure ShouldUseVad helper so "applyVad:false suppresses VAD even
@@ -537,6 +542,12 @@ namespace WhisperSubs.Providers
         [ExcludeFromCodeCoverage(Justification = "Spawns whisper-cli process for the GPU self-check")]
         private async Task<bool> GpuDetectionWorksAsync(string detectionModel, CancellationToken cancellationToken)
         {
+            switch (_detection.Device)
+            {
+                case DetectionDevice.Cpu: return false;
+                case DetectionDevice.Gpu: return true;
+            }
+
             var executable = FindWhisperExecutable();
             if (executable == null) return false;
 
@@ -548,7 +559,7 @@ namespace WhisperSubs.Providers
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Could not write the GPU self-check clip; language detection runs on the CPU");
-                GpuDetectionCheck.Record(key, false);
+                GpuDetectionCheck.Record(key, false, executable, detectionModel, "the clip could not be written");
                 return false;
             }
 
@@ -569,7 +580,7 @@ namespace WhisperSubs.Providers
                         Path.GetFileName(detectionModel), GpuDetectionCheck.Answer(output), exitCode);
                 }
 
-                GpuDetectionCheck.Record(key, passed);
+                GpuDetectionCheck.Record(key, passed, executable, detectionModel, GpuDetectionCheck.Answer(output));
                 return passed;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -580,7 +591,7 @@ namespace WhisperSubs.Providers
             {
                 _logger.LogWarning("GPU language detection self-check timed out with {Model}; detection runs with --no-gpu",
                     Path.GetFileName(detectionModel));
-                GpuDetectionCheck.Record(key, false);
+                GpuDetectionCheck.Record(key, false, executable, detectionModel, "timed out");
                 return false;
             }
             catch (Exception ex) when (ex is InvalidOperationException or IOException or System.ComponentModel.Win32Exception)
@@ -643,20 +654,24 @@ namespace WhisperSubs.Providers
         /// thread count for the transcription model, which on 4 threads took about 21 s per chunk against
         /// about 13 s on 16. Pure.
         /// </summary>
-        internal static int DetectionThreads(string detectionModelPath, string transcriptionModelPath, int configuredThreads)
-            => configuredThreads > 0 && ReferenceEquals(GateForDetection(detectionModelPath, transcriptionModelPath), HostEngineGates.Model)
-                ? configuredThreads
+        internal static int DetectionThreads(string detectionModelPath, string transcriptionModelPath, int configuredThreads, int detectionThreads = 0)
+            => detectionThreads > 0 ? detectionThreads
+                : configuredThreads > 0 && IsTranscriptionModel(detectionModelPath, transcriptionModelPath) ? configuredThreads
                 : 4;
 
         /// <summary>
         /// The gate a detection run queues on: the small model's own, or the full-model gate when detection
-        /// runs on the transcription model. Pure.
+        /// runs on the transcription model or the settings keep small-model detection from running beside a
+        /// full model (<see cref="HostEngineGates.DetectionBesideFullModel"/>).
         /// </summary>
-        internal static SemaphoreSlim GateForDetection(string detectionModelPath, string transcriptionModelPath)
-            => string.Equals(FullPathOrSelf(detectionModelPath), FullPathOrSelf(transcriptionModelPath),
-                    OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)
+        internal static EngineGate GateForDetection(string detectionModelPath, string transcriptionModelPath)
+            => IsTranscriptionModel(detectionModelPath, transcriptionModelPath) || !HostEngineGates.DetectionBesideFullModel
                 ? HostEngineGates.Model
                 : HostEngineGates.Detection;
+
+        private static bool IsTranscriptionModel(string detectionModelPath, string transcriptionModelPath)
+            => string.Equals(FullPathOrSelf(detectionModelPath), FullPathOrSelf(transcriptionModelPath),
+                OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
 
         // Two spellings of one file ("model.bin", "./model.bin") are one model.
         private static string FullPathOrSelf(string path)
@@ -689,7 +704,8 @@ namespace WhisperSubs.Providers
             // The dedicated small detection model when available (chosen live by the caller, so a model that
             // finished downloading after construction is picked up mid-run); else the transcription model.
             // This keeps per-chunk detection under the timeout on slow CPUs. (#95)
-            foreach (var arg in BuildDetectionArgs(detectionModel, audioPaths, DetectionThreads(detectionModel, _modelPath, _threadCount), cpuOnly))
+            HostEngineGates.ApplyVulkanDevice(startInfo);
+            foreach (var arg in BuildDetectionArgs(detectionModel, audioPaths, DetectionThreads(detectionModel, _modelPath, _threadCount, _detection.Threads), cpuOnly))
             {
                 startInfo.ArgumentList.Add(arg);
             }

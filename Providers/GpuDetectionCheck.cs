@@ -15,6 +15,9 @@ namespace WhisperSubs.Providers
     /// not, detection with that pair runs with --no-gpu for the rest of the process. A replaced binary, model,
     /// or engine behind a wrapper script is checked again (<see cref="Key"/>).
     /// </summary>
+    /// <summary>One GPU self-check as the settings page shows it.</summary>
+    public sealed record GpuCheckResult(string Binary, string Model, bool Passed, string Answer, DateTime CheckedAtUtc);
+
     internal static class GpuDetectionCheck
     {
         internal const string ExpectedLanguage = "en";
@@ -81,6 +84,19 @@ namespace WhisperSubs.Providers
         internal static bool TryGet(string key, out bool gpuOk) => Verdicts.TryGetValue(key, out gpuOk);
 
         internal static void Record(string key, bool gpuOk) => Verdicts[key] = gpuOk;
+
+        /// <summary>Keeps the verdict and what the check saw, for the settings page.</summary>
+        internal static void Record(string key, bool gpuOk, string executable, string model, string answer)
+        {
+            Verdicts[key] = gpuOk;
+            Results[executable + "|" + model] = new GpuCheckResult(executable, model, gpuOk, answer, DateTime.UtcNow);
+        }
+
+        private static readonly ConcurrentDictionary<string, GpuCheckResult> Results = new(StringComparer.Ordinal);
+
+        /// <summary>The latest self-check per binary and model, newest first.</summary>
+        internal static System.Collections.Generic.IReadOnlyList<GpuCheckResult> LatestResults()
+            => System.Linq.Enumerable.ToList(System.Linq.Enumerable.OrderByDescending(Results.Values, r => r.CheckedAtUtc));
 
         /// <summary>Writes the English clip to a new temp file and returns its path; the caller deletes it.</summary>
         internal static string WriteClip()
