@@ -52,8 +52,10 @@ namespace WhisperSubs.Providers
             // forced-mode per-chunk language detection runs on a small, fast model instead of the
             // full transcription model — which times out on slow/no-AVX2 CPUs. Until it lands,
             // detection falls back to the transcription model, preserving legacy behavior. (Issue #95.)
-            var detectionModelPath = setup.DetectionModelPath;
-            if (!System.IO.File.Exists(detectionModelPath)
+            // With "detect with the transcription model" on, no small model is handed over (the provider then
+            // detects with the transcription model) and none is fetched.
+            var detectionModelPath = config.DetectLanguageWithTranscriptionModel ? "" : setup.DetectionModelPath;
+            if (!config.DetectLanguageWithTranscriptionModel && !System.IO.File.Exists(detectionModelPath)
                 && WhisperSetupService.TryAcquire("detect", "Downloading language-detection model..."))
             {
                 var logger = loggerFactory.CreateLogger<WhisperSetupService>();

@@ -232,7 +232,7 @@ namespace WhisperSubs.Providers
         /// and the batched path build their command here, so the two can never run with different flags.
         /// Never adds -np: the batch parser needs the per-file "processing '...'" line. Pure.
         /// </summary>
-        internal static List<string> BuildDetectionArgs(string modelPath, IReadOnlyList<string> audioPaths)
+        internal static List<string> BuildDetectionArgs(string modelPath, IReadOnlyList<string> audioPaths, int threads = 4)
         {
             var args = new List<string> { "-m", modelPath };
             foreach (var path in audioPaths)
@@ -246,7 +246,7 @@ namespace WhisperSubs.Providers
             // Cap detection at 4 threads — detection is a trivial workload that doesn't
             // benefit from high parallelism, and using 16 threads causes unnecessary CPU spikes.
             args.Add("-t");
-            args.Add("4");
+            args.Add(threads.ToString(CultureInfo.InvariantCulture));
             args.Add("--detect-language");
             // Disable GPU for language detection: a fresh process pays the GPU backend init, which
             // for short chunks cost more than the detection itself. Transcription still uses the GPU.
@@ -529,6 +529,16 @@ namespace WhisperSubs.Providers
         }
 
         /// <summary>
+        /// Threads for a detection run: 4 for the small detection model, where more buy nothing; the configured
+        /// thread count for the transcription model, which on 4 threads took about 21 s per chunk against
+        /// about 13 s on 16. Pure.
+        /// </summary>
+        internal static int DetectionThreads(string detectionModelPath, string transcriptionModelPath, int configuredThreads)
+            => configuredThreads > 0 && ReferenceEquals(GateForDetection(detectionModelPath, transcriptionModelPath), HostEngineGates.Model)
+                ? configuredThreads
+                : 4;
+
+        /// <summary>
         /// The gate a detection run queues on: the small model's own, or the full-model gate when detection
         /// runs on the transcription model. Pure.
         /// </summary>
@@ -569,7 +579,7 @@ namespace WhisperSubs.Providers
             // The dedicated small detection model when available (chosen live by the caller, so a model that
             // finished downloading after construction is picked up mid-run); else the transcription model.
             // This keeps per-chunk detection under the timeout on slow CPUs. (#95)
-            foreach (var arg in BuildDetectionArgs(detectionModel, audioPaths))
+            foreach (var arg in BuildDetectionArgs(detectionModel, audioPaths, DetectionThreads(detectionModel, _modelPath, _threadCount)))
             {
                 startInfo.ArgumentList.Add(arg);
             }
