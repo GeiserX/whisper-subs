@@ -35,6 +35,30 @@ namespace WhisperSubs.Providers
             Func<string, string?> describeMissingOutput,
             CancellationToken cancellationToken)
         {
+            // Every engine that comes through here loads a full model (Whisper, Qwen3-ASR, Canary): one at a
+            // time on this server, see HostEngineGates.
+            await HostEngineGates.Model.WaitAsync(cancellationToken);
+            try
+            {
+                return await RunUngatedAsync(logger, startInfo, engineName, tempSrtPath, alternateSrtPath, buildExitException, describeMissingOutput, cancellationToken);
+            }
+            finally
+            {
+                HostEngineGates.Model.Release();
+            }
+        }
+
+        [ExcludeFromCodeCoverage(Justification = "Spawns an engine process")]
+        private static async Task<string> RunUngatedAsync(
+            ILogger logger,
+            ProcessStartInfo startInfo,
+            string engineName,
+            string tempSrtPath,
+            string? alternateSrtPath,
+            Func<int, string, Exception> buildExitException,
+            Func<string, string?> describeMissingOutput,
+            CancellationToken cancellationToken)
+        {
             try
             {
                 logger.LogInformation("Running: {Executable} {Arguments} (cwd: {WorkingDirectory})",
