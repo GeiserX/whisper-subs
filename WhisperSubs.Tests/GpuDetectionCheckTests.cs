@@ -122,6 +122,20 @@ public sealed class GpuDetectionCheckTests : IDisposable
         Assert.True(runs[3].Gpu);
     }
 
+    [Fact]
+    public async Task AReplacedModel_IsCheckedAgain()
+    {
+        if (OperatingSystem.IsWindows()) return;
+
+        var whisper = Provider(Executable(brokenGpu: false));
+        await whisper.DetectLanguagesAsync(_chunks, CancellationToken.None);
+
+        File.SetLastWriteTimeUtc(_model, DateTime.UtcNow.AddMinutes(5));
+        await whisper.DetectLanguagesAsync(_chunks, CancellationToken.None);
+
+        Assert.Equal(2, Runs().Count(r => r.Check));
+    }
+
     private WhisperProvider Provider(string exe)
         => new(NullLogger<WhisperProvider>.Instance, _model, exe, detectionModelPath: "");
 

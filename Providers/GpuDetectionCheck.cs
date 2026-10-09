@@ -13,15 +13,15 @@ namespace WhisperSubs.Providers
     /// first detection with a given whisper-cli and model, one run on a short English clip (the JFK sample
     /// that ships with whisper.cpp, public domain) has to come back English with real confidence. If it does
     /// not, detection with that pair runs with --no-gpu for the rest of the process. The verdict is kept per
-    /// binary (and its modification time, so a replaced binary is checked again) and per model.
+    /// binary and per model, each with its modification time, so a replaced file is checked again.
     /// </summary>
     internal static class GpuDetectionCheck
     {
         internal const string ExpectedLanguage = "en";
 
         /// <summary>
-        /// The clip is clear English: large-v3 and base both answer above 0.9. A broken backend answers
-        /// about 1/99 for every language.
+        /// The clip is clear English: on the CPU large-v3 answers en at 0.94 and base at 0.96. A broken backend answers
+        /// about 0.01 for every language.
         /// </summary>
         internal const float MinProbability = 0.5f;
 
@@ -54,11 +54,12 @@ namespace WhisperSubs.Providers
         }
 
         internal static string Key(string executable, string model)
+            => executable + "|" + Stamp(executable) + "|" + model + "|" + Stamp(model);
+
+        private static string Stamp(string path)
         {
-            long stamp;
-            try { stamp = File.GetLastWriteTimeUtc(executable).Ticks; }
-            catch (Exception) { stamp = 0; }
-            return executable + "|" + stamp.ToString(CultureInfo.InvariantCulture) + "|" + model;
+            try { return File.GetLastWriteTimeUtc(path).Ticks.ToString(CultureInfo.InvariantCulture); }
+            catch (Exception) { return "0"; }
         }
 
         internal static bool TryGet(string key, out bool gpuOk) => Verdicts.TryGetValue(key, out gpuOk);
