@@ -1859,36 +1859,16 @@ namespace WhisperSubs.Controller
                 }
 
                 var failedSegments = 0;
-                var qwenTranscribes = QwenTranscribes(provider);
                 foreach (var segment in mergedSegments)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    if (SkipsUncoveredForcedLine(qwenTranscribes, translateForced, segment.Language))
-                    {
-                        _logger.LogInformation(
-                            "Leaving out foreign segment {Start:F1}s-{End:F1}s of {ItemName} [{Language}]: Qwen3-ASR does not cover that language, and it is not sent to Whisper instead",
-                            segment.Start, segment.End, item.Name, segment.Language);
-                        continue;
-                    }
                     var segDuration = segment.End - segment.Start;
                     var segmentPath = Path.Combine(tempDir, $"foreign_{segment.Start:F0}_{segment.End:F0}.wav");
 
                     try
                     {
                         await ExtractAudioChunkAsync(fullAudioPath, segmentPath, segment.Start, segDuration, cancellationToken);
-                        // applyVad:false — the chunk is already an edge-trimmed speech window (it may
-                        // span a few merged utterances); re-running whisper's VAD can filter a short
-                        // window to zero segments and write an empty subtitle. Only WhisperProvider
-                        // runs a local VAD pass; the remote provider ignores it.
-                        var srtContent = provider switch
-                        {
-                            WhisperProvider whisperProv => await whisperProv.TranscribeAsync(segmentPath, segment.Language, cancellationToken, translateForced, applyVad: false),
-                            EngineSwitchProvider switchProv => await switchProv.TranscribeAsync(segmentPath, segment.Language, cancellationToken, translateForced, applyVad: false),
-                            // A Qwen3-ASR server row: the host's Whisper translates the foreign lines of an
-                            // English title, and like every local run it must not re-run VAD on the chunk.
-                            HostAssistedProvider assisted when translateForced => await assisted.Whisper.TranscribeAsync(segmentPath, segment.Language, cancellationToken, translateForced, applyVad: false),
-                            _ => await provider.TranscribeAsync(segmentPath, segment.Language, cancellationToken, translate: translateForced),
-                        };
+                        var srtContent = await TranscribeForcedLineAsync(provider, segmentPath, segment.Language, translateForced, cancellationToken);
 
                         if (!string.IsNullOrWhiteSpace(srtContent))
                         {
@@ -1975,26 +1955,31 @@ namespace WhisperSubs.Controller
         }
 
         /// <summary>
-        /// True when Qwen3-ASR transcribes this title: the local engine with Qwen3-ASR selected, or a
-        /// Qwen3-ASR or akou server row.
+        /// The transcript of one foreign line of a forced subtitle. A line in a language Qwen3-ASR does not
+        /// cover goes to this server's Whisper (through the engine switch or the host-assisted row), on the
+        /// full-model gate like every Whisper run. applyVad:false: the chunk is already an edge-trimmed speech window (it may span a few merged
+        /// utterances); re-running whisper's VAD can filter a short window to zero segments and write an
+        /// empty subtitle. Only the local engines run a VAD pass; a remote provider ignores it.
         /// </summary>
-        internal static bool QwenTranscribes(ISubtitleProvider? provider)
-            => provider is HostAssistedProvider
-                || provider is EngineSwitchProvider { Current: Qwen3Provider };
+        internal static async Task<string> TranscribeForcedLineAsync(
+            ISubtitleProvider provider, string segmentPath, string language, bool translateForced, CancellationToken cancellationToken)
+        {
+            return provider switch
+            {
+                WhisperProvider whisperProv => await whisperProv.TranscribeAsync(segmentPath, language, cancellationToken, translateForced, applyVad: false),
+                EngineSwitchProvider switchProv => await switchProv.TranscribeAsync(segmentPath, language, cancellationToken, translateForced, applyVad: false),
+                // A Qwen3-ASR server row: the host's Whisper translates the foreign lines of an English
+                // title, and like every local run it must not re-run VAD on the chunk.
+                // So does a line in a language the server's model does not cover.
+                HostAssistedProvider assisted when translateForced || !QwenCovers(language)
+                    => await assisted.Whisper.TranscribeAsync(segmentPath, language, cancellationToken, translateForced, applyVad: false),
+                _ => await provider.TranscribeAsync(segmentPath, language, cancellationToken, translate: translateForced),
+            };
+        }
 
-        /// <summary>
-        /// A foreign line of a forced subtitle that a Qwen3-ASR title leaves out: one in a language the
-        /// model does not cover. Such a line used to go to this server's Whisper large-v3. On a library of
-        /// Spanish titles every one of them in three days of logs (263 runs: Galician 146, Catalan 70,
-        /// Norwegian 31, Latin 7, others 9) was Spanish dialogue the small detection model had misread,
-        /// so the run cost a full model's memory for a wrong line. A translation into English (the foreign
-        /// lines of an English title) still goes to Whisper: Qwen3-ASR has no translate task. Pure.
-        /// </summary>
-        internal static bool SkipsUncoveredForcedLine(bool qwenTranscribes, bool translate, string? language)
-            => qwenTranscribes
-                && !translate
-                && Qwen3Provider.NormalizeLanguage(language) is { } code
-                && !Qwen3Catalog.Supports(code);
+        /// <summary>True unless <paramref name="language"/> names a language Qwen3-ASR does not cover. Pure.</summary>
+        internal static bool QwenCovers(string? language)
+            => Qwen3Provider.NormalizeLanguage(language) is not { } code || Qwen3Catalog.Supports(code);
 
         /// <summary>How a forced pass that transcribed its foreign segments ends.</summary>
         internal enum ForcedPassEnd { Subtitle, NoForeignSpeech, Failed }

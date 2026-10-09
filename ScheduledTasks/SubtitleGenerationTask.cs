@@ -66,6 +66,11 @@ namespace WhisperSubs.ScheduledTasks
         {
             _logger.LogInformation("Starting subtitle generation task");
 
+            // A job killed with Jellyfin left its audio and work folder behind; every live job was started
+            // by this process, so anything of ours from before it started is a leftover.
+            TempLeftovers.Sweep(System.IO.Path.GetTempPath(),
+                System.Diagnostics.Process.GetCurrentProcess().StartTime.ToUniversalTime(), _logger);
+
             var config = Plugin.Instance.Configuration;
             if (!config.EnableAutoGeneration)
             {
