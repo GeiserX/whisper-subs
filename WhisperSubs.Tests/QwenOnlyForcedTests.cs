@@ -31,6 +31,9 @@ public class QwenOnlyForcedTests
         var whisper = new WhisperProvider(NullLogger<WhisperProvider>.Instance, "/nope/whisper.bin", "/nope/whisper-cli", 0, "", "", "", null, 0);
         var akouRow = new HostAssistedProvider(new RemoteWhisperProvider(NullLogger.Instance, "http://a:8476", "best", dialect: "akou"), whisper);
 
+        var qwen = new Qwen3Provider(NullLogger.Instance, "/nope/crispasr", "/nope/qwen3.gguf", 0, "", null, 0, "/tmp");
+        Assert.True(SubtitleManager.QwenTranscribes(new EngineSwitchProvider(whisper, () => qwen)));
+        Assert.False(SubtitleManager.QwenTranscribes(new EngineSwitchProvider(whisper, () => null)));   // Whisper engine selected
         Assert.True(SubtitleManager.QwenTranscribes(akouRow));
         Assert.False(SubtitleManager.QwenTranscribes(whisper));
         Assert.False(SubtitleManager.QwenTranscribes(new RemoteWhisperProvider(NullLogger.Instance, "http://w:9010", "large-v3")));
