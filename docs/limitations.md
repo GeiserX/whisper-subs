@@ -124,6 +124,8 @@ The fix is the **Word timing** download in the same panel: the Canary CTC aligne
 
 Qwen3-ASR does not translate, so **Translation to English** keeps using the Whisper model even with Qwen3-ASR selected, and a title that needs English still needs a Whisper model that can translate.
 
+In the forced-subtitle pass of a Qwen3-ASR title, a foreign line in a language outside Qwen3-ASR's 30 is left out rather than handed to Whisper. In practice those lines are the small detection model misreading the title's own language (Spanish heard as Galician, Catalan or Norwegian), and each one used to start the full Whisper model. A genuine line in such a language is lost from the forced subtitle. Lines of an English title still go to Whisper for translation into English.
+
 ## Pause during playback suspends on Linux only
 
 **Pause generation during playback** stops the engine processes (whisper-cli, crispasr, FFmpeg extraction, vocal separation) with SIGSTOP and continues them with SIGCONT, on Linux. Nothing is lost in any pass, including the forced-subtitle pass, which cannot resume from partial output. A job that has been held for four hours continues anyway and is not stopped again.
