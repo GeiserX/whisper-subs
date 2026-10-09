@@ -182,3 +182,25 @@ public sealed class HostWhisperGateTests : IDisposable
         return path;
     }
 }
+
+public class DetectionModelChoiceTests
+{
+    [Theory]
+    [InlineData("/m/ggml-base.bin", 16, 4)]          // the small model: 4 threads, as before
+    [InlineData("/m/ggml-large-v3.bin", 16, 16)]     // the transcription model: the configured threads
+    [InlineData("/m/ggml-large-v3.bin", 0, 4)]       // nothing configured: 4
+    public void DetectionThreads(string detectionModel, int configured, int expected)
+        => Assert.Equal(expected, WhisperProvider.DetectionThreads(detectionModel, "/m/ggml-large-v3.bin", configured));
+
+    [Fact]
+    public void BuildDetectionArgs_CarriesTheThreadCount()
+        => Assert.Equal(
+            new[] { "-m", "m.bin", "-f", "a.wav", "-l", "auto", "-t", "16", "--detect-language", "--no-gpu" },
+            WhisperProvider.BuildDetectionArgs("m.bin", new[] { "a.wav" }, 16));
+
+    [Fact]
+    public void ChoosingTheTranscriptionModel_DetectsWithIt()
+        // With the setting on, the factory hands over no small model, and detection falls back to the
+        // transcription model, which queues on the full-model gate.
+        => Assert.Equal("/m/ggml-large-v3.bin", WhisperProvider.ChooseDetectionModel("/m/ggml-large-v3.bin", "", false));
+}

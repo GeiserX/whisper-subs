@@ -288,6 +288,16 @@ namespace WhisperSubs.Configuration
         /// </summary>
         public int LanguageDetectionSampleSeconds { get; set; } = 30;
 
+        /// <summary>
+        /// Detect each chunk's language with the transcription model (for example large-v3) instead of the
+        /// small detection model (ggml-base). Measured on 358 labelled library chunks (2026-10-09): large-v3
+        /// named the right language for 86.6% (96.0% leaving out Catalan and Galician), ggml-base for 79.6%,
+        /// and ggml-base called 9 of 37 Spanish chunks foreign against 3 for large-v3. It costs time: about
+        /// 13 s per chunk on 16 CPU threads against about 1.3 s, so a film's forced pass spends tens of minutes
+        /// on detection. Default false, the small model.
+        /// </summary>
+        public bool DetectLanguageWithTranscriptionModel { get; set; } = false;
+
         public List<string> EnabledLibraries { get; set; } = new List<string>();
 
         // ── Subtitle request queue & named-tier priority (issue #112) ──────────────

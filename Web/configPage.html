@@ -482,6 +482,16 @@
                         </div>
                     </div>
 
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label>
+                            <input is="emby-checkbox" type="checkbox" id="chkDetectLanguageWithTranscriptionModel" name="DetectLanguageWithTranscriptionModel" />
+                            <span>Detect languages with the transcription model</span>
+                        </label>
+                        <div class="fieldDescription">
+                            The forced-subtitle pass asks which language each stretch of speech is in. Off, a small model answers (about a second a stretch). On, the Whisper transcription model answers: more accurate (86.6% of stretches named right against 79.6% on our test set; Spanish stretches wrongly called foreign drop from one in four to one in twelve), but about ten times slower. <strong>Off by default.</strong>
+                        </div>
+                    </div>
+
                     <h3 style="margin-bottom:0.25em;">Subtitle generation</h3>
                     <div class="fieldDescription" style="margin-bottom:0.5em;">
                         Whisper transcribes the speech it hears, so it can only write a subtitle in the title's <strong>own audio language</strong>. (Turning audio <em>into</em> English is a separate step — see Translation below.)
@@ -2665,6 +2675,7 @@
                             page.querySelector('#chkPauseOnPlayback').checked = config.PauseOnPlayback || false;
                             page.querySelector('#chkSkipIfSubtitleExists').checked = config.SkipIfSubtitleExists !== false;
                             page.querySelector('#chkIgnoreForcedSubtitles').checked = config.IgnoreForcedSubtitles !== false;
+                            page.querySelector('#chkDetectLanguageWithTranscriptionModel').checked = config.DetectLanguageWithTranscriptionModel === true;
                             page.querySelector('#chkGenerateOriginalLanguageSubtitles').checked = config.GenerateOriginalLanguageSubtitles !== false;
                             page.querySelector('#chkCountImageSubtitlesAsPresent').checked = config.CountImageSubtitlesAsPresent === true;
                             page.querySelector('#chkCacheSkippedItems').checked = config.CacheSkippedItems !== false;
@@ -2742,6 +2753,7 @@
                         config.PauseOnPlayback = page.querySelector('#chkPauseOnPlayback').checked;
                         config.SkipIfSubtitleExists = page.querySelector('#chkSkipIfSubtitleExists').checked;
                         config.IgnoreForcedSubtitles = page.querySelector('#chkIgnoreForcedSubtitles').checked;
+                        config.DetectLanguageWithTranscriptionModel = page.querySelector('#chkDetectLanguageWithTranscriptionModel').checked;
                         config.GenerateOriginalLanguageSubtitles = page.querySelector('#chkGenerateOriginalLanguageSubtitles').checked;
                         config.CountImageSubtitlesAsPresent = page.querySelector('#chkCountImageSubtitlesAsPresent').checked;
                         config.CacheSkippedItems = page.querySelector('#chkCacheSkippedItems').checked;
