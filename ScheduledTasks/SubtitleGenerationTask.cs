@@ -357,7 +357,9 @@ namespace WhisperSubs.ScheduledTasks
                         var existingFiles = SubtitleManager.FindGeneratedFiles(item, dir, baseName + ".*.srt")
                             .Where(f => SubtitleNaming.IsPluginOwnedSubtitle(System.IO.Path.GetFileName(f), label))
                             .ToArray();
-                        var noForeignMarkers = SubtitleManager.FindGeneratedFiles(item, dir, baseName + ".*.forced.noforeignlang").ToArray();
+                        var noForeignMarkers = SubtitleManager.FindGeneratedFiles(item, dir, baseName + ".*.forced.noforeignlang")
+                            .Where(m => SubtitleManager.NoForeignMarkerHolds(m, config.UncoveredForcedLines))
+                            .ToArray();
                         // Only a FULL owned sub satisfies the full pass — a ".translated." owned file is
                         // NOT full (it's an English translation). Classify restores the pre-feature behavior
                         // where the "*.generated.srt" glob excluded translated files.

@@ -1717,7 +1717,7 @@ namespace WhisperSubs.Controller
             }
 
             // Skip if previously analyzed and found no foreign dialogue
-            if (File.Exists(noForeignMarkerPath))
+            if (NoForeignMarkerHolds(noForeignMarkerPath, Plugin.Instance?.Configuration?.UncoveredForcedLines ?? UncoveredForcedLineAction.Whisper))
             {
                 _logger.LogInformation("No-foreign-language marker exists for {ItemName} [{Language}], skipping",
                     item.Name, resolvedPrimary);
@@ -1869,6 +1869,7 @@ namespace WhisperSubs.Controller
                 }
 
                 var failedSegments = 0;
+                var skippedSegments = 0;
                 var skipUncovered = Plugin.Instance?.Configuration?.UncoveredForcedLines == UncoveredForcedLineAction.Skip;
                 var qwenTranscribes = QwenTranscribes(provider);
                 foreach (var segment in mergedSegments)
@@ -1879,6 +1880,7 @@ namespace WhisperSubs.Controller
                         _logger.LogInformation(
                             "Leaving out foreign segment {Start:F1}s-{End:F1}s of {ItemName} [{Language}]: Qwen3-ASR does not cover that language, and the settings skip such lines",
                             segment.Start, segment.End, item.Name, segment.Language);
+                        skippedSegments++;
                         continue;
                     }
                     var segDuration = segment.End - segment.Start;
@@ -1917,7 +1919,9 @@ namespace WhisperSubs.Controller
                     case ForcedPassEnd.NoForeignSpeech:
                         // Every foreign segment was transcribed and none held speech (music, effects, a stretch
                         // the detector misread): the title has no foreign dialogue to subtitle.
-                        await File.WriteAllTextAsync(noForeignMarkerPath, "", CancellationToken.None);
+                        // A pass whose only foreign lines were left out by the skip setting says so in the marker,
+                        // so switching the setting back to Whisper transcribes them on the next run.
+                        await File.WriteAllTextAsync(noForeignMarkerPath, skippedSegments > 0 ? SkippedUncoveredMarker : "", CancellationToken.None);
                         _logger.LogInformation("Foreign segments of {ItemName} held no speech ({Count} transcribed), wrote no-foreign marker",
                             item.Name, mergedSegments.Count);
                         return (GenerationOutcome.Skipped, null);
@@ -2025,6 +2029,29 @@ namespace WhisperSubs.Controller
                 && !translate
                 && Qwen3Provider.NormalizeLanguage(language) is { } code
                 && !Qwen3Catalog.Supports(code);
+
+        /// <summary>
+        /// The no-foreign marker's content when the pass found foreign lines but the "lines Qwen3-ASR cannot
+        /// transcribe" setting left them all out. An empty marker means no foreign speech at all.
+        /// </summary>
+        internal const string SkippedUncoveredMarker = "uncovered-lines-skipped";
+
+        /// <summary>
+        /// Whether a no-foreign marker still settles the forced pass: always for an empty marker, and for one
+        /// written because uncovered lines were skipped only while the setting still skips them. Reads the
+        /// marker; false when there is none.
+        /// </summary>
+        internal static bool NoForeignMarkerHolds(string markerPath, UncoveredForcedLineAction uncoveredLines)
+        {
+            try
+            {
+                if (!File.Exists(markerPath)) return false;
+                return uncoveredLines == UncoveredForcedLineAction.Skip
+                    || File.ReadAllText(markerPath).Trim() != SkippedUncoveredMarker;
+            }
+            catch (IOException) { return File.Exists(markerPath); }
+            catch (UnauthorizedAccessException) { return true; }
+        }
 
         /// <summary>How a forced pass that transcribed its foreign segments ends.</summary>
         internal enum ForcedPassEnd { Subtitle, NoForeignSpeech, Failed }

@@ -291,3 +291,32 @@ public sealed class GpuInventoryTests : IDisposable
         return dev;
     }
 }
+
+/// <summary>A marker written because the skip setting left every foreign line out stops counting once lines go to Whisper again.</summary>
+public sealed class NoForeignMarkerTests : IDisposable
+{
+    private readonly string _dir = Path.Combine(Path.GetTempPath(), "marker_" + Guid.NewGuid().ToString("N"));
+
+    public NoForeignMarkerTests() => Directory.CreateDirectory(_dir);
+
+    public void Dispose()
+    {
+        try { Directory.Delete(_dir, recursive: true); } catch { /* best effort */ }
+    }
+
+    [Theory]
+    [InlineData("", UncoveredForcedLineAction.Whisper, true)]
+    [InlineData("", UncoveredForcedLineAction.Skip, true)]
+    [InlineData(SubtitleManager.SkippedUncoveredMarker, UncoveredForcedLineAction.Skip, true)]
+    [InlineData(SubtitleManager.SkippedUncoveredMarker, UncoveredForcedLineAction.Whisper, false)]
+    public void Marker_HoldsUnlessItsSkippedLinesNowGoToWhisper(string content, UncoveredForcedLineAction action, bool holds)
+    {
+        var marker = Path.Combine(_dir, "film.es.forced.noforeignlang");
+        File.WriteAllText(marker, content);
+        Assert.Equal(holds, SubtitleManager.NoForeignMarkerHolds(marker, action));
+    }
+
+    [Fact]
+    public void NoMarker_DoesNotHold()
+        => Assert.False(SubtitleManager.NoForeignMarkerHolds(Path.Combine(_dir, "none.noforeignlang"), UncoveredForcedLineAction.Skip));
+}
