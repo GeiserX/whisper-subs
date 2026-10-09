@@ -1,0 +1,80 @@
+using System;
+using System.Collections.Concurrent;
+using System.Globalization;
+using System.IO;
+using System.Text.RegularExpressions;
+
+namespace WhisperSubs.Providers
+{
+    /// <summary>
+    /// Language detection runs on the GPU unless that GPU gives wrong answers. whisper.cpp v1.8.4 on Vulkan
+    /// (Intel UHD 770, Mesa 25) answered every chunk with one language at p = 0.010, a flat distribution,
+    /// while the same binary with --no-gpu was right; v1.9.5 matched the CPU on every chunk. So before the
+    /// first detection with a given whisper-cli and model, one run on a short English clip (the JFK sample
+    /// that ships with whisper.cpp, public domain) has to come back English with real confidence. If it does
+    /// not, detection with that pair runs with --no-gpu for the rest of the process. The verdict is kept per
+    /// binary (and its modification time, so a replaced binary is checked again) and per model.
+    /// </summary>
+    internal static class GpuDetectionCheck
+    {
+        internal const string ExpectedLanguage = "en";
+
+        /// <summary>
+        /// The clip is clear English: large-v3 and base both answer above 0.9. A broken backend answers
+        /// about 1/99 for every language.
+        /// </summary>
+        internal const float MinProbability = 0.5f;
+
+        internal const string ClipResource = "WhisperSubs.Providers.Resources.gpu-check-en.wav";
+
+        private static readonly ConcurrentDictionary<string, bool> Verdicts = new(StringComparer.Ordinal);
+
+        private static readonly Regex DetectedLine =
+            new(@"auto-detected language:\s*(?<lang>\w+)\s*\(p\s*=\s*(?<p>[\d.]+)\)", RegexOptions.Compiled);
+
+        /// <summary>
+        /// True when the self-check run's output says English with at least <see cref="MinProbability"/>. Pure.
+        /// </summary>
+        internal static bool Passed(string? output)
+        {
+            if (string.IsNullOrEmpty(output)) return false;
+            var m = DetectedLine.Match(output);
+            if (!m.Success) return false;
+            var lang = (WhisperLanguages.CodeFor(m.Groups["lang"].Value) ?? m.Groups["lang"].Value).ToLowerInvariant();
+            return lang == ExpectedLanguage
+                && float.TryParse(m.Groups["p"].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var p)
+                && p >= MinProbability;
+        }
+
+        /// <summary>What the self-check run answered, for the log. Pure.</summary>
+        internal static string Answer(string? output)
+        {
+            var m = DetectedLine.Match(output ?? "");
+            return m.Success ? $"{m.Groups["lang"].Value} (p = {m.Groups["p"].Value})" : "no language";
+        }
+
+        internal static string Key(string executable, string model)
+        {
+            long stamp;
+            try { stamp = File.GetLastWriteTimeUtc(executable).Ticks; }
+            catch (Exception) { stamp = 0; }
+            return executable + "|" + stamp.ToString(CultureInfo.InvariantCulture) + "|" + model;
+        }
+
+        internal static bool TryGet(string key, out bool gpuOk) => Verdicts.TryGetValue(key, out gpuOk);
+
+        internal static void Record(string key, bool gpuOk) => Verdicts[key] = gpuOk;
+
+        /// <summary>Writes the English clip to a new temp file and returns its path; the caller deletes it.</summary>
+        internal static string WriteClip()
+        {
+            // The whispersubs_ prefix lets TempLeftovers clear it if the process dies mid-check.
+            var path = Path.Combine(Path.GetTempPath(), "whispersubs_gpucheck_" + Guid.NewGuid().ToString("N") + ".wav");
+            using var source = typeof(GpuDetectionCheck).Assembly.GetManifestResourceStream(ClipResource)
+                ?? throw new InvalidOperationException("The GPU self-check clip is missing from the plugin assembly.");
+            using var target = File.Create(path);
+            source.CopyTo(target);
+            return path;
+        }
+    }
+}

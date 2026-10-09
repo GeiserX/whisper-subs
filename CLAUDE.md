@@ -110,7 +110,8 @@ Forced subtitles capture only foreign-language dialogue segments (e.g., Russian 
 8. **akou rows and titles per slot** — the `akou` dialect (`RemoteWhisperProvider.TranscribeAkouJobAsync`) submits a file job to `POST /v1/jobs` at priority -5 (`AkouJobPriority`; akou's other clients use 0 and a running job is never preempted), long-polls `?wait=60`, reads `result?format=verbose_json`, and DELETEs the job in a `finally` (success, failure, timeout, cancel) so no audio stays on the server. Host-assisted like crispasr-qwen3; titles go in 600 s windows (`WindowSecondsFor`). `RemoteTitlesPerRequestSlot` (1-4, default 1) gives a remote worker `MaxConcurrency × N` titles (`WorkerRegistry.TitlesPerWorker`) while its provider's request gate (`maxConcurrentRequests`) still lets only `MaxConcurrency` requests reach it; the deadline starts after the gate. With PauseOnPlayback on Linux, a remote job's processes on this server are suspended during playback too (`PlanForPlayback`), its HTTP requests keep running.
 9. **Host engine gates** — `Providers/HostEngineGates.cs`: process-wide, because every pool row builds its own providers. `Model` (1) wraps `SrtProcessRunner.RunAsync`, so Whisper transcription/translation, Qwen3-ASR and Canary run one at a time; `Detection` (1) wraps whisper-cli language detection on the small model, and detection that falls back to the transcription model takes `Model` (`WhisperProvider.GateForDetection`). Measured in the container (UHD 770, Vulkan): large-v3 peak ~6.2 GB (4.1 GB GPU buffers charged to the cgroup as shmem), crispasr Qwen3+aligner ~5.6 GB, ggml-base detection batch ~0.6 GB. 4.14.0.0 ran five large-v3 at once with five titles in flight and OOM-killed Jellyfin under its 16 GB limit 21 times in a night. A suspended process keeps its turn.
 10. **Uncovered forced lines** — on a Qwen3-ASR title a forced line in a language Qwen3-ASR does not cover goes to host Whisper (`TranscribeForcedLineAsync` → EngineSwitch or HostAssisted), under `HostEngineGates.Model`. 4.14.2.0 skipped such lines (all 263 in 3 days were ggml-base misreading Spanish); 4.15.1.0 reverted the skip once large-v3 detection (`DetectLanguageWithTranscriptionModel`) made those names trustworthy.
-11. **Detection model eval (2026-10-09)** — 400 chunks (2/5/10/30 s, 10 languages incl. ca/gl) cut at speech onsets from single-language library tracks, labelled by track tag, 42 excluded (no speech, chants, mixed) and 14 relabelled to en after reading transcripts; 358 scored. large-v3 86.6% (96.0% without ca/gl), ggml-base 79.6% (88.6%), Qwen3-ASR via akou `language=auto` + `languages[]` 78.2% (94.3%; cannot name ca/gl; no confidence). Spanish called foreign: base 9/37, large-v3 3/37, Qwen 0/37. Time: base 1.3 s, large-v3 21 s (4 threads) / 13 s (16), Qwen via akou ~21 s. Vulkan detection is broken (300 s, p=0.01). `DetectLanguageWithTranscriptionModel` switches detection to the transcription model with `WhisperThreadCount` threads (`DetectionThreads`).
+11. **Detection model eval (2026-10-09)** — 400 chunks (2/5/10/30 s, 10 languages incl. ca/gl) cut at speech onsets from single-language library tracks, labelled by track tag, 42 excluded (no speech, chants, mixed) and 14 relabelled to en after reading transcripts; 358 scored. large-v3 86.6% (96.0% without ca/gl), ggml-base 79.6% (88.6%), Qwen3-ASR via akou `language=auto` + `languages[]` 78.2% (94.3%; cannot name ca/gl; no confidence). Spanish called foreign: base 9/37, large-v3 3/37, Qwen 0/37. Time: base 1.3 s, large-v3 21 s (4 threads) / 13 s (16), Qwen via akou ~21 s. `DetectLanguageWithTranscriptionModel` switches detection to the transcription model with `WhisperThreadCount` threads (`DetectionThreads`).
+12. **Detection on the GPU, with a self-check (4.16.0.0)** — detection no longer passes `--no-gpu`. Before the first detection with a given whisper binary (path + modification time) and model, `WhisperProvider.GpuDetectionWorksAsync` runs the embedded English clip (`Providers/Resources/gpu-check-en.wav`, whisper.cpp's public-domain JFK sample) without `--no-gpu`, inside the caller's gate. `GpuDetectionCheck.Passed` needs `en` at p >= 0.5; anything else (another language, a flat p, a non-zero exit, a timeout) keeps that pair on `--no-gpu` for the life of the process, logged once at Warning. A check that cannot start records nothing, so the detection run reports the real launch error. Cause: whisper.cpp v1.8.4's Vulkan backend on an Intel UHD 770 (Mesa 25) answered every chunk `nl (p = 0.010000)`; v1.9.5 matched the CPU, so the pin moved to v1.9.5 (its Vulkan build needs `spirv-headers`). large-v3 on the UHD 770: 15.0 s a chunk with flash attention, against 17.4 s on 4 CPU threads, and about 4.8 GB peak in the container. On an SR-IOV-split iGPU, give containers the physical function only: compute on a virtual function hung it.
 
 **SubtitleMode** enum: `Full` (0, default), `ForcedOnly` (1), `FullAndForced` (2), `TranslationOnly` (3). `TranslationOnly` skips native-language transcription entirely and produces only an English translated subtitle via a single `--translate` pass (medium/large models recommended); the scheduled task's `needsTranslation` gate is on whenever mode is `TranslationOnly`, or `EnableTranslation` in `Full`/`FullAndForced`.
 
@@ -180,7 +181,7 @@ The whisper-cli binary must match the Jellyfin container environment (Debian Tri
 ```bash
 # CPU-only build
 apt-get install -y git cmake g++ make
-git clone --depth 1 --branch v1.8.4 https://github.com/ggml-org/whisper.cpp.git /tmp/whisper
+git clone --depth 1 --branch v1.9.5 https://github.com/ggml-org/whisper.cpp.git /tmp/whisper
 cd /tmp/whisper
 cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF
 cmake --build build --config Release -j$(nproc)
@@ -188,8 +189,8 @@ cmake --build build --config Release -j$(nproc)
 
 ```bash
 # Vulkan (GPU) build
-apt-get install -y git cmake g++ make pkg-config libvulkan-dev glslc
-git clone --depth 1 --branch v1.8.4 https://github.com/ggml-org/whisper.cpp.git /tmp/whisper
+apt-get install -y git cmake g++ make pkg-config libvulkan-dev glslc spirv-headers
+git clone --depth 1 --branch v1.9.5 https://github.com/ggml-org/whisper.cpp.git /tmp/whisper
 cd /tmp/whisper
 cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DGGML_VULKAN=ON
 cmake --build build --config Release -j$(nproc)
@@ -237,7 +238,7 @@ Tested with 2h15m film (8107s audio), large-v3 model, 5-beam search on i5-14500:
 
 GPU offloading is critical — encode step dominates and is highly parallelizable. Vulkan on Intel UHD 770 yields 2-4x overall speedup.
 
-**GPU disabled for language detection** (by design): per-chunk process spawning makes GPU init overhead exceed the detection work (~21s/chunk with GPU vs ~15s/chunk CPU-only).
+**Language detection runs on the GPU** since 4.16.0.0, after a self-check on an English clip (item 12 under Forced Subtitles); a GPU that names the clip wrongly gets `--no-gpu`. Batches of 32 chunks pay the GPU start once.
 
 ## CI/CD
 

@@ -4,7 +4,7 @@
     <TargetFramework>net9.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Version>4.15.1.0</Version>
+    <Version>4.16.0.0</Version>
     <Authors>Sergio</Authors>
     <Company>Sergio</Company>
     <Product>WhisperSubs</Product>
@@ -23,6 +23,7 @@
     <None Remove="Web\whisperSubs.js" />
     <EmbeddedResource Include="Web\configPage.html" />
     <EmbeddedResource Include="Web\whisperSubs.js" />
+    <EmbeddedResource Include="Providers\Resources\gpu-check-en.wav" LogicalName="WhisperSubs.Providers.Resources.gpu-check-en.wav" />
   </ItemGroup>
 
   <ItemGroup>

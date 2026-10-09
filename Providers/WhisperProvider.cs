@@ -232,7 +232,7 @@ namespace WhisperSubs.Providers
         /// and the batched path build their command here, so the two can never run with different flags.
         /// Never adds -np: the batch parser needs the per-file "processing '...'" line. Pure.
         /// </summary>
-        internal static List<string> BuildDetectionArgs(string modelPath, IReadOnlyList<string> audioPaths, int threads = 4)
+        internal static List<string> BuildDetectionArgs(string modelPath, IReadOnlyList<string> audioPaths, int threads = 4, bool cpuOnly = false)
         {
             var args = new List<string> { "-m", modelPath };
             foreach (var path in audioPaths)
@@ -248,9 +248,8 @@ namespace WhisperSubs.Providers
             args.Add("-t");
             args.Add(threads.ToString(CultureInfo.InvariantCulture));
             args.Add("--detect-language");
-            // Disable GPU for language detection: a fresh process pays the GPU backend init, which
-            // for short chunks cost more than the detection itself. Transcription still uses the GPU.
-            args.Add("--no-gpu");
+            // On the GPU unless the GPU failed its self-check for this binary and model (GpuDetectionCheck).
+            if (cpuOnly) args.Add("--no-gpu");
             return args;
         }
 
@@ -520,11 +519,79 @@ namespace WhisperSubs.Providers
             await gate.WaitAsync(cancellationToken);
             try
             {
-                return await RunDetectionProcessUngatedAsync(audioPaths, detectionModel, keepOutputOnTimeout, cancellationToken);
+                var cpuOnly = !await GpuDetectionWorksAsync(detectionModel, cancellationToken);
+                return await RunDetectionProcessUngatedAsync(audioPaths, detectionModel, cpuOnly, keepOutputOnTimeout, cancellationToken);
             }
             finally
             {
                 gate.Release();
+            }
+        }
+
+        /// <summary>
+        /// Whether detection with this binary and model may run on the GPU. The first call for a pair runs
+        /// whisper-cli on the English self-check clip without --no-gpu, inside the caller's gate, and keeps the
+        /// verdict for the life of the process (<see cref="GpuDetectionCheck"/>). A check that cannot start
+        /// leaves no verdict: the detection run that follows reports the real launch error.
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Spawns whisper-cli process for the GPU self-check")]
+        private async Task<bool> GpuDetectionWorksAsync(string detectionModel, CancellationToken cancellationToken)
+        {
+            var executable = FindWhisperExecutable();
+            if (executable == null) return false;
+
+            var key = GpuDetectionCheck.Key(executable, detectionModel);
+            if (GpuDetectionCheck.TryGet(key, out var known)) return known;
+
+            string clip;
+            try { clip = GpuDetectionCheck.WriteClip(); }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not write the GPU self-check clip; language detection runs on the CPU");
+                GpuDetectionCheck.Record(key, false);
+                return false;
+            }
+
+            try
+            {
+                var (exitCode, stdout, stderr, _) = await RunDetectionProcessUngatedAsync(
+                    new[] { clip }, detectionModel, cpuOnly: false, keepOutputOnTimeout: false, cancellationToken);
+                var output = stdout + "\n" + stderr;
+                var passed = exitCode == 0 && GpuDetectionCheck.Passed(output);
+                if (passed)
+                {
+                    _logger.LogInformation("Language detection runs on the GPU: the self-check clip came back {Answer} with {Model}",
+                        GpuDetectionCheck.Answer(output), Path.GetFileName(detectionModel));
+                }
+                else
+                {
+                    _logger.LogWarning("GPU language detection failed its self-check with {Model}: an English clip came back {Answer} (exit {ExitCode}). Detection runs with --no-gpu until Jellyfin restarts or the whisper-cli file changes",
+                        Path.GetFileName(detectionModel), GpuDetectionCheck.Answer(output), exitCode);
+                }
+
+                GpuDetectionCheck.Record(key, passed);
+                return passed;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.LogWarning("GPU language detection self-check timed out with {Model}; detection runs with --no-gpu",
+                    Path.GetFileName(detectionModel));
+                GpuDetectionCheck.Record(key, false);
+                return false;
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or IOException or System.ComponentModel.Win32Exception)
+            {
+                _logger.LogWarning(ex, "GPU language detection self-check could not run with {Model}; this detection runs with --no-gpu",
+                    Path.GetFileName(detectionModel));
+                return false;
+            }
+            finally
+            {
+                try { File.Delete(clip); } catch (IOException) { } catch (UnauthorizedAccessException) { }
             }
         }
 
@@ -557,7 +624,7 @@ namespace WhisperSubs.Providers
 
         [ExcludeFromCodeCoverage(Justification = "Spawns whisper-cli process for language detection")]
         private async Task<(int ExitCode, string Stdout, string Stderr, bool TimedOut)> RunDetectionProcessUngatedAsync(
-            IReadOnlyList<string> audioPaths, string detectionModel, bool keepOutputOnTimeout, CancellationToken cancellationToken)
+            IReadOnlyList<string> audioPaths, string detectionModel, bool cpuOnly, bool keepOutputOnTimeout, CancellationToken cancellationToken)
         {
             var whisperExecutable = FindWhisperExecutable();
             if (whisperExecutable == null)
@@ -579,7 +646,7 @@ namespace WhisperSubs.Providers
             // The dedicated small detection model when available (chosen live by the caller, so a model that
             // finished downloading after construction is picked up mid-run); else the transcription model.
             // This keeps per-chunk detection under the timeout on slow CPUs. (#95)
-            foreach (var arg in BuildDetectionArgs(detectionModel, audioPaths, DetectionThreads(detectionModel, _modelPath, _threadCount)))
+            foreach (var arg in BuildDetectionArgs(detectionModel, audioPaths, DetectionThreads(detectionModel, _modelPath, _threadCount), cpuOnly))
             {
                 startInfo.ArgumentList.Add(arg);
             }

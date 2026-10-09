@@ -78,8 +78,9 @@ public sealed class HostWhisperGateTests : IDisposable
 
         await Task.WhenAll(rows.SelectMany(TitleWork));
 
+        // Three runs per title, plus the one GPU self-check before the first detection with that model.
         var lines = Peaks();
-        Assert.Equal(15, lines.Count);
+        Assert.Equal(16, lines.Count);
         Assert.Equal(1, lines.Max(p => p.Full + p.Detect));
     }
 
@@ -92,8 +93,9 @@ public sealed class HostWhisperGateTests : IDisposable
 
         await Task.WhenAll(rows.SelectMany(TitleWork));
 
+        // Three runs per title, plus the one GPU self-check before the first detection with that model.
         var lines = Peaks();
-        Assert.Equal(15, lines.Count);
+        Assert.Equal(16, lines.Count);
         Assert.Equal(1, lines.Max(p => p.Full));
         Assert.Equal(1, lines.Max(p => p.Detect));
     }
@@ -195,7 +197,7 @@ public class DetectionModelChoiceTests
     [Fact]
     public void BuildDetectionArgs_CarriesTheThreadCount()
         => Assert.Equal(
-            new[] { "-m", "m.bin", "-f", "a.wav", "-l", "auto", "-t", "16", "--detect-language", "--no-gpu" },
+            new[] { "-m", "m.bin", "-f", "a.wav", "-l", "auto", "-t", "16", "--detect-language" },
             WhisperProvider.BuildDetectionArgs("m.bin", new[] { "a.wav" }, 16));
 
     [Fact]

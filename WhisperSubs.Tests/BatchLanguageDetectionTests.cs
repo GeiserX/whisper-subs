@@ -61,7 +61,8 @@ public class BatchLanguageDetectionTests
         Assert.Contains("-l auto", joined);
         Assert.Contains("-t 4", joined);
         Assert.Contains("--detect-language", args);
-        Assert.Contains("--no-gpu", args);
+        // Detection runs on the GPU unless the GPU failed its self-check.
+        Assert.DoesNotContain("--no-gpu", args);
         // -np would silence the "processing '<path>'" lines the batch parser keys on.
         Assert.DoesNotContain("-np", args);
         Assert.DoesNotContain("--no-prints", args);
@@ -73,9 +74,15 @@ public class BatchLanguageDetectionTests
         var args = WhisperProvider.BuildDetectionArgs("m.bin", new[] { "a.wav" });
 
         Assert.Equal(
-            new[] { "-m", "m.bin", "-f", "a.wav", "-l", "auto", "-t", "4", "--detect-language", "--no-gpu" },
+            new[] { "-m", "m.bin", "-f", "a.wav", "-l", "auto", "-t", "4", "--detect-language" },
             args);
     }
+
+    [Fact]
+    public void BuildDetectionArgs_CpuOnly_AddsNoGpu()
+        => Assert.Equal(
+            new[] { "-m", "m.bin", "-f", "a.wav", "-l", "auto", "-t", "4", "--detect-language", "--no-gpu" },
+            WhisperProvider.BuildDetectionArgs("m.bin", new[] { "a.wav" }, cpuOnly: true));
 
     [Fact]
     public void Parse_AllDetected_MapsInOrderWithProbabilities()

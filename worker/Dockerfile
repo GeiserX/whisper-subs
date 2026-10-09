@@ -22,13 +22,13 @@ ARG RUNTIME_IMAGE=debian:trixie-slim
 FROM ${BUILD_IMAGE} AS build
 
 # Keep in lockstep with the plugin's pinned whisper.cpp (CLAUDE.md / build-release.yml).
-ARG WHISPER_VERSION=v1.8.4
+ARG WHISPER_VERSION=v1.9.5
 # Mirrors the plugin's `vulkan` CI matrix flags exactly.
 ARG WHISPER_CMAKE_FLAGS="-DGGML_VULKAN=ON -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_BMI2=ON"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git cmake g++ make pkg-config ca-certificates \
-        libvulkan-dev glslc \
+        libvulkan-dev glslc spirv-headers \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src

@@ -108,7 +108,7 @@ Jellyfin installed from the Debian package inside an LXC container, usually via 
 ### What breaks by default
 
 - **The data path is not `/config`.** The binary is at `/var/lib/jellyfin/data/WhisperSubs/whisper/whisper-cli`, owned by the `jellyfin` service user. Container guides that reference `/config/data` do not apply, and a binary you drop in there by hand as root will fail to execute.
-- **Old CPU, new GPU.** A lot of LXC hosts are second-hand workstation boards. An Intel Xeon E5 v2 has AVX but not AVX2, and it is often paired with a modern Arc or GeForce card. GPU transcription works fine on that combination. Language detection does not, because it runs on the CPU by design (it passes `--no-gpu`, since per-chunk GPU init costs more than it saves), and the AVX2 code in the `vulkan` or `cuda12` build is an illegal instruction on that CPU. The symptom hides the cause. You get `Could not detect language`, once per chunk, forever.
+- **Old CPU, new GPU.** A lot of LXC hosts are second-hand workstation boards. An Intel Xeon E5 v2 has AVX but not AVX2, and it is often paired with a modern Arc or GeForce card. GPU transcription can look fine on that combination while language detection fails: the `vulkan` and `cuda12` builds still run AVX2 CPU code around the GPU work, and when the GPU self-check fails, detection runs entirely on the CPU (`--no-gpu`). Either way an AVX2 instruction is illegal on that CPU. The symptom hides the cause. You get `Could not detect language`, once per chunk, forever.
 
 ### The fix
 
@@ -158,7 +158,7 @@ Select **CPU (Compatibility)** (`noavx`) in the plugin settings page and click D
 If you build `whisper-cli` yourself instead, `GGML_BMI2` defaults to **ON** in whisper.cpp and will produce a binary that still crashes on these CPUs. All of these flags are required:
 
 ```bash
-git clone --depth 1 --branch v1.8.4 https://github.com/ggml-org/whisper.cpp.git
+git clone --depth 1 --branch v1.9.5 https://github.com/ggml-org/whisper.cpp.git
 cd whisper.cpp
 cmake -B build \
   -DCMAKE_BUILD_TYPE=Release \
