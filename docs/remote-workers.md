@@ -50,7 +50,7 @@ The compose file publishes `9010:8080` and pins a semver image tag:
 ```yaml
 services:
   whisper-subs-worker:
-    image: drumsergio/whisper-subs-worker:0.1.4
+    image: drumsergio/whisper-subs-worker:0.1.5
     ports:
       - "9010:8080"
     environment:
