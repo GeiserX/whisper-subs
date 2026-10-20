@@ -78,6 +78,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
        fi \
     && rm -rf /var/lib/apt/lists/*
 
+# The CA bundle must postdate the eMudhra distrust (20250419+deb13u1), or curl trusts
+# certificates minted through those leaked intermediates on the model downloads. Its
+# own line, so a cached layer of the line above cannot keep the old bundle.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends --only-upgrade ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && . /etc/os-release \
+    && case "$VERSION_CODENAME" in \
+           trixie) min=20250419+deb13u1 ;; bookworm) min=20250419~deb12u2 ;; noble) min=20260816ubuntu0.24.04.1 ;; \
+           *) min= ; echo "[build] WARNING: no known eMudhra-safe ca-certificates version for ${VERSION_CODENAME}" ;; \
+       esac \
+    && v="$(dpkg-query -W -f='${Version}' ca-certificates)" \
+    && if [ -n "$min" ] && ! dpkg --compare-versions "$v" ge "$min"; then \
+           echo "[build] ERROR: ca-certificates $v predates the eMudhra distrust (need $min)" >&2; exit 1; \
+       fi
+
 # Silero VAD model, BAKED into the image so `--vad` works out of the box (the adapter turns
 # it on by default, matching the plugin's local whisper-cli path). It lives under
 # /opt/whisper-vad -- deliberately NOT under /models, which is a VOLUME / bind-mount in real
