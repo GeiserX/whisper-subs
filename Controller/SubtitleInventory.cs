@@ -139,6 +139,15 @@ namespace WhisperSubs.Controller
         }
 
         /// <summary>
+        /// The language whisper is run with for one audio-track tag, or null when the tag names no single
+        /// language whisper knows: blank, "und" (undetermined), "mul" (multiple languages), "zxx" (no
+        /// speech), "mis" (uncoded), or any code whisper-cli rejects. Null means the track counts as
+        /// untagged, so the run auto-detects instead of passing a language whisper-cli refuses. Pure.
+        /// </summary>
+        internal static string? WhisperLanguageForAudioTag(string? tag)
+            => NormalizeAudioTag(tag) is { } code && Providers.WhisperLanguages.Accepts(code) ? code : null;
+
+        /// <summary>
         /// The table SubtitleManager.NormalizeLanguageCode uses for audio-track tags. Its result names
         /// generated subtitle files and is the language whisper is run with, so a new arm here renames
         /// the output of existing titles. Add comparison-only codes to <see cref="NormalizeLang"/> instead.

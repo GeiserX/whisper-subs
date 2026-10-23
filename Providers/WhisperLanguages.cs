@@ -119,5 +119,15 @@ namespace WhisperSubs.Providers
         /// <summary>The code for a full language name, or null when whisper has no such language.</summary>
         internal static string? CodeFor(string name)
             => CodeByName.TryGetValue(name.Trim(), out var code) ? code : null;
+
+        private static readonly HashSet<string> Codes = new(CodeByName.Values, StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// True when whisper-cli accepts <paramref name="language"/> for <c>-l</c>: one of its codes or
+        /// full names (<c>whisper_lang_id</c> looks up both). Anything else makes whisper-cli refuse to run.
+        /// </summary>
+        internal static bool Accepts(string? language)
+            => !string.IsNullOrWhiteSpace(language)
+               && (Codes.Contains(language.Trim()) || CodeByName.ContainsKey(language.Trim()));
     }
 }
