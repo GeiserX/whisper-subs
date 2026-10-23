@@ -2745,36 +2745,43 @@ namespace WhisperSubs.Controller
                 return new List<string>();
             }
 
-            var languages = new List<string>();
+            List<string> languages;
             try
             {
-                using var doc = JsonDocument.Parse(outputBuilder.ToString());
-                if (doc.RootElement.TryGetProperty("streams", out var streams))
-                {
-                    foreach (var stream in streams.EnumerateArray())
-                    {
-                        if (stream.TryGetProperty("tags", out var tags) &&
-                            tags.TryGetProperty("language", out var langProp))
-                        {
-                            var lang = langProp.GetString();
-                            if (!string.IsNullOrEmpty(lang) && lang != "und")
-                            {
-                                var normalized = NormalizeLanguageCode(lang);
-                                if (!languages.Contains(normalized))
-                                {
-                                    languages.Add(normalized);
-                                }
-                            }
-                        }
-                    }
-                }
+                languages = ParseAudioLanguages(outputBuilder.ToString());
             }
             catch (JsonException ex)
             {
                 _logger.LogWarning(ex, "Failed to parse FFprobe output for {Path}", mediaPath);
+                languages = new List<string>();
             }
 
             _logger.LogInformation("Detected audio languages for {Path}: [{Languages}]", mediaPath, string.Join(", ", languages));
+            return languages;
+        }
+
+        /// <summary>
+        /// The distinct whisper languages in FFprobe's <c>-show_streams</c> JSON, in stream order. A tag
+        /// that names no single language whisper knows ("und", "mul", "zxx", "mis", blank, or a code
+        /// whisper-cli rejects) is left out, so a title with only such tags resolves to "auto" and
+        /// whisper detects the language itself. Throws <see cref="JsonException"/> on malformed JSON. Pure.
+        /// </summary>
+        internal static List<string> ParseAudioLanguages(string ffprobeJson)
+        {
+            var languages = new List<string>();
+            using var doc = JsonDocument.Parse(ffprobeJson);
+            if (!doc.RootElement.TryGetProperty("streams", out var streams)) return languages;
+            foreach (var stream in streams.EnumerateArray())
+            {
+                if (stream.TryGetProperty("tags", out var tags)
+                    && tags.TryGetProperty("language", out var langProp)
+                    && langProp.ValueKind == JsonValueKind.String
+                    && SubtitleInventory.WhisperLanguageForAudioTag(langProp.GetString()) is { } code
+                    && !languages.Contains(code))
+                {
+                    languages.Add(code);
+                }
+            }
             return languages;
         }
 
