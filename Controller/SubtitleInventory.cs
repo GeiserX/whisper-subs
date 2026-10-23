@@ -156,8 +156,9 @@ namespace WhisperSubs.Controller
         {
             if (string.IsNullOrWhiteSpace(code)) return null;
             var c = code.Trim().ToLowerInvariant();
-            // Undetermined / placeholder language tags never match a concrete desired language.
-            if (c == "und" || c == "unknown" || c == "auto") return null;
+            // Tags that name no single language (undetermined, placeholder, multiple, no speech, uncoded)
+            // never match a concrete desired language and never count as known audio.
+            if (c == "und" || c == "unknown" || c == "auto" || c == "mul" || c == "zxx" || c == "mis") return null;
             return c switch
             {
                 "spa" or "spanish" or "es" => "es",

@@ -67,4 +67,20 @@ public class UnknownAudioLanguageTagTests
     [Fact]
     public void FfprobeTrackWithoutTags_IsLeftOut()
         => Assert.Empty(SubtitleManager.ParseAudioLanguages("{\"streams\":[{\"codec_type\":\"audio\"}]}"));
+
+    // The sweep compares Jellyfin's own tags with the same rule, so a track that names no single
+    // language must not count as known non-English audio there either.
+    [Theory]
+    [InlineData("mul")]
+    [InlineData("zxx")]
+    [InlineData("mis")]
+    public void TagWithNoSingleLanguage_IsUnknownAudioForTargets(string tag)
+        => Assert.Equal(SubtitleManager.TargetAudioVerdict.Unknown, SubtitleManager.ClassifyTargetAudio(new[] { tag }, null));
+
+    [Theory]
+    [InlineData("mul")]
+    [InlineData("zxx")]
+    [InlineData("mis")]
+    public void TagWithNoSingleLanguage_DoesNotMarkAMissingTargetComplete(string tag)
+        => Assert.False(SubtitleManager.IsTranslationComplete(true, new[] { "nl" }, new[] { tag }, _ => false, _ => false, _ => true, null));
 }
