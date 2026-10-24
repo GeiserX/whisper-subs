@@ -10,7 +10,7 @@
 
 services:
   whisper-subs-worker:
-    image: drumsergio/whisper-subs-worker:0.1.5
+    image: drumsergio/whisper-subs-worker:0.1.6
     # To build locally instead of pulling, comment out `image:` above and uncomment:
     # build:
     #   context: .
@@ -26,6 +26,8 @@ services:
       # Served whisper model. whisper-server serves exactly ONE model; the plugin's
       # per-worker "Model" field is sent but ignored by this backend -- set it HERE.
       WHISPER_MODEL: large-v3-turbo-q5_0
+      # Free the model after 10 idle minutes; the next request loads it again. "0" keeps it loaded.
+      WHISPER_IDLE_MINUTES: "10"
       # Optional Bearer token. If set, configure the SAME key on the plugin worker.
       # API_KEY: "change-me-to-a-long-random-string"
       # Accept non-WAV audio from other OpenAI clients (needs an image built with
@@ -96,8 +98,9 @@ services:
     mem_limit: 6g
 
     healthcheck:
-      # /health reports 200 only once the model is loaded (same backend that
-      # serves /v1/audio/transcriptions). Unauthenticated by design.
+      # /health reports 200 once the model is loaded (same backend that serves
+      # /v1/audio/transcriptions), and 200 "idle" while WHISPER_IDLE_MINUTES has it
+      # unloaded (503 if the last load on demand failed). Unauthenticated by design.
       test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:8080/health"]
       interval: 30s
       timeout: 10s

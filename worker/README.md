@@ -138,6 +138,7 @@ another host) and add each to the pool.
 | `WHISPER_TMP_DIR` | `/tmp` | Temp dir for `CONVERT=true` ffmpeg WAVs. whisper-server's own default (`.`) is the read-only rootfs, so the adapter passes `--tmp-dir` here; the compose mounts a tmpfs at `/tmp` |
 | `WHISPER_BACKEND_PORT` | `8081` | Internal `whisper-server` port (localhost only) |
 | `WHISPER_READY_TIMEOUT` | `600` | Seconds to wait for the model to load before serving |
+| `WHISPER_IDLE_MINUTES` | `0` | Frees the model after this many minutes without a request and loads it again on the next one. `0` keeps it loaded from boot. `10` is a good value on an iGPU or other shared-memory host, where the model's GPU buffers are host RAM (large-v3 about 3 GB). The cost is a cold load on the first request after an unload, about 6 s for large-v3 on an Intel UHD 770. Max `1440`. At boot the worker loads the model once and frees it, so a missing model or a bad `WHISPER_EXTRA_ARGS` flag fails at start-up. While unloaded, `/health` answers 200 `{"status":"idle"}`, or 503 `{"status":"model failed to load"}` after a load on demand failed |
 
 > **Accuracy — matches local transcription (as of 0.1.2).** The decoding defaults now mirror
 > the plugin's own local `whisper-cli` path — `-sns` (suppress non-speech), `-mc 0`
@@ -270,7 +271,7 @@ Raise `mem_limit` in the compose file if you move to a full large model.
 
 ## Verify it works
 
-Readiness (unauthenticated; returns `{"status":"ok"}` once the model is loaded):
+Readiness (unauthenticated; returns `{"status":"ok"}` once the model is loaded, or `{"status":"idle"}` while `WHISPER_IDLE_MINUTES` has it unloaded (503 `{"status":"model failed to load"}` if the last load on demand failed)):
 
 ```bash
 curl -fsS http://<worker-host>:9010/health

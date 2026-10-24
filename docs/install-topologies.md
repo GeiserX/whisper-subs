@@ -284,6 +284,6 @@ docker exec jellyfin ldd /config/data/WhisperSubs/whisper/whisper-cli
 
 ## When none of this fits
 
-If the container cannot get the libraries and the CPU is too slow for `noavx` to be usable, stop fighting the box. Run the transcription somewhere else and point Jellyfin at it: see [Remote workers](remote-workers.md). The plugin still extracts audio locally; only the transcription moves.
+If the container cannot get the libraries and the CPU is too slow for `noavx` to be usable, stop fighting the box. Run the transcription somewhere else and point Jellyfin at it: see [Remote workers](remote-workers.md). The plugin still extracts audio locally; only the transcription moves. On an iGPU or other shared-memory worker host, set `WHISPER_IDLE_MINUTES=10` so the worker gives the model's memory back between library scans.
 
 For picking between the seven binary variants on hardware not covered here, see [Choosing a variant](choosing-a-variant.md). For reading a failure out of the logs, see [Diagnostics](diagnostics.md).
