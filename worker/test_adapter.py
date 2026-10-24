@@ -166,6 +166,7 @@ class MaxLenFlagTests(unittest.TestCase):
 # A stand-in whisper-server: answers /health 503 until FAKE_READY_DELAY seconds have passed (never,
 # with FAKE_NEVER_READY=1), then 200, and /inference with FAKE_BODY after FAKE_INFER_SLEEP seconds.
 # FAKE_TERM_DELAY makes SIGTERM take that long, so a test can land a request mid-stop.
+# FAKE_EXIT_AT_START=1 exits 0 at once, as whisper-server does on an unknown flag.
 _FAKE_SERVER = r"""
 import os, signal, sys, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -176,6 +177,8 @@ ready_delay = float(os.environ.get("FAKE_READY_DELAY", "0"))
 never_ready = os.environ.get("FAKE_NEVER_READY") == "1"
 infer_sleep = float(os.environ.get("FAKE_INFER_SLEEP", "0"))
 term_delay = float(os.environ.get("FAKE_TERM_DELAY", "0"))
+if os.environ.get("FAKE_EXIT_AT_START") == "1":
+    sys.exit(0)
 
 def _term(*_):
     time.sleep(term_delay)
@@ -322,20 +325,24 @@ class IdleUnloadTests(_AdapterHarness):
     def test_b_idle_mode_loads_on_first_request(self):
         self.start({"WHISPER_IDLE_MINUTES": "10"})
         self.m.boot()
-        self.assertEqual(self.spawned, [])
+        # Boot loads once to check the setup, then frees the model at once.
+        self.assertEqual(len(self.spawned), 1)
+        self.assertTrue(self.wait_for(lambda: self.spawned[0].poll() is not None))
+        self.assertIsNone(self.m._child)
         self.assertEqual(self.request("GET"), (200, '{"status":"idle"}'))
         self.assertEqual(self.request("HEAD")[0], 200)
         status, body = self.post()
         self.assertEqual(status, 200)
         self.assertIn("fake", body)
-        self.assertEqual(len(self.spawned), 1)
+        self.assertEqual(len(self.spawned), 2)
+        self.assertEqual(self.exit_calls, [])
         self.assertEqual(self.request("GET"), (200, '{"status":"ok"}'))
 
     def test_c_unloads_after_idle_without_exiting(self):
         self.start({"WHISPER_IDLE_MINUTES": "1"})
         self.fast_reaper(0.3)
         self.assertEqual(self.post()[0], 200)
-        child = self.spawned[0]
+        child = self.spawned[-1]
         self.assertTrue(self.wait_for(lambda: child.poll() is not None))
         time.sleep(0.3)  # give the watcher time to (wrongly) exit
         self.assertEqual(self.exit_calls, [])
@@ -346,14 +353,14 @@ class IdleUnloadTests(_AdapterHarness):
         self.start({"WHISPER_IDLE_MINUTES": "1"}, fake_env={"FAKE_TERM_DELAY": "1"})
         self.fast_reaper(0.2)
         self.assertEqual(self.post()[0], 200)
-        first = self.spawned[0]
+        first = self.spawned[-1]
         # The reaper holds the lifecycle lock for the whole (slow) stop.
         self.assertTrue(self.wait_for(lambda: self.m._child is None and first.poll() is None))
         status, body = self.post()
         self.assertEqual(status, 200)
         self.assertIn("fake", body)
         self.assertIsNotNone(first.poll())
-        self.assertEqual(len(self.spawned), 2)
+        self.assertEqual(len(self.spawned), 3)  # boot check, first request, fresh child
         self.assertEqual(self.exit_calls, [])
 
     def test_e_concurrent_requests_spawn_one_child(self):
@@ -367,7 +374,7 @@ class IdleUnloadTests(_AdapterHarness):
         for t in threads:
             t.join()
         self.assertEqual(results, [200] * 4)
-        self.assertEqual(len(self.spawned), 1)
+        self.assertEqual(len(self.spawned), 2)  # the boot check, then one for all four requests
         self.assertEqual(self.m._active, 0)
 
     def test_f_never_stops_a_child_mid_request(self):
@@ -376,15 +383,15 @@ class IdleUnloadTests(_AdapterHarness):
         status, body = self.post()
         self.assertEqual(status, 200)
         self.assertIn("fake", body)
-        self.assertEqual(len(self.spawned), 1)
-        self.assertIsNone(self.spawned[0].poll())
+        self.assertEqual(len(self.spawned), 2)  # boot check, then the request's child
+        self.assertIsNone(self.spawned[-1].poll())
         self.assertEqual(self.m._active, 0)
 
     def test_g_a_crash_still_exits(self):
         self.start({"WHISPER_IDLE_MINUTES": "10"})
         self.m.boot()
         self.assertEqual(self.post()[0], 200)
-        self.spawned[0].kill()
+        self.spawned[-1].kill()
         self.assertTrue(self.wait_for(lambda: self.exit_calls))
         self.assertEqual(self.exit_calls, [1])
 
@@ -393,7 +400,36 @@ class IdleUnloadTests(_AdapterHarness):
                    fake_env={"FAKE_NEVER_READY": "1"})
         self.m.boot()
         self.assertEqual(self.post(), (503, '{"error":"model failed to load"}'))
-        self.assertEqual(self.m._active, 0)
+        # leave_backend() runs in the handler's finally, after the 503 is already sent.
+        self.assertTrue(self.wait_for(lambda: self.m._active == 0))
+
+    def test_h2_failed_load_is_unhealthy_until_a_load_succeeds(self):
+        self.start({"WHISPER_IDLE_MINUTES": "10"})
+        self.m.boot()
+        self.assertEqual(self.request("GET"), (200, '{"status":"idle"}'))
+        model = self.m.MODEL_FILE
+        os.remove(model)  # the models volume went away after boot
+        self.assertEqual(self.post(), (503, '{"error":"model failed to load"}'))
+        self.assertEqual(self.request("GET"), (503, '{"status":"model failed to load"}'))
+        self.assertEqual(self.request("HEAD")[0], 503)
+        open(model, "w").close()
+        self.assertEqual(self.post()[0], 200)
+        self.assertEqual(self.request("GET"), (200, '{"status":"ok"}'))
+        self.assertEqual(self.exit_calls, [])
+
+    def test_h3_a_bad_flag_fails_at_boot_in_idle_mode(self):
+        # whisper-server exits 0 on an unknown flag; that must stop the container at boot,
+        # as it does without idle unload, not on the first real request.
+        self.start({"WHISPER_IDLE_MINUTES": "10"}, fake_env={"FAKE_EXIT_AT_START": "1"})
+        self.m.boot()
+        self.assertTrue(self.wait_for(lambda: self.exit_calls))
+        self.assertEqual(self.exit_calls, [0])
+
+    def test_h4_a_missing_model_fails_at_boot_in_idle_mode(self):
+        self.start({"WHISPER_IDLE_MINUTES": "10"})
+        os.remove(self.m.MODEL_FILE)
+        with self.assertRaises(SystemExit):
+            self.m.boot()
 
     def test_i_env_parsing(self):
         m = _load_adapter()

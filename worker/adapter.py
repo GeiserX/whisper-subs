@@ -268,6 +268,10 @@ _became_ready = threading.Event()
 _lifecycle = threading.Lock()
 _active = 0
 _last_used = time.monotonic()
+# Set when a load on demand failed (spawn raised, or not ready in time) and cleared the next time the
+# upstream answers ready. While set, readiness is 503, so a worker that cannot load its model never
+# reports itself healthy just because nothing is running.
+_load_failed = False
 
 
 def build_backend_cmd():
@@ -418,7 +422,7 @@ def ensure_backend():
     arrives while the reaper is stopping the old one waits for the lock, then starts a fresh one.
     Returns False when the model did not load in time; the caller still leaves via leave_backend().
     """
-    global _active
+    global _active, _load_failed
     with _lifecycle:
         _active += 1
         if _child is None or _child.poll() is not None:
@@ -426,9 +430,11 @@ def ensure_backend():
                 spawn_whisper_server()
             except (Exception, SystemExit) as exc:  # model file gone, binary missing
                 log("could not start upstream whisper-server: %r" % exc)
+                _load_failed = True
                 return False
     if not wait_until_ready(READY_TIMEOUT):
         log("upstream not ready within %ds after a load on demand" % READY_TIMEOUT)
+        _load_failed = True
         return False
     return True
 
@@ -468,6 +474,7 @@ def start_idle_reaper():
 
 
 def backend_ready():
+    global _load_failed
     try:
         c = http.client.HTTPConnection(BACKEND_HOST, BACKEND_PORT, timeout=5)
         c.request("GET", "/health")
@@ -477,6 +484,7 @@ def backend_ready():
         ok = r.status == 200
         if ok:
             _became_ready.set()  # once ready, a later exit(0) is a normal stop, not a bad flag (N6)
+            _load_failed = False
         return ok
     except Exception:
         return False
@@ -575,6 +583,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _readiness(self):
         if _model_unloaded():
+            if _load_failed:
+                self._send_json(503, '{"status":"model failed to load"}', close=True)
+                return
             # Unloaded on purpose: healthy, and the next request loads the model.
             self._send_json(200, '{"status":"idle"}')
         elif backend_ready():
@@ -592,7 +603,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_HEAD(self):
         if self.path in ("/health", TRANSCRIBE_PATH, TRANSLATE_PATH, "/"):
             # HEAD readiness: status only, no body.
-            ok = _model_unloaded() or backend_ready()
+            ok = (_model_unloaded() and not _load_failed) or backend_ready()
             self.send_response(200 if ok else 503)
             self.send_header("Content-Length", "0")
             if not ok:
@@ -828,10 +839,18 @@ def _extract_boundary(content_type):
 # main
 # --------------------------------------------------------------------------- #
 def boot():
+    global _child
     if IDLE_MINUTES > 0:
-        # Fail a misconfiguration now, not on the first request.
-        _check_model_file()
-        log("idle unload on: model loads on first request, unloads after %d min idle" % IDLE_MINUTES)
+        # Load once and free it, so a missing model, a bad WHISPER_EXTRA_ARGS flag or a broken GPU
+        # fails here, as it does without idle unload, and not on the first real request.
+        spawn_whisper_server()
+        if wait_until_ready(READY_TIMEOUT):
+            child, _child = _child, None  # detach first: the watcher then sees an idle stop
+            _terminate_child(child)
+            log("idle unload on: model checked and freed; it loads on the next request and "
+                "unloads after %d min idle" % IDLE_MINUTES)
+        else:
+            log("upstream not ready within %ds at boot; the idle reaper frees it once idle" % READY_TIMEOUT)
         start_idle_reaper()
         return
 

@@ -100,7 +100,7 @@ services:
     healthcheck:
       # /health reports 200 once the model is loaded (same backend that serves
       # /v1/audio/transcriptions), and 200 "idle" while WHISPER_IDLE_MINUTES has it
-      # unloaded. Unauthenticated by design.
+      # unloaded (503 if the last load on demand failed). Unauthenticated by design.
       test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:8080/health"]
       interval: 30s
       timeout: 10s
