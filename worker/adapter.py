@@ -40,6 +40,9 @@
 #   * Optional Bearer auth on the POST routes when API_KEY is set.
 #   * Spawns and supervises the upstream `whisper-server` child process; if it
 #     dies, the adapter exits non-zero so the container restarts.
+#   * With WHISPER_IDLE_MINUTES > 0, starts whisper-server on the first request
+#     instead of at boot and stops it after that many idle minutes, so an idle
+#     worker gives the model's memory back. /health answers 200 "idle" meanwhile.
 #
 # Language handling: whisper-server defaults `language` to "en" (server.cpp), which
 # would break auto-detect and the plugin's verbose_json language-detection call.
@@ -202,8 +205,42 @@ TRANSLATE_PATH = "/v1/audio/translations"
 
 
 def log(msg):
-    sys.stdout.write("[adapter] %s\n" % msg)
-    sys.stdout.flush()
+    # A failed stdout write (closed pipe, detached log driver) must never raise out of a log call:
+    # in the upstream watcher it would skip os._exit and leave a worker with no backend serving 502s.
+    try:
+        sys.stdout.write("[adapter] %s\n" % msg)
+        sys.stdout.flush()
+    except (OSError, ValueError):
+        pass
+
+
+IDLE_MINUTES_MAX = 24 * 60
+
+
+def _parse_idle_minutes(raw):
+    """WHISPER_IDLE_MINUTES -> minutes of idle before the model is unloaded; 0 = never (keep it
+    loaded from boot, the pre-0.1.6 behaviour). Garbage or a negative value degrades to 0 and a
+    value past a day is clamped, each with a warning, never a crash-loop."""
+    v = _parse_int(raw)
+    if v is None or v < 0:
+        log("WARNING: WHISPER_IDLE_MINUTES=%r is not a non-negative integer; using 0 (never "
+            "unload)." % raw)
+        return 0
+    if v > IDLE_MINUTES_MAX:
+        log("WARNING: WHISPER_IDLE_MINUTES=%r is above %d; using %d." % (raw, IDLE_MINUTES_MAX, IDLE_MINUTES_MAX))
+        return IDLE_MINUTES_MAX
+    return v
+
+
+# Free the model after this many minutes without a request and load it again on the next one.
+# On an iGPU or other shared-memory host the Vulkan buffers are host RAM, so an idle worker holding
+# large-v3 (about 3 GB) only pushes the rest of the box into swap. 0 (the image default) keeps the
+# model loaded from boot until the container stops. A cold load is the price: the first request
+# after an unload waits for it (about 6 s for large-v3 on a UHD 770).
+IDLE_MINUTES = _parse_idle_minutes(_env("WHISPER_IDLE_MINUTES", "0"))
+IDLE_SECONDS = IDLE_MINUTES * 60
+# How often the idle reaper looks. Module-level so the tests can shrink it with IDLE_SECONDS.
+REAP_INTERVAL = min(30.0, IDLE_SECONDS / 4.0)
 
 
 # Serialises inference forwarding to the single-threaded upstream (see WHISPER_MAX_INFLIGHT).
@@ -222,6 +259,15 @@ _child = None  # type: subprocess.Popen | None
 # Set the first time the upstream reports ready (via backend_ready). Lets the watcher
 # tell a genuine mid-run crash from a startup misconfiguration that exits 0 (N6).
 _became_ready = threading.Event()
+
+# Idle-unload state, used only when IDLE_MINUTES > 0. _lifecycle guards _child changes, _active and
+# _last_used together, so a request can never meet a half-stopped child and the reaper can never stop
+# a child that is loading or serving. _active counts requests between ensure_backend() and the end
+# of their upstream exchange; the inflight semaphore cannot stand in for it (WHISPER_MAX_INFLIGHT=0
+# makes it None).
+_lifecycle = threading.Lock()
+_active = 0
+_last_used = time.monotonic()
 
 
 def build_backend_cmd():
@@ -297,21 +343,37 @@ def build_backend_cmd():
     return cmd
 
 
-def spawn_whisper_server():
-    global _child
+def _check_model_file():
     if not MODEL_FILE or not os.path.isfile(MODEL_FILE):
         log("FATAL: model file not found: %r (set WHISPER_MODEL / WHISPER_MODEL_FILE)" % MODEL_FILE)
         sys.exit(1)
 
+
+def spawn_whisper_server():
+    global _child
+    _check_model_file()
+
     cmd = build_backend_cmd()
 
     log("starting upstream: %s" % " ".join(shlex.quote(c) for c in cmd))
-    _child = subprocess.Popen(cmd)
+    child = subprocess.Popen(cmd)
+    _child = child
 
     # If the upstream dies, take the whole container down so it restarts cleanly
     # (docker-compose `restart: unless-stopped`) rather than serving 502s forever.
+    # The one exit that is not a crash is the idle reaper's: it detaches the child from _child
+    # before stopping it, so a child that is no longer the current one ends here quietly.
     def _watch():
-        code = _child.wait()
+        code = child.wait()
+        if child is not _child:
+            log("upstream stopped (idle)")
+            return
+        try:
+            _report_exit(code)
+        finally:
+            os._exit(1 if code else 0)
+
+    def _report_exit(code):
         if code == 0 and not _became_ready.is_set():
             # whisper-server exits 0 (NOT non-zero) on an unrecognized CLI flag -- it
             # prints usage then exit(0) -- and likewise when --convert is set but ffmpeg
@@ -326,21 +388,82 @@ def spawn_whisper_server():
                 "recreate the container." % WHISPER_EXTRA_ARGS)
         else:
             log("upstream whisper-server exited (code=%s); shutting down" % code)
-        os._exit(1 if code else 0)
 
     threading.Thread(target=_watch, name="whisper-watch", daemon=True).start()
 
 
-def _terminate_child():
-    if _child and _child.poll() is None:
+def _terminate_child(child=None):
+    child = child or _child
+    if child and child.poll() is None:
         try:
-            _child.terminate()
+            child.terminate()
             try:
-                _child.wait(timeout=10)
+                child.wait(timeout=10)
             except Exception:
-                _child.kill()
+                child.kill()
         except Exception:
             pass
+
+
+def _model_unloaded():
+    """True when idle unload is on and no whisper-server is running (never loaded, or unloaded)."""
+    return IDLE_MINUTES > 0 and (_child is None or _child.poll() is not None)
+
+
+def ensure_backend():
+    """Count this request as active and make sure a whisper-server is running and ready.
+
+    The spawn happens under _lifecycle, so concurrent requests start one child, and a request that
+    arrives while the reaper is stopping the old one waits for the lock, then starts a fresh one.
+    Returns False when the model did not load in time; the caller still leaves via leave_backend().
+    """
+    global _active
+    with _lifecycle:
+        _active += 1
+        if _child is None or _child.poll() is not None:
+            try:
+                spawn_whisper_server()
+            except (Exception, SystemExit) as exc:  # model file gone, binary missing
+                log("could not start upstream whisper-server: %r" % exc)
+                return False
+    if not wait_until_ready(READY_TIMEOUT):
+        log("upstream not ready within %ds after a load on demand" % READY_TIMEOUT)
+        return False
+    return True
+
+
+def leave_backend():
+    global _active, _last_used
+    with _lifecycle:
+        _active -= 1
+        _last_used = time.monotonic()
+
+
+def _reap_idle_once():
+    """Stop the child when nothing is using it and it has sat idle for IDLE_SECONDS."""
+    global _child
+    with _lifecycle:
+        if _active != 0 or _child is None or _child.poll() is not None:
+            return False
+        if time.monotonic() - _last_used < IDLE_SECONDS:
+            return False
+        # Detach first, so the watcher sees an idle stop and not a crash.
+        child, _child = _child, None
+        _terminate_child(child)
+    log("model unloaded after %d min idle" % IDLE_MINUTES)
+    return True
+
+
+def start_idle_reaper():
+    def _loop():
+        while True:
+            time.sleep(REAP_INTERVAL)
+            try:
+                _reap_idle_once()
+            except Exception as exc:  # never let the reaper die silently
+                log("idle reaper error: %r" % exc)
+
+    threading.Thread(target=_loop, name="idle-reaper", daemon=True).start()
 
 
 def backend_ready():
@@ -450,7 +573,10 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
     def _readiness(self):
-        if backend_ready():
+        if _model_unloaded():
+            # Unloaded on purpose: healthy, and the next request loads the model.
+            self._send_json(200, '{"status":"idle"}')
+        elif backend_ready():
             self._send_json(200, '{"status":"ok"}')
         else:
             self._send_json(503, '{"status":"loading model"}', close=True)
@@ -465,7 +591,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_HEAD(self):
         if self.path in ("/health", TRANSCRIBE_PATH, TRANSLATE_PATH, "/"):
             # HEAD readiness: status only, no body.
-            ok = backend_ready()
+            ok = _model_unloaded() or backend_ready()
             self.send_response(200 if ok else 503)
             self.send_header("Content-Length", "0")
             if not ok:
@@ -558,6 +684,7 @@ class Handler(BaseHTTPRequestHandler):
             self.close_connection = True
             return
 
+        counted = False  # True once ensure_backend() counted this request in _active
         conn = None
         client_gone = threading.Event()
         watch_stop = threading.Event()
@@ -566,6 +693,12 @@ class Handler(BaseHTTPRequestHandler):
         # Only the latter may recycle whisper-server.
         upload_done = False
         try:
+            if IDLE_MINUTES > 0:
+                counted = True
+                if not ensure_backend():
+                    # Plain 503: the plugin's retry and requeue path handles it.
+                    self._send_json(503, '{"error":"model failed to load"}', close=True)
+                    return
             conn = http.client.HTTPConnection(
                 BACKEND_HOST, BACKEND_PORT, timeout=compute_backend_timeout(total_len)
             )
@@ -662,6 +795,8 @@ class Handler(BaseHTTPRequestHandler):
             if conn is not None:
                 conn.close()
             _release_inflight_slot()
+            if counted:
+                leave_backend()
 
         # Relay upstream status + body back to the plugin verbatim.
         self.send_response(resp.status)
@@ -691,6 +826,23 @@ def _extract_boundary(content_type):
 # --------------------------------------------------------------------------- #
 # main
 # --------------------------------------------------------------------------- #
+def boot():
+    if IDLE_MINUTES > 0:
+        # Fail a misconfiguration now, not on the first request.
+        _check_model_file()
+        log("idle unload on: model loads on first request, unloads after %d min idle" % IDLE_MINUTES)
+        start_idle_reaper()
+        return
+
+    spawn_whisper_server()
+
+    log("waiting for upstream model to load (timeout=%ds)..." % READY_TIMEOUT)
+    if not wait_until_ready(READY_TIMEOUT):
+        log("upstream not ready within %ds; continuing to serve (readiness=503 until loaded)" % READY_TIMEOUT)
+    else:
+        log("upstream ready; model loaded")
+
+
 def main():
     def _term(signum, _frame):
         log("received signal %s; stopping" % signum)
@@ -700,13 +852,7 @@ def main():
     signal.signal(signal.SIGTERM, _term)
     signal.signal(signal.SIGINT, _term)
 
-    spawn_whisper_server()
-
-    log("waiting for upstream model to load (timeout=%ds)..." % READY_TIMEOUT)
-    if not wait_until_ready(READY_TIMEOUT):
-        log("upstream not ready within %ds; continuing to serve (readiness=503 until loaded)" % READY_TIMEOUT)
-    else:
-        log("upstream ready; model loaded")
+    boot()
 
     if not API_KEY and LISTEN_HOST not in ("127.0.0.1", "localhost", "::1"):
         log("WARNING: serving on %s with NO API_KEY — this transcription endpoint is UNAUTHENTICATED. "

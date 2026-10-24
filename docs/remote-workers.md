@@ -50,7 +50,7 @@ The compose file publishes `9010:8080` and pins a semver image tag:
 ```yaml
 services:
   whisper-subs-worker:
-    image: drumsergio/whisper-subs-worker:0.1.5
+    image: drumsergio/whisper-subs-worker:0.1.6
     ports:
       - "9010:8080"
     environment:
@@ -70,6 +70,7 @@ Settings worth knowing:
 | `WHISPER_MAX_LEN` | *(empty = unlimited)* | Max characters per cue (`-ml`), paired with `-sow`. The worker-side twin of the plugin's **Maximum subtitle line length** — a worker segments its own output, so set it in both places |
 | `WHISPER_THREADS` | *(whisper default)* | CPU threads; set to your core count on CPU-only workers |
 | `WHISPER_VAD` | `true` | Native Silero VAD, so cue starts snap to real speech onset |
+| `WHISPER_IDLE_MINUTES` | `0` | Frees the model after this many minutes without a request and loads it again on the next one. `0` keeps it loaded from boot. `10` is a good value on an iGPU or other shared-memory host, where the model's GPU buffers are host RAM (large-v3 about 3 GB). The cost is a cold load on the first request after an unload, about 6 s for large-v3 on an Intel UHD 770. Max `1440`. While unloaded, `/health` answers 200 `{"status":"idle"}` |
 
 !!! warning
     With no `API_KEY` the worker is an unauthenticated transcription endpoint on `0.0.0.0` — anyone who can reach the port can drive your GPU. Run it on a trusted network, or set `API_KEY` and put TLS in front of it. Do not port-forward it.
@@ -80,7 +81,7 @@ Settings worth knowing:
 curl -fsS http://<worker-host>:9010/health
 ```
 
-It returns `{"status":"ok"}` once the model is loaded. The endpoint is unauthenticated by design so Docker healthchecks work.
+It returns `{"status":"ok"}` once the model is loaded, or `{"status":"idle"}` while `WHISPER_IDLE_MINUTES` has it unloaded. The endpoint is unauthenticated by design so Docker healthchecks work.
 
 Other backends work too. [Speaches](https://github.com/speaches-ai/speaches) is a good choice for CPU-only boxes and NVIDIA GPUs; it is built on faster-whisper/CTranslate2, which has no Vulkan path, so it will not accelerate on an Intel iGPU — that case is exactly why the whisper.cpp + Vulkan image exists.
 
