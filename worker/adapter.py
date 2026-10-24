@@ -407,7 +407,8 @@ def _terminate_child(child=None):
 
 def _model_unloaded():
     """True when idle unload is on and no whisper-server is running (never loaded, or unloaded)."""
-    return IDLE_MINUTES > 0 and (_child is None or _child.poll() is not None)
+    child = _child  # one read: the reaper may set _child to None between two
+    return IDLE_MINUTES > 0 and (child is None or child.poll() is not None)
 
 
 def ensure_backend():
