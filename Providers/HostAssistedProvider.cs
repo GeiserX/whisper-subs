@@ -104,8 +104,9 @@ namespace WhisperSubs.Providers
     }
 
     /// <summary>
-    /// The title's language is not one Qwen3-ASR covers, and this server has no Whisper to take it. The same
-    /// answer on every run until the configuration changes, so the title is skipped, not retried.
+    /// The title's language is not one Qwen3-ASR covers, or akou could not name it, and this server has no
+    /// Whisper to take it. The same answer on every run until the title or the configuration changes, so the
+    /// title is skipped, not retried, unless another worker in the pool takes it.
     /// </summary>
     public sealed class LanguageNotCoveredException : InvalidOperationException
     {
@@ -115,7 +116,16 @@ namespace WhisperSubs.Providers
             Language = language;
         }
 
-        /// <summary>The uncovered language code.</summary>
+        private LanguageNotCoveredException(string message, bool undetected)
+            : base(message)
+        {
+            Language = "";
+        }
+
+        /// <summary>akou named no language for the title: <paramref name="message"/> says what to do.</summary>
+        public static LanguageNotCoveredException Undetected(string message) => new(message, undetected: true);
+
+        /// <summary>The uncovered language code, empty when no language was named.</summary>
         public string Language { get; }
     }
 }

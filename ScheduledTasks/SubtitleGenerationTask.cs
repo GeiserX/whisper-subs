@@ -233,7 +233,9 @@ namespace WhisperSubs.ScheduledTasks
             var degraded = SubtitleSkipCache.Degraded(
                 forcedMissing: mode != config.SubtitleMode,
                 englishMissing: WorkerJob.TranslationPossible(config.SubtitleMode, config.EnableTranslation) && !poolTranslates,
-                hostWhisperMissing: pool.AnyItemWorker(w => w.Provider is HostAssistedProvider h && !h.HostWhisperInstalled));
+                // Only while no other worker takes the titles such a row cannot: adding one drops the entries.
+                hostWhisperMissing: pool.AnyItemWorker(w => w.Provider is HostAssistedProvider h && !h.HostWhisperInstalled)
+                    && !pool.HasCapableWorker(WorkerJob.AnyLanguage));
             var cacheSignature = SubtitleSkipCache.ComputeSignature(config, unservedTargets, degraded);
             // Titles in a language no worker here covers: remembered at the end of the run, so the sweep
             // does not extract and send them again every night.
@@ -653,7 +655,8 @@ namespace WhisperSubs.ScheduledTasks
                 }
                 catch (LanguageNotCoveredException)
                 {
-                    // Logged by the manager; a skip, not a failure, and remembered for the next runs.
+                    // Logged by the manager, and thrown only when no worker in the pool takes the language
+                    // (SubtitleManager.OnAnotherWorkerAsync): a skip, not a failure, remembered for the next runs.
                     notCovered[item.Id] = item.DateLastSaved.Ticks;
                     CountSweptItem();
                 }

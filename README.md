@@ -32,14 +32,19 @@
 1. Start an akou server next to Jellyfin, fetch its Qwen3-ASR model and make a key for the plugin:
 
    ```bash
-   docker run -d --name akou -p 8476:8476 -v akou-data:/data -v akou-models:/models drumsergio/akou:1.2.4
+   docker network create akou-net
+   docker network connect akou-net jellyfin   # your Jellyfin container's name
+   docker run -d --name akou --network akou-net -e AKOU_BEHIND_PROXY=true \
+     -v akou-data:/data -v akou-models:/models drumsergio/akou:1.2.4
    docker exec akou akou models pull best
    docker exec akou akou keys create --name whisper-subs --scope jobs
    ```
 
+   akou refuses to start on a container's open address unless `AKOU_BEHIND_PROXY=true` says something else guards it. Here nothing publishes the port, so only containers on `akou-net` reach it.
+
 2. In Jellyfin, go to **Dashboard** > **Plugins** > **Repositories** and add `https://geiserx.github.io/whisper-subs/manifest.json`.
 3. Install **WhisperSubs** from **Catalog** and restart Jellyfin.
-4. Open **Dashboard** > **Plugins** > **My Plugins** > **WhisperSubs**. Under **Connect an akou server**, enter the URL (`http://akou:8476` when both containers share a network) and the `ak_` key, press **Test**, then **Save**. Press **Generate Subtitles** on any title.
+4. Open **Dashboard** > **Plugins** > **My Plugins** > **WhisperSubs**. Under **Connect an akou server**, enter the URL (`http://akou:8476`, the container's name on the shared network) and the `ak_` key, press **Test**, then **Save**. Press **Generate Subtitles** on any title.
 
 A few minutes later the player offers a subtitle track named **WhisperSubs**, and `<title>.<lang>.WhisperSubs.srt` sits next to the media file. akou covers 30 languages and names the language of untagged titles. English translation, forced subtitles and the other languages need the local Whisper engine: open **Transcribe on this server instead** on the same page to download it, or skip akou and use that engine alone, as the [setup guide](https://geiserx.github.io/whisper-subs/docs/setup/) explains; on a macOS or Windows server you install `whisper-cli` yourself and set its path. It runs on Jellyfin 10.11 and 12.1, with or without a GPU.
 

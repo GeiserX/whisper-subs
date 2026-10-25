@@ -1331,8 +1331,9 @@ namespace WhisperSubs.Controller
                         }
                         catch (LanguageNotCoveredException ex)
                         {
-                            // The title's language is not one the worker's Qwen3-ASR covers and this server has
-                            // no Whisper: every attempt gives the same answer, so it is dropped without a retry.
+                            // The title's language is not one the worker's Qwen3-ASR covers, this server has no
+                            // Whisper, and no other worker in the pool takes it (SubtitleManager.OnAnotherWorkerAsync):
+                            // every attempt gives the same answer, so it is dropped without a retry.
                             _lastError = $"{wi.Item.Name}: {ex.Message}";
                             wi.Completion?.TrySetException(ex);
                             if (countProcessed) Interlocked.Increment(ref _processedCount);

@@ -61,6 +61,15 @@ namespace WhisperSubs.Controller
         /// pass is off, as the run's requirements say (<see cref="WorkerJob.Requirements"/>).
         /// </summary>
         bool ItemsTranslateToEnglish => true;
+
+        /// <summary>
+        /// A worker for the whole title when the item's own Qwen3-ASR or akou row cannot take its language
+        /// (<see cref="WorkerJob.AnyLanguage"/>), released when disposed. Null when the pool holds no such
+        /// worker, so no worker here can take the title. Throws when one exists but none can be had now; the
+        /// next run tries again.
+        /// </summary>
+        Task<TargetEngineLease?> AcquireAnyLanguageAsync(string itemName, CancellationToken cancellationToken)
+            => Task.FromResult<TargetEngineLease?>(null);
     }
 
     /// <summary>
@@ -127,6 +136,22 @@ namespace WhisperSubs.Controller
             _pool.SetCurrent(sub.Key, label);
             var worker = sub.Worker;
             return new TargetEngineLease(TargetProviders.For(worker, job.TranslateTarget!), worker.Name, () => _pool.Release(sub.Key, label));
+        }
+
+        public async Task<TargetEngineLease?> AcquireAnyLanguageAsync(string itemName, CancellationToken cancellationToken)
+        {
+            var job = WorkerJob.AnyLanguage;
+            if (!_pool.HasCapableWorker(job)) return null;
+            var own = _lease.Worker;
+            // The same wait rule as a Canary target: an item holding a worker that serves Canary targets
+            // takes only a worker that is free now, so two items never wait on each other's worker.
+            var sub = !TargetLeaseRouting.MayWait(own.Capabilities.TranslateTargets)
+                ? _pool.TryAcquire(job) ?? throw new InvalidOperationException(
+                    $"No worker that takes every language was free while this item ran on {own.Name}. The next run tries again.")
+                : await _pool.AcquireAsync(job, cancellationToken).ConfigureAwait(false);
+            var label = $"{itemName} (language {own.Name} cannot take)";
+            _pool.SetCurrent(sub.Key, label);
+            return new TargetEngineLease(sub.Worker.Provider, sub.Worker.Name, () => _pool.Release(sub.Key, label));
         }
     }
 

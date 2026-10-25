@@ -1266,17 +1266,21 @@ namespace WhisperSubs.Providers
         /// <summary>Seconds of audio per akou language-detection job.</summary>
         internal const double AkouDetectionSliceSeconds = 30;
 
-        /// <summary>How many slices detection tries before it gives up on a title that is silent at the start.</summary>
-        internal const int AkouDetectionSlices = 3;
+        /// <summary>The most slices detection sends, spread over the audio.</summary>
+        internal const int AkouDetectionSlices = 4;
 
         /// <summary>
         /// Names the language of <paramref name="audioPath"/> through akou, for a server with no Whisper of its
-        /// own. Each try sends one <see cref="AkouDetectionSliceSeconds"/> slice (the first, then the next) as a
+        /// own. It sends up to <see cref="AkouDetectionSlices"/> slices of <see cref="AkouDetectionSliceSeconds"/>,
+        /// spread from the start to the end of the audio (<see cref="AkouDetectionStarts"/>), each as a
         /// <c>best</c> job with an explicit <c>languages[]</c>: the row's list, else Qwen3-ASR's 30. The explicit
         /// list overrides the server's own <c>asr.languages</c> bound, which on a server bound to one language
-        /// would name every title that language. A slice akou hears no speech in moves to the next; after
-        /// <see cref="AkouDetectionSlices"/> it fails. akou gives no confidence, so the probability is 1.0, and
-        /// the forced pass, which thresholds on it, never comes here.
+        /// would name every title that language. A slice akou hears no speech in counts for nothing, and the
+        /// answer is the first language two slices agree on (<see cref="AkouDetectionVerdict"/>), so an opening
+        /// of logos or a song in another language does not decide the title. akou gives no confidence, so the
+        /// probability is 1.0, and the forced pass, which thresholds on it, never comes here. No answer is
+        /// <see cref="LanguageNotCoveredException.Undetected"/>: the sweep remembers the title instead of
+        /// sending it again every night.
         /// </summary>
         public async Task<(string Language, float Probability)> DetectAkouLanguageAsync(string audioPath, CancellationToken cancellationToken)
         {
@@ -1284,35 +1288,79 @@ namespace WhisperSubs.Providers
             if (!File.Exists(audioPath)) throw new FileNotFoundException($"Audio file not found: {audioPath}");
 
             var fields = BuildAkouDetectionFields(_akou.Priority, _akou.Languages);
-            for (var slice = 0; slice < AkouDetectionSlices; slice++)
+            var starts = AkouDetectionStarts(WavSlice.DurationSecondsOfFile(audioPath));
+            var heard = new List<string>();
+            for (var slice = 0; slice < starts.Count; slice++)
             {
+                var from = starts[slice];
                 var slicePath = Path.Combine(Path.GetTempPath(), $"whispersubs_akoulid_{Guid.NewGuid():N}.wav");
                 try
                 {
-                    var bytes = WavSlice.CopyFile(audioPath, slicePath, slice * AkouDetectionSliceSeconds, AkouDetectionSliceSeconds);
+                    var bytes = WavSlice.CopyFile(audioPath, slicePath, from, AkouDetectionSliceSeconds);
                     if (bytes <= 0) break;   // the audio ended before this slice
                     _logger.LogInformation("Asking akou for the language of slice {Slice} ({From:F0}-{To:F0}s) [priority={Priority}]",
-                        slice + 1, slice * AkouDetectionSliceSeconds, (slice + 1) * AkouDetectionSliceSeconds, _akou.Priority);
+                        slice + 1, from, from + AkouDetectionSliceSeconds, _akou.Priority);
                     var body = await RunAkouJobAsync(slicePath, RemoteUploadFormat.Normalize(null), bytes + WavSlice.HeaderBytes,
                         fields, string.Empty, cancellationToken).ConfigureAwait(false);
                     var (language, noSpeech) = ParseAkouDetection(body);
                     var code = noSpeech ? null : Qwen3Provider.NormalizeLanguage(language);
-                    if (code != null)
+                    if (code == null)
                     {
-                        _logger.LogInformation("akou named the language {Language}", code);
-                        return (code, 1.0f);
+                        _logger.LogInformation("akou heard no speech in slice {Slice}", slice + 1);
+                        continue;
                     }
-                    _logger.LogInformation("akou heard no speech in slice {Slice}; trying the next", slice + 1);
+                    heard.Add(code);
+                    _logger.LogInformation("akou named {Language} for slice {Slice}", code, slice + 1);
+                    if (AkouDetectionVerdict(heard, final: false) is { } agreed)
+                    {
+                        _logger.LogInformation("akou named the language {Language}", agreed);
+                        return (agreed, 1.0f);
+                    }
                 }
                 finally
                 {
                     RemoteAudioEncoder.TryDelete(slicePath);
                 }
             }
-            throw new InvalidOperationException(AkouUndetectedMessage);
+            if (AkouDetectionVerdict(heard, final: true) is { } only)
+            {
+                _logger.LogInformation("akou named the language {Language}", only);
+                return (only, 1.0f);
+            }
+            throw LanguageNotCoveredException.Undetected(heard.Count == 0
+                ? AkouUndetectedMessage
+                : $"{AkouUndetectedMessage} Its slices disagreed: {string.Join(", ", heard)}.");
         }
 
-        /// <summary>The error when akou names no language in any slice.</summary>
+        /// <summary>
+        /// Where the detection slices start in audio of <paramref name="durationSeconds"/>: at the start alone for
+        /// audio no longer than one slice, else one slice per <see cref="AkouDetectionSliceSeconds"/> up to
+        /// <see cref="AkouDetectionSlices"/>, evenly from 0 to the last full slice, so a 600 s window is
+        /// sampled at 0, 190, 380 and 570 s. Unknown length (0) is the start alone. Pure.
+        /// </summary>
+        internal static IReadOnlyList<double> AkouDetectionStarts(double durationSeconds)
+        {
+            if (durationSeconds <= AkouDetectionSliceSeconds) return new[] { 0.0 };
+            var count = Math.Min(AkouDetectionSlices, (int)Math.Ceiling(durationSeconds / AkouDetectionSliceSeconds));
+            var last = durationSeconds - AkouDetectionSliceSeconds;
+            var starts = new double[count];
+            for (var i = 0; i < count; i++) starts[i] = Math.Floor(last * i / (count - 1));
+            return starts;
+        }
+
+        /// <summary>
+        /// The language the slices heard so far settle on: the first named by two of them. Once every slice is
+        /// in (<paramref name="final"/>), a language named by the only slice that heard speech counts too;
+        /// slices that each name another language settle nothing. Pure.
+        /// </summary>
+        internal static string? AkouDetectionVerdict(IReadOnlyList<string> heard, bool final)
+        {
+            var agreed = heard.GroupBy(c => c, StringComparer.OrdinalIgnoreCase).FirstOrDefault(g => g.Count() >= 2);
+            if (agreed != null) return agreed.Key;
+            return final && heard.Count == 1 ? heard[0] : null;
+        }
+
+        /// <summary>The error when akou names no language the slices agree on.</summary>
         internal const string AkouUndetectedMessage =
             "akou could not detect the language: tag the audio track or install the local Whisper engine.";
 

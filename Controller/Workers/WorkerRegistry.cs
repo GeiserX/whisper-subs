@@ -145,6 +145,7 @@ namespace WhisperSubs.Controller.Workers
                 MaxConcurrency = TitlesPerWorker(requests, config.RemoteTitlesPerRequestSlot),
                 TranslateTargets = translateTargets,
                 TranscribesItems = WorkerTargets.TranscribesItems(dialect, translateTargets),
+                HostAssisted = provider is HostAssistedProvider,
             });
         }
 

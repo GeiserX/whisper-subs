@@ -59,6 +59,20 @@ namespace WhisperSubs.Providers
             return Copy(source, destination, startSeconds, seconds);
         }
 
+        /// <summary>The seconds of audio in a PCM WAV: its data bytes over its byte rate. Pure over the stream.</summary>
+        internal static double DurationSeconds(Stream source)
+        {
+            var (format, _, dataLength) = ReadLayout(source);
+            return (double)dataLength / format.ByteRate;
+        }
+
+        /// <summary>The same, of a file.</summary>
+        internal static double DurationSecondsOfFile(string path)
+        {
+            using var source = File.OpenRead(path);
+            return DurationSeconds(source);
+        }
+
         internal readonly record struct PcmFormat(short Channels, int SampleRate, int ByteRate, short BlockAlign, short BitsPerSample);
 
         private static (PcmFormat Format, long DataOffset, long DataLength) ReadLayout(Stream source)

@@ -132,7 +132,7 @@ namespace WhisperSubs.Providers
 
         private const string NotAkou = "This is not an akou server: GET /v1/server did not answer as akou.";
 
-        private const string BadHost = "akou refused the host name in this URL (403 bad_host): its server.public_host is set, so use exactly that name in the URL.";
+        private const string BadHost = "akou refused the host name in this URL (403 bad_host): when its server.public_host is set, use exactly that name in the URL; otherwise start akou with AKOU_BEHIND_PROXY=true so it accepts its container name.";
 
         /// <summary>A key with <c>jobs</c>, or <c>admin</c>, which reaches every route. Pure.</summary>
         internal static bool HasJobsScope(string? keyBody)

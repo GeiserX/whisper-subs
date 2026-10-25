@@ -18,6 +18,7 @@ namespace WhisperSubs.Controller.Workers
                && s.InFlight < s.Capabilities.MaxConcurrency
                && (job.TargetOnly || s.Capabilities.TranscribesItems)
                && (!job.RemoteOnly || !s.Capabilities.IsLocal)
+               && (!job.AnyLanguage || !s.Capabilities.HostAssisted)
                && (job.TranslateTarget is null || s.Capabilities.TranslateTargets.Contains(job.TranslateTarget))
                && (job.RequiredModel is null
                    || s.Capabilities.Models.Count == 0            // empty = serves any model

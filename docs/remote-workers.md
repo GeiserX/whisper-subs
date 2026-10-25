@@ -146,8 +146,8 @@ What the row does depends on whether this server also has the local Whisper engi
 
 | | With the local Whisper engine | akou alone |
 |---|---|---|
-| Language of untagged titles | This server's Whisper | akou names it from a 30-second slice. A silent slice moves on to the next, up to three. Each job lists Qwen3-ASR's 30 codes, or the row's languages, so a server bound to one language still names the title's own |
-| A language Qwen3-ASR does not cover | This server's Whisper transcribes it | Skipped with a note in the log, not retried until the setup changes |
+| Language of untagged titles | This server's Whisper | akou names it from up to four 30-second slices spread over the first window, and the first language two slices agree on wins; silent slices count for nothing. Each job lists Qwen3-ASR's 30 codes, or the row's languages, so a server bound to one language still names the title's own. akou can only answer with a listed language, so a title in another language is named as the nearest of them and transcribed as that, usually a translation: tag its audio track. When no two slices agree, the title is skipped and remembered like the row below |
+| A tagged language Qwen3-ASR does not cover | This server's Whisper transcribes it | Another worker in the pool that is not an akou or Qwen3-ASR row takes the title. With none, it is skipped with a note in the log, not retried until the title or the setup changes |
 | English translation | This server's Whisper | Skipped, with one warning a run |
 | Forced subtitles | As before | Skipped: Full and Forced runs as Full, Forced Only makes nothing |
 

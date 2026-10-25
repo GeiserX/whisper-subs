@@ -39,6 +39,13 @@ namespace WhisperSubs.Controller.Workers
 
         /// <summary>Stable tiebreak among otherwise-equal workers. Lower = preferred.</summary>
         public int Priority { get; init; }
+
+        /// <summary>
+        /// A Qwen3-ASR or akou row (<see cref="Providers.HostAssistedProvider"/>): the languages past Qwen3-ASR's
+        /// come from this server's Whisper, which every such row shares, so one that cannot take a title's
+        /// language means none of them can.
+        /// </summary>
+        public bool HostAssisted { get; init; }
     }
 
     /// <summary>A live routing snapshot of one worker — a pure value (no Jellyfin/HTTP types), so selection is unit-testable.</summary>
@@ -60,7 +67,10 @@ namespace WhisperSubs.Controller.Workers
     /// null when it only transcribes. <c>TargetOnly</c> marks a single Canary-target job inside an item
     /// (<see cref="WorkerJob.ForTarget"/>); every other job is a whole item and needs
     /// <see cref="WorkerCapabilities.TranscribesItems"/>. <c>RemoteOnly</c> keeps the job off this server's
-    /// own worker: an English translate job while the local Whisper model cannot translate.
+    /// own worker: an English translate job while the local Whisper model cannot translate. <c>AnyLanguage</c>
+    /// keeps it off <see cref="WorkerCapabilities.HostAssisted"/> rows: a title in a language one of them could
+    /// not take, which no other such row takes either.
     /// </summary>
-    public readonly record struct JobRequirements(string? TranslateTarget, string? RequiredModel, bool TargetOnly = false, bool RemoteOnly = false);
+    public readonly record struct JobRequirements(string? TranslateTarget, string? RequiredModel, bool TargetOnly = false, bool RemoteOnly = false,
+        bool AnyLanguage = false);
 }

@@ -16,6 +16,10 @@ services:
     image: drumsergio/akou:1.2.4
     container_name: akou
     restart: unless-stopped
+    environment:
+      # akou refuses to listen on the container's open address without it; no port is published,
+      # so only the services in this file reach it.
+      - AKOU_BEHIND_PROXY=true
     volumes:
       - akou-data:/data
       - akou-models:/models

@@ -275,7 +275,7 @@ namespace WhisperSubs.Controller
                     // Full (original-language transcription) pass.
                     if (plan.OriginalPassApplies)
                     {
-                        var (outcome, error) = await GenerateFullSubtitleForLanguageAsync(item, provider, lang, mediaPath, force, cancellationToken);
+                        var (outcome, error) = await GenerateFullSubtitleForLanguageAsync(item, provider, lang, mediaPath, force, cancellationToken, targetEngines: targetEngines);
                         Record(outcome, error);
                     }
 
@@ -665,15 +665,13 @@ namespace WhisperSubs.Controller
             BaseItem item, ISubtitleProvider provider, string lang,
             string mediaPath, bool force, CancellationToken cancellationToken,
             double continueFromSeconds = -1, string? heldCueText = null, double heldCueDurationSeconds = 0,
-            string? resolvedLanguage = null)
+            string? resolvedLanguage = null, ITranslationTargetEngines? targetEngines = null)
         {
             // A Qwen3-ASR or akou row on a server without Whisper cannot take a language Qwen3-ASR lacks:
-            // say so once and skip before any audio is extracted.
+            // another worker in the pool takes the title, and with none it is skipped before any audio is extracted.
             if (continueFromSeconds < 0 && provider is HostAssistedProvider hosted && !hosted.Covers(lang))
             {
-                var notCovered = hosted.NotCovered(lang);
-                _logger.LogWarning("{ItemName}: {Message}", item.Name, notCovered.Message);
-                return (GenerationOutcome.Skipped, notCovered);
+                return await OnAnotherWorkerAsync(item, hosted.NotCovered(lang), lang, null, mediaPath, force, targetEngines, cancellationToken);
             }
 
             var config = Plugin.Instance?.Configuration;
@@ -885,9 +883,15 @@ namespace WhisperSubs.Controller
                 _logger.LogInformation("Cancelled full subtitle generation for {ItemName} [{Language}]", item.Name, lang);
                 throw;
             }
+            catch (LanguageNotCoveredException ex) when (continueFromSeconds < 0)
+            {
+                // The language was named only now (an untagged title), or could not be: same answer as the
+                // check above, and a worker that detects for itself names it again.
+                return await OnAnotherWorkerAsync(item, ex, lang, string.IsNullOrEmpty(ex.Language) ? null : ex.Language,
+                    mediaPath, force, targetEngines, cancellationToken);
+            }
             catch (LanguageNotCoveredException ex)
             {
-                // The language was named only now (an untagged title): same answer as the check above.
                 _logger.LogWarning("{ItemName}: {Message}", item.Name, ex.Message);
                 return (GenerationOutcome.Skipped, ex);
             }
@@ -903,6 +907,43 @@ namespace WhisperSubs.Controller
                     try { File.Delete(tempAudioPath); }
                     catch (Exception ex) { _logger.LogWarning(ex, "Failed to delete temp audio: {Path}", tempAudioPath); }
                 }
+            }
+        }
+
+        /// <summary>
+        /// The full pass for a title its Qwen3-ASR or akou row cannot take (<paramref name="notCovered"/>), on a
+        /// worker in the pool that is not such a row. With none, the title is skipped with that reason, which
+        /// the sweep remembers; with one that cannot be had now, the pass fails and the next run tries again.
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Orchestrates the full pass on another lease; the lease rule (WorkerJob.AnyLanguage, CanServe, MayWait) is unit-tested")]
+        private async Task<(GenerationOutcome Outcome, Exception? Error)> OnAnotherWorkerAsync(
+            BaseItem item, LanguageNotCoveredException notCovered, string lang, string? resolvedLanguage,
+            string mediaPath, bool force, ITranslationTargetEngines? targetEngines, CancellationToken cancellationToken)
+        {
+            TargetEngineLease? other;
+            try
+            {
+                other = targetEngines == null ? null : await targetEngines.AcquireAnyLanguageAsync(item.Name, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning("{ItemName}: {Message} {Reason}", item.Name, notCovered.Message, ex.Message);
+                return (GenerationOutcome.Failed, ex);
+            }
+            if (other == null)
+            {
+                _logger.LogWarning("{ItemName}: {Message}", item.Name, notCovered.Message);
+                return (GenerationOutcome.Skipped, notCovered);
+            }
+            using (other)
+            {
+                _logger.LogInformation("{ItemName}: {Message} {Worker} takes the title instead", item.Name, notCovered.Message, other.WorkerName);
+                return await GenerateFullSubtitleForLanguageAsync(item, other.Provider, lang, mediaPath, force, cancellationToken,
+                    resolvedLanguage: resolvedLanguage);
             }
         }
 

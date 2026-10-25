@@ -58,9 +58,18 @@ public class AkouDefaultTests
     [Fact]
     public void Split_BreaksAtSentenceEnds()
     {
-        var pieces = AkouCueSplit.Split(new[] { Cue(0, 9, "Where are you going? Home. I am tired of all of this, honestly.") });
+        var pieces = AkouCueSplit.Split(new[] { Cue(0, 14, "Where are you going? Home. I am tired of all of this, honestly.") });
         Assert.Equal("Where are you going?", pieces[0].Text);
         Assert.Equal("Home.", pieces[1].Text);
+    }
+
+    [Fact]
+    public void Split_AShortSentence_JoinsTheShorterNeighbour()
+    {
+        // At 9 s "Home." would get 0.7 s, under the floor: it joins the shorter sentence before it.
+        var pieces = AkouCueSplit.Split(new[] { Cue(0, 9, "Where are you going? Home. I am tired of all of this, honestly.") });
+        Assert.Equal("Where are you going? Home.", pieces[0].Text);
+        Assert.Equal("I am tired of all of this, honestly.", pieces[1].Text);
     }
 
     [Fact]
@@ -164,14 +173,16 @@ public class AkouDefaultTests
 
             Assert.Equal("en", language);
             Assert.Equal(1.0f, probability);
-            var job = Assert.Single(akou.Jobs);
+            // Two slices that agree settle it; the third is never sent.
+            Assert.Equal(2, akou.Jobs.Count);
+            var job = akou.Jobs[0];
             Assert.Equal(WavSlice.HeaderBytes + 30 * 32_000, job.UploadBytes);
             Assert.Equal("best", job.Field("preset"));
             Assert.Equal("-5", job.Field("priority"));
             Assert.Null(job.Field("language"));
             Assert.Equal(Setup.Qwen3Catalog.LanguageCodes(), job.All("languages[]"));
             Assert.Contains("GET /v1/jobs/job_1/result", akou.Calls);
-            Assert.Equal("DELETE /v1/jobs/job_1", akou.Calls.Last());
+            Assert.Equal(new[] { "DELETE /v1/jobs/job_1", "DELETE /v1/jobs/job_2" }, akou.Calls.Where(c => c.StartsWith("DELETE", StringComparison.Ordinal)));
         }
         finally
         {
@@ -207,8 +218,8 @@ public class AkouDefaultTests
         {
             var (language, _) = await Provider(akou).DetectAkouLanguageAsync(wav, CancellationToken.None);
             Assert.Equal("fr", language);
-            Assert.Equal(2, akou.Jobs.Count);
-            Assert.Equal(new[] { "DELETE /v1/jobs/job_1", "DELETE /v1/jobs/job_2" }, akou.Calls.Where(c => c.StartsWith("DELETE", StringComparison.Ordinal)));
+            Assert.Equal(3, akou.Jobs.Count);
+            Assert.Equal(new[] { "DELETE /v1/jobs/job_1", "DELETE /v1/jobs/job_2", "DELETE /v1/jobs/job_3" }, akou.Calls.Where(c => c.StartsWith("DELETE", StringComparison.Ordinal)));
         }
         finally
         {
@@ -217,15 +228,17 @@ public class AkouDefaultTests
     }
 
     [Fact]
-    public async Task Detection_GivesUp_AfterThreeSilentSlices()
+    public async Task Detection_GivesUp_WhenEverySliceIsSilent()
     {
         var silent = """{"note":"no_speech","text":"","segments":[]}""";
         var akou = new MultiJobAkou(silent, silent, silent, silent);
         var wav = Wav(200_000);
         try
         {
-            var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => Provider(akou).DetectAkouLanguageAsync(wav, CancellationToken.None));
+            // A skip the sweep remembers, not a failure retried every night.
+            var ex = await Assert.ThrowsAsync<LanguageNotCoveredException>(() => Provider(akou).DetectAkouLanguageAsync(wav, CancellationToken.None));
             Assert.Equal(RemoteWhisperProvider.AkouUndetectedMessage, ex.Message);
+            Assert.Equal("", ex.Language);
             Assert.Equal(RemoteWhisperProvider.AkouDetectionSlices, akou.Jobs.Count);
         }
         finally
@@ -241,13 +254,77 @@ public class AkouDefaultTests
         var wav = Wav(10_000);
         try
         {
-            await Assert.ThrowsAsync<InvalidOperationException>(() => Provider(akou).DetectAkouLanguageAsync(wav, CancellationToken.None));
+            await Assert.ThrowsAsync<LanguageNotCoveredException>(() => Provider(akou).DetectAkouLanguageAsync(wav, CancellationToken.None));
             Assert.Single(akou.Jobs);
         }
         finally
         {
             File.Delete(wav);
         }
+    }
+
+    [Fact]
+    public async Task Detection_AnOpeningInAnotherLanguage_DoesNotDecideTheTitle()
+    {
+        // An English song over the titles, then Spanish dialogue: the first slice alone would name every
+        // window English, and Qwen would translate the dialogue into it.
+        var akou = new MultiJobAkou("""{"language":"en","segments":[]}""", """{"language":"es","segments":[]}""", """{"language":"es","segments":[]}""");
+        var wav = Wav(600_000);
+        try
+        {
+            var (language, _) = await Provider(akou).DetectAkouLanguageAsync(wav, CancellationToken.None);
+            Assert.Equal("es", language);
+            Assert.Equal(3, akou.Jobs.Count);
+        }
+        finally
+        {
+            File.Delete(wav);
+        }
+    }
+
+    [Fact]
+    public async Task Detection_SlicesThatAllDisagree_SettleNothing()
+    {
+        var akou = new MultiJobAkou("""{"language":"en","segments":[]}""", """{"language":"es","segments":[]}""",
+            """{"language":"fr","segments":[]}""", """{"language":"de","segments":[]}""");
+        var wav = Wav(200_000);
+        try
+        {
+            var ex = await Assert.ThrowsAsync<LanguageNotCoveredException>(() => Provider(akou).DetectAkouLanguageAsync(wav, CancellationToken.None));
+            Assert.Contains("disagreed: en, es, fr, de", ex.Message);
+            Assert.Equal(4, akou.Jobs.Count);
+        }
+        finally
+        {
+            File.Delete(wav);
+        }
+    }
+
+    [Theory]
+    [InlineData(0, new[] { 0.0 })]
+    [InlineData(20, new[] { 0.0 })]
+    [InlineData(30, new[] { 0.0 })]
+    [InlineData(70, new[] { 0.0, 20, 40 })]
+    [InlineData(600, new[] { 0.0, 190, 380, 570 })]
+    [InlineData(7200, new[] { 0.0, 2390, 4780, 7170 })]
+    public void DetectionStarts_SpreadOverTheAudio(double duration, double[] expected)
+        => Assert.Equal(expected, RemoteWhisperProvider.AkouDetectionStarts(duration));
+
+    [Fact]
+    public void DetectionVerdict_NeedsTwoSlicesOrTheOnlyOne()
+    {
+        Assert.Null(RemoteWhisperProvider.AkouDetectionVerdict(new[] { "en" }, final: false));
+        Assert.Equal("en", RemoteWhisperProvider.AkouDetectionVerdict(new[] { "en" }, final: true));
+        Assert.Equal("es", RemoteWhisperProvider.AkouDetectionVerdict(new[] { "en", "es", "es" }, final: false));
+        Assert.Null(RemoteWhisperProvider.AkouDetectionVerdict(new[] { "en", "es" }, final: true));
+        Assert.Null(RemoteWhisperProvider.AkouDetectionVerdict(Array.Empty<string>(), final: true));
+    }
+
+    [Fact]
+    public void WavSlice_ReadsTheDuration()
+    {
+        using var source = new MemoryStream(LongWav(70_000));
+        Assert.Equal(70.0, WavSlice.DurationSeconds(source), 3);
     }
 
     [Fact]

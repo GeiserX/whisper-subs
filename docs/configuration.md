@@ -18,9 +18,9 @@ The first section of the page. It sets up an [akou server worker](remote-workers
 | Key | empty | An `ak_` key with the `jobs` scope, from `akou keys create --name whisper-subs --scope jobs`. Sent only from this server. |
 | Test | | Checks the server and the key and says what is wrong: not akou, a refused host name, no file jobs, `best` not pulled, a refused key or a key without `jobs`. |
 
-Without the local Whisper engine, an akou install skips English translation, runs Full and Forced as Full, makes nothing in Forced Only or Translation Only, and skips titles in languages Qwen3-ASR does not cover. Each of these is a warning in the log, not a failure.
+Without the local Whisper engine, an akou install skips English translation, runs Full and Forced as Full, and makes nothing in Forced Only or Translation Only. A title tagged with a language Qwen3-ASR does not cover goes to a worker in the pool that is not an akou or Qwen3-ASR row, and is skipped when there is none. Each of these is a warning in the log, not a failure. An untagged title is always named as one of the 30 languages, since akou can only answer with those, so a title spoken in another language gets a subtitle in the nearest of them, usually a translation: tag its audio track.
 
-The local engine sections below sit under **Transcribe on this server instead (optional)**, folded while an akou row exists. The section opens by itself when this server already has Whisper installed or Qwen3-ASR selected and no akou row is set.
+The **Whisper Engine** section sits under **Transcribe on this server instead (optional)**, folded while an akou row exists. It opens by itself when this server already has Whisper installed or Qwen3-ASR selected and no akou row is set. Vocal Separation, Canary engine, VAD tuning and Advanced / Manual Install stay outside it, where they were.
 
 ## Transcription engine (experimental)
 

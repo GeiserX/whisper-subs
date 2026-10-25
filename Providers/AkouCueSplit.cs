@@ -25,6 +25,12 @@ namespace WhisperSubs.Providers
         /// <summary>The shortest piece a split may make; a segment too short for its pieces is kept whole.</summary>
         internal const double MinPieceSeconds = 0.2;
 
+        /// <summary>
+        /// The shortest cue a sentence break may leave, five sixths of a second (the floor common subtitle style
+        /// guides set); a shorter sentence joins its neighbour.
+        /// </summary>
+        internal const double MinCueSeconds = 5.0 / 6.0;
+
         /// <summary>Splits every cue that is too long. Pure.</summary>
         internal static List<(double Start, double End, string Text)> Split(
             IReadOnlyList<(double Start, double End, string Text)> cues, int maxChars = MaxChars, double maxSeconds = MaxSeconds)
@@ -45,7 +51,7 @@ namespace WhisperSubs.Providers
                 return new[] { cue };
             }
 
-            var pieces = SentencePieces(words, maxChars);
+            var pieces = MergeShort(SentencePieces(words, maxChars), duration, maxChars);
             if (duration < pieces.Count * MinPieceSeconds)
             {
                 // Too short to give every sentence its own cue: pack by length alone.
@@ -108,6 +114,50 @@ namespace WhisperSubs.Providers
                 }
             }
             if (current.Count > 0) pieces.Add(current);
+            return pieces;
+        }
+
+        /// <summary>
+        /// Joins a piece whose share of the time is under <see cref="MinCueSeconds"/> to a neighbour: a short
+        /// sentence ("No.") inside a long segment would otherwise be a cue too brief to read. The neighbour is the
+        /// one the pair fits <paramref name="maxChars"/> with, the shorter when both or neither do; a pair over the
+        /// limit by a short piece's few characters reads better than a cue of a fifth of a second.
+        /// </summary>
+        private static List<List<string>> MergeShort(List<List<string>> pieces, double duration, int maxChars)
+        {
+            while (pieces.Count > 1)
+            {
+                var total = (double)pieces.Sum(Length);
+                var shortest = -1;
+                for (var i = 0; i < pieces.Count; i++)
+                {
+                    if (duration * Length(pieces[i]) / total >= MinCueSeconds) continue;
+                    if (shortest < 0 || Length(pieces[i]) < Length(pieces[shortest])) shortest = i;
+                }
+                if (shortest < 0) break;
+
+                var left = shortest > 0 ? shortest - 1 : -1;
+                var right = shortest < pieces.Count - 1 ? shortest + 1 : -1;
+                int Joined(int other) => Length(pieces[shortest]) + 1 + Length(pieces[other]);
+                int into;
+                if (left < 0) into = right;
+                else if (right < 0) into = left;
+                else
+                {
+                    var leftFits = Joined(left) <= maxChars;
+                    var rightFits = Joined(right) <= maxChars;
+                    into = leftFits != rightFits
+                        ? (leftFits ? left : right)
+                        : (Length(pieces[left]) <= Length(pieces[right]) ? left : right);
+                }
+
+                var merged = into < shortest
+                    ? pieces[into].Concat(pieces[shortest]).ToList()
+                    : pieces[shortest].Concat(pieces[into]).ToList();
+                var first = Math.Min(into, shortest);
+                pieces[first] = merged;
+                pieces.RemoveAt(first + 1);
+            }
             return pieces;
         }
 

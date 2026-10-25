@@ -57,6 +57,13 @@ namespace WhisperSubs.Controller.Workers
         public static readonly JobRequirements EnglishItems = new("en", null);
 
         /// <summary>
+        /// A whole item for a worker that is not a Qwen3-ASR or akou row: what a title asks for when its row
+        /// found the language is one Qwen3-ASR does not cover, or could not name it, and this server has no
+        /// Whisper. No such worker in the pool means no worker here can take the title.
+        /// </summary>
+        public static readonly JobRequirements AnyLanguage = new(null, null, AnyLanguage: true);
+
+        /// <summary>
         /// The requirement for one translation target: a worker whose
         /// <see cref="WorkerCapabilities.TranslateTargets"/> contains <paramref name="target"/>. For "en" with
         /// <paramref name="localWhisperTranslates"/> false (the local model is a turbo model, which was not

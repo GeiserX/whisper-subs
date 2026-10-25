@@ -210,9 +210,14 @@ namespace WhisperSubs.Controller.Workers
         public static TargetLeasePolicy Decide(IReadOnlySet<string> ownTargets, string target)
         {
             if (ownTargets.Contains(target)) return TargetLeasePolicy.UseOwnWorker;
-            return ownTargets.Any(t => !string.Equals(t, "en", StringComparison.OrdinalIgnoreCase))
-                ? TargetLeasePolicy.TakeFreeAnotherOnly
-                : TargetLeasePolicy.WaitForAnother;
+            return MayWait(ownTargets) ? TargetLeasePolicy.WaitForAnother : TargetLeasePolicy.TakeFreeAnotherOnly;
         }
+
+        /// <summary>
+        /// Whether an item may wait for a second worker while it holds one with <paramref name="ownTargets"/>:
+        /// only when that worker serves no Canary target (the rule above). Pure.
+        /// </summary>
+        public static bool MayWait(IReadOnlySet<string> ownTargets)
+            => !ownTargets.Any(t => !string.Equals(t, "en", StringComparison.OrdinalIgnoreCase));
     }
 }
