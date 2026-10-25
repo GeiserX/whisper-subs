@@ -9,6 +9,47 @@
             <div class="content-primary">
                 <h1>WhisperSubs</h1>
 
+                <!-- akou: the default way to transcribe -->
+                <div id="akouConnectPanel" style="background:rgba(0,0,0,0.15); border-radius:6px; padding:1em; margin-bottom:1.5em;">
+                    <div style="display:flex; align-items:baseline; gap:0.8em; margin-bottom:0.5em;">
+                        <h2 style="margin:0;">Connect an akou server</h2>
+                        <a href="https://github.com/GeiserX/akou/blob/main/docs/server.md" target="_blank" rel="noopener noreferrer"
+                           style="font-size:0.85em; color:#52B54B; text-decoration:none;">akou server guide &rarr;</a>
+                    </div>
+                    <div class="fieldDescription" style="margin-bottom:0.75em;">
+                        <a href="https://github.com/GeiserX/akou" target="_blank" rel="noopener noreferrer">akou</a> transcribes with Qwen3-ASR (30 languages)
+                        and names the language of untagged titles, so this server needs nothing else installed. Start it next to Jellyfin:
+                        <code>docker network create akou-net</code>, <code>docker network connect akou-net jellyfin</code> (your Jellyfin container's name),
+                        <code>docker run -d --name akou --network akou-net -e AKOU_BEHIND_PROXY=true -v akou-data:/data -v akou-models:/models drumsergio/akou:1.2.4</code>, then
+                        <code>docker exec akou akou models pull best</code> and <code>docker exec akou akou keys create --name whisper-subs --scope jobs</code>
+                        for the key.
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="txtAkouUrl">akou URL</label>
+                        <input type="text" id="txtAkouUrl" class="emby-input" placeholder="http://akou:8476" autocomplete="off" spellcheck="false" />
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="txtAkouKey">Key</label>
+                        <input type="password" id="txtAkouKey" class="emby-input" placeholder="ak_..." autocomplete="new-password" spellcheck="false" maxlength="256" />
+                        <div class="fieldDescription">The <code>ak_</code> key with the jobs scope. It is stored with the worker row below and sent only from this server.</div>
+                    </div>
+                    <div style="display:flex; gap:0.5em; align-items:center; flex-wrap:wrap;">
+                        <button is="emby-button" type="button" id="btnTestAkou" class="raised"><span>Test</span></button>
+                        <button is="emby-button" type="button" id="btnSaveAkou" class="raised button-submit"><span>Save</span></button>
+                        <span id="akouTestResult" role="status" aria-live="polite" style="font-size:0.9em;"></span>
+                    </div>
+                    <div class="fieldDescription" style="margin-top:0.75em;">
+                        Save fills the first akou row under Workers (or adds one). Without the local Whisper engine below:
+                        translation into English is skipped, Full and Forced runs as Full, Forced Only makes nothing, and a title tagged with a
+                        language Qwen3-ASR does not cover goes to another worker that is not akou, or is skipped with a note in the log.
+                        An untagged title is named as one of akou's 30 languages, so one spoken in another language gets a subtitle in the
+                        nearest of them. Install the local engine to get those back.
+                    </div>
+                </div>
+
+                <details id="localEngineDetails" style="margin-bottom:1.5em;">
+                    <summary style="cursor:pointer; font-weight:600; padding:0.4em 0; font-size:1.1em;">Transcribe on this server instead (optional)</summary>
+                    <div style="margin-top:0.75em;">
                 <!-- Whisper Engine Management -->
                 <div style="display:flex; align-items:baseline; gap:0.8em;">
                     <h2 style="margin:0;">Whisper Engine</h2>
@@ -81,7 +122,7 @@
                         </select>
                         <div class="fieldDescription">
                             Whole-title transcription on this server. Language detection, forced-subtitle detection and translation into English
-                            always run on the Whisper binary and model above, so keep those installed either way.
+                            run on the Whisper binary and model above, for this engine and for akou or Qwen3-ASR workers alike.
                             <a href="https://huggingface.co/Qwen/Qwen3-ASR-1.7B" target="_blank" rel="noopener noreferrer">Qwen3-ASR</a>
                             covers 30 languages and 22 Chinese dialects and runs through
                             <a href="https://github.com/CrispStrobe/CrispASR" target="_blank" rel="noopener noreferrer">CrispASR</a>,
@@ -170,6 +211,8 @@
                         </details>
                     </div>
                 </div>
+                    </div>
+                </details>
 
                 <!-- Vocal Separation (BSRoformer.cpp) -->
                 <div style="display:flex; align-items:baseline; gap:0.8em;">
@@ -1229,6 +1272,7 @@
                     WhisperSubsConfig.ajaxGet(ApiClient.getUrl('Plugins/WhisperSubs/Setup/Status'))
                         .then(function (s) {
                             WhisperSubsConfig._engineStatus = s;
+                            WhisperSubsConfig.updateLocalEngineDetails();
                             WhisperSubsConfig.renderBinaryStatus(s);
                             WhisperSubsConfig.loadEngineVariants(s.Gpu, s.InstalledVariant);
                             // Load the catalog FIRST, then render the dropdown — the dropdown (and its
@@ -2070,6 +2114,7 @@
                         .then(function (s) {
                             if (!WhisperSubsConfig.isRoformerPageActive(generation)) return;
                             WhisperSubsConfig._crispasrStatus = s;
+                            WhisperSubsConfig.updateLocalEngineDetails();
                             WhisperSubsConfig._crispasrTargets = s.Targets || [];
                             WhisperSubsConfig.renderTranslationTargets();
                             if (s.BinaryPath) document.querySelector('#txtCrispAsrBinaryPath').value = s.BinaryPath;
@@ -2837,6 +2882,7 @@
                             page.querySelector('#chkEnableLocalWorker').checked = config.EnableLocalWorker !== false;
                             page.querySelector('#txtRemoteTitlesPerRequestSlot').value = config.RemoteTitlesPerRequestSlot || 1;
                             WhisperSubsConfig.renderWorkers(config.Workers || []);
+                            WhisperSubsConfig.syncAkouSection();
                             updateTranslationVisibility();
                         }
                             WhisperSubsConfig.loadLibraries();
@@ -2845,6 +2891,7 @@
                 },
 
                 saveConfiguration: function (page) {
+                    WhisperSubsConfig.applyAkouPanel(page, false);
                     ApiClient.getPluginConfiguration(WhisperSubsConfig.pluginId).then(function (config) {
                         var wasAutoGenEnabled = config.EnableAutoGeneration;
                         config.WhisperBinaryPath = page.querySelector('#txtWhisperBinaryPath').value;
@@ -3173,6 +3220,103 @@
                         });
                     }
                     WhisperSubsConfig.updateWorkerDuplicateWarning(document.querySelector('[data-role="page"]'));
+                },
+
+                // "Connect an akou server" (v4.17): a front for the first akou row under Workers. The URL
+                // and key are copied into that row (or a new one) and saved with the rest of the page;
+                // the Test button asks this server to check akou, so the key never goes from the browser
+                // to akou. Server strings are rendered through textContent only.
+                _firstAkouRow: function () {
+                    var rows = document.querySelectorAll('#workerRows .workerRow');
+                    for (var i = 0; i < rows.length; i++) {
+                        var dialect = rows[i].querySelector('.wkDialect');
+                        if (dialect && WhisperSubsConfig.normalizeDialect(dialect.value) === 'akou') return rows[i];
+                    }
+                    return null;
+                },
+
+                syncAkouSection: function () {
+                    var row = WhisperSubsConfig._firstAkouRow();
+                    var url = document.querySelector('#txtAkouUrl');
+                    var key = document.querySelector('#txtAkouKey');
+                    if (!url || !key) return;
+                    url.value = row ? (row.querySelector('.wkUrl').value || '') : '';
+                    key.value = row ? (row.querySelector('.wkKey').value || '') : '';
+                    WhisperSubsConfig.updateLocalEngineDetails();
+                },
+
+                // The local engine section opens by itself when this server already transcribes (Whisper
+                // installed or Qwen3-ASR selected) and no akou row exists; an akou install sees it folded.
+                updateLocalEngineDetails: function () {
+                    var details = document.querySelector('#localEngineDetails');
+                    var status = WhisperSubsConfig._engineStatus;
+                    var crispasr = WhisperSubsConfig._crispasrStatus;
+                    if (!details || details.getAttribute('data-touched') === '1') return;
+                    var whisperInstalled = !!(status && (status.BinaryFound || status.BinaryFoundInPath) && status.ModelFound);
+                    // Qwen3Active is in the CrispASR status, not the Whisper one.
+                    var qwen3 = !!(crispasr && crispasr.Qwen3Active);
+                    details.open = !WhisperSubsConfig._firstAkouRow() && (whisperInstalled || qwen3);
+                },
+
+                testAkou: function (btn) {
+                    var result = document.querySelector('#akouTestResult');
+                    var url = (document.querySelector('#txtAkouUrl').value || '').trim();
+                    var key = (document.querySelector('#txtAkouKey').value || '').trim();
+                    if (!url) {
+                        result.textContent = 'Enter the akou server\'s URL first.';
+                        result.style.color = '#CC7B19';
+                        return;
+                    }
+                    if (btn) btn.disabled = true;
+                    result.textContent = 'Testing…';
+                    result.style.color = '';
+                    ApiClient.ajax({
+                        type: 'POST',
+                        url: ApiClient.getUrl('Plugins/WhisperSubs/Setup/TestAkou'),
+                        data: JSON.stringify({ url: url, key: key }),
+                        contentType: 'application/json',
+                        dataType: 'json'
+                    }).then(function (response) {
+                        var r = typeof response === 'string' ? JSON.parse(response) : response;
+                        result.textContent = (r && r.message) ? r.message : ((r && r.ok) ? 'OK' : 'Failed');
+                        result.style.color = (r && r.ok) ? '#52B54B' : '#CC3333';
+                    }).catch(function (err) {
+                        result.textContent = 'Test failed: ' + (err && err.message ? err.message : err);
+                        result.style.color = '#CC3333';
+                    }).then(function () {
+                        if (btn) btn.disabled = false;
+                    });
+                },
+
+                saveAkou: function (page) {
+                    var url = (document.querySelector('#txtAkouUrl').value || '').trim();
+                    var result = document.querySelector('#akouTestResult');
+                    if (!url) {
+                        result.textContent = 'Enter the akou server\'s URL first.';
+                        result.style.color = '#CC7B19';
+                        return;
+                    }
+                    // This Save means "use this server": a disabled akou row is turned back on.
+                    WhisperSubsConfig.applyAkouPanel(page, true);
+                    WhisperSubsConfig.saveConfiguration(page);
+                },
+
+                // The panel's URL and key into the first akou row, adding one when there is none, so either Save
+                // keeps what the panel shows. Row edits reach the panel as they are typed (syncAkouSection), so
+                // the panel is never older than the row. An empty URL changes nothing.
+                applyAkouPanel: function (page, enable) {
+                    var url = (document.querySelector('#txtAkouUrl').value || '').trim();
+                    var key = (document.querySelector('#txtAkouKey').value || '').trim();
+                    if (!url) return;
+                    var row = WhisperSubsConfig._firstAkouRow();
+                    if (!row) {
+                        row = WhisperSubsConfig.buildWorkerRow({ Name: 'akou', Dialect: 'akou', MaxConcurrency: 1, Enabled: true, CanTranslate: false, TranslateTargets: [] });
+                        document.querySelector('#workerRows').appendChild(row);
+                    }
+                    row.querySelector('.wkUrl').value = url;
+                    row.querySelector('.wkKey').value = key;
+                    if (enable) row.querySelector('.wkEnabled').checked = true;
+                    WhisperSubsConfig.updateWorkerDuplicateWarning(page);
                 },
 
                 addWorkerRow: function () {
@@ -4173,6 +4317,37 @@
 
             document.querySelector('#btnRefreshRequests').addEventListener('click', function () {
                 WhisperSubsConfig.loadRequests();
+            });
+
+            document.querySelector('#btnTestAkou').addEventListener('click', function () {
+                WhisperSubsConfig.testAkou(this);
+            });
+
+            document.querySelector('#btnSaveAkou').addEventListener('click', function () {
+                WhisperSubsConfig.saveAkou(this.closest('[data-role="page"]'));
+            });
+
+            // The Connect panel and the first akou row show the same URL and key as either is typed in, so
+            // neither Save puts back a value the other has since changed.
+            ['#txtAkouUrl', '#txtAkouKey'].forEach(function (id) {
+                document.querySelector(id).addEventListener('input', function () {
+                    var row = WhisperSubsConfig._firstAkouRow();
+                    if (!row) return;
+                    row.querySelector(id === '#txtAkouUrl' ? '.wkUrl' : '.wkKey').value = this.value.trim();
+                });
+            });
+            ['input', 'change'].forEach(function (type) {
+                document.querySelector('#workerRows').addEventListener(type, function (e) {
+                    var t = e.target;
+                    if (t && t.classList && (t.classList.contains('wkUrl') || t.classList.contains('wkKey') || t.classList.contains('wkDialect'))) {
+                        WhisperSubsConfig.syncAkouSection();
+                    }
+                });
+            });
+
+            document.querySelector('#localEngineDetails > summary').addEventListener('click', function () {
+                // Once the admin opens or folds it, the page leaves it alone.
+                this.parentNode.setAttribute('data-touched', '1');
             });
 
             document.querySelector('#btnAddWorker').addEventListener('click', function () {

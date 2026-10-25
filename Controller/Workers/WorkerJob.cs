@@ -29,8 +29,39 @@ namespace WhisperSubs.Controller.Workers
         /// not chosen while translation is enabled — the common case (all workers translate) is unaffected.
         /// <c>RequiredModel</c> is null: the manager does not pin a per-job model, so any model serves.
         /// </summary>
-        public static JobRequirements Requirements(SubtitleMode mode, bool enableTranslation)
-            => new JobRequirements(TranslationPossible(mode, enableTranslation) ? "en" : null, null);
+        /// <param name="poolTranslates">Whether some worker in the pool takes whole items and translates into
+        /// English (<see cref="EnglishItems"/>). When none does, translation is treated as off for the run:
+        /// otherwise no worker could ever serve a job and nothing would dispatch. True keeps the old rule.</param>
+        public static JobRequirements Requirements(SubtitleMode mode, bool enableTranslation, bool poolTranslates = true)
+            => new JobRequirements(TranslationOn(mode, enableTranslation, poolTranslates) ? "en" : null, null);
+
+        /// <summary>Translation runs this time: the config asks for it and some worker can do it. Pure.</summary>
+        public static bool TranslationOn(SubtitleMode mode, bool enableTranslation, bool poolTranslates)
+            => TranslationPossible(mode, enableTranslation) && poolTranslates;
+
+        /// <summary>
+        /// The warning a run logs once when the config asks for English translation and no worker can make
+        /// it, or null when there is nothing to say. Pure.
+        /// </summary>
+        public static string? TranslationSkippedWarning(SubtitleMode mode, bool enableTranslation, bool poolTranslates)
+            => TranslationPossible(mode, enableTranslation) && !poolTranslates
+                ? (mode == SubtitleMode.TranslationOnly
+                    ? "English translation skipped, so Translation Only mode makes nothing: it needs the local Whisper engine with a translating model, or a translating worker"
+                    : "English translation skipped: needs the local Whisper engine with a translating model, or a translating worker")
+                : null;
+
+        /// <summary>
+        /// A whole-item worker that translates into English: what <see cref="Requirements"/> asks for when
+        /// translation is on. The pool is asked for it once per run to set <c>poolTranslates</c>.
+        /// </summary>
+        public static readonly JobRequirements EnglishItems = new("en", null);
+
+        /// <summary>
+        /// A whole item for a worker that is not a Qwen3-ASR or akou row: what a title asks for when its row
+        /// found the language is one Qwen3-ASR does not cover, or could not name it, and this server has no
+        /// Whisper. No such worker in the pool means no worker here can take the title.
+        /// </summary>
+        public static readonly JobRequirements AnyLanguage = new(null, null, AnyLanguage: true);
 
         /// <summary>
         /// The requirement for one translation target: a worker whose

@@ -1275,6 +1275,34 @@ namespace WhisperSubs.Providers
             }
         }
 
+        /// <summary>
+        /// Whether whisper-cli and the transcription model are on disk: the model file, and the configured
+        /// binary, the plugin-managed one or one on PATH. Looks at files only and never starts a process, so
+        /// it is cheap to ask per job.
+        /// </summary>
+        public bool IsInstalled()
+            => !string.IsNullOrEmpty(_modelPath) && File.Exists(_modelPath)
+               && BinaryOnDisk(_binaryPath, Plugin.Instance?.DataFolderPath, Environment.GetEnvironmentVariable("PATH"), File.Exists);
+
+        /// <summary>
+        /// Whether a whisper-cli binary is on disk where <see cref="FindWhisperExecutable"/> would find it: the
+        /// configured path when one is set (and only it); else the plugin-managed <c>whisper/whisper-cli</c>; else
+        /// <c>whisper-cli</c> or <c>whisper</c> in a PATH directory. Pure apart from <paramref name="exists"/>.
+        /// </summary>
+        internal static bool BinaryOnDisk(string? configuredPath, string? dataDir, string? pathVariable, Func<string, bool> exists)
+        {
+            if (!string.IsNullOrWhiteSpace(configuredPath)) return exists(configuredPath);
+            if (!string.IsNullOrEmpty(dataDir) && exists(Path.Combine(dataDir, "whisper", "whisper-cli"))) return true;
+            foreach (var dir in (pathVariable ?? "").Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                foreach (var name in new[] { "whisper-cli", "whisper", "whisper-cli.exe", "whisper.exe" })
+                {
+                    if (exists(Path.Combine(dir, name))) return true;
+                }
+            }
+            return false;
+        }
+
         private string? FindWhisperExecutable()
         {
             if (_resolvedExecutable != null)

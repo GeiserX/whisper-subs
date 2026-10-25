@@ -138,7 +138,22 @@ The server keeps one request at a time per loaded model, so **Max concurrency** 
 
 An [akou](https://github.com/GeiserX/akou) server transcribes with Qwen3-ASR (its `best` preset) and serves other clients from the same queue. A row with **Dialect** `akou server` sends each request as a file job at the row's **akou job priority**, -5 by default, below akou's own default of 0, so the server's other clients go first. A running job is never stopped for another, so a title reaches akou in windows of **Seconds of audio per akou job**, 600 by default: a client that arrives while a subtitle job runs waits one window of audio at most, and an interrupted title resumes from its last window. Once the transcript is read the plugin deletes the job, which removes the uploaded audio and the result from the server; it deletes it on a failure or a timeout too. If Jellyfin stops in the middle, akou still deletes the audio when the job ends and drops the transcript after its retention days. The job's timeout starts when akou starts it: the wait behind akou's other clients is bounded only by **maximum hours**.
 
-Set the base URL (no `/v1`), a key with the `jobs` scope (`akou keys create --name whisper-subs --scope jobs`), **Model** `best` (the default when blank), and leave **Translation targets** blank. Like a Qwen3-ASR server row, it only transcribes: this server's Whisper detects languages and translates for it. akou returns no word times for Qwen3-ASR, so cues are the segments akou sends.
+The **Connect an akou server** section at the top of the settings page sets up this row: it takes the URL and the key, **Test** checks the server, and **Save** fills the first akou row (or adds one). By hand, set the base URL (no `/v1`), a key with the `jobs` scope (`akou keys create --name whisper-subs --scope jobs`), **Model** `best` (the default when blank), and leave **Translation targets** blank.
+
+**Test** reads `GET /v1/server` and `GET /v1/keys/me` and says what is wrong in words: not an akou server, a host name akou refuses (`403 bad_host`: use exactly its `server.public_host`), no file jobs, the `best` preset not pulled (`akou models pull best`), no key, a key akou refuses, or a key without the `jobs` scope.
+
+What the row does depends on whether this server also has the local Whisper engine (the `whisper-cli` binary and a model):
+
+| | With the local Whisper engine | akou alone |
+|---|---|---|
+| Language of untagged titles | This server's Whisper | akou names it from up to four 30-second slices spread over the first window, and the first language two slices agree on wins; silent slices count for nothing. Each job lists Qwen3-ASR's 30 codes, or the row's languages, so a server bound to one language still names the title's own. akou can only answer with a listed language, so a title in another language is named as the nearest of them and transcribed as that, usually a translation: tag its audio track. When no two slices agree, the title is skipped and remembered like the row below |
+| A tagged language Qwen3-ASR does not cover | This server's Whisper transcribes it | Another worker in the pool that is not an akou or Qwen3-ASR row takes the title. With none, it is skipped with a note in the log, not retried until the title or the setup changes |
+| English translation | This server's Whisper | Skipped, with one warning a run |
+| Forced subtitles | As before | Skipped: Full and Forced runs as Full, Forced Only makes nothing |
+
+akou returns no word times for Qwen3-ASR, so the plugin splits akou's segments into cues of at most 84 characters (two lines) and 7 seconds, at sentence ends first, and shares each segment's time among its pieces by length. Without that split, cues on real titles ran up to 28 seconds.
+
+Without any local engine, this server's own worker stays out of the pool while an akou row exists, so every title goes to akou, and the plugin downloads neither the Silero VAD model nor the small detection model. Installing the engine later brings all of it back; the skip cache notices the change and the next sweep looks at skipped titles again.
 
 ## CrispASR server workers
 

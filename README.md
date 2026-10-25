@@ -10,7 +10,7 @@
   <a href="https://codecov.io/gh/GeiserX/whisper-subs"><img src="https://img.shields.io/codecov/c/github/GeiserX/whisper-subs?style=flat-square" alt="Coverage"></a>
 </p>
 
-**WhisperSubs** is a Jellyfin plugin that writes subtitles for the titles in your library that have none, by transcribing their audio with local AI models. Download providers such as OpenSubtitles only serve what someone has uploaded, and Bazarr's Whisper path needs a second service running beside it; WhisperSubs runs inside Jellyfin and makes the subtitle from the audio, in the audio's own language, and can translate it into English or, from English audio, into 24 more languages. Transcription runs on hardware you control: this Jellyfin server by default, plus any workers you add, and your media never reaches a third-party cloud unless you deliberately configure one.
+**WhisperSubs** is a Jellyfin plugin that writes subtitles for the titles in your library that have none, by transcribing their audio with local AI models. Download providers such as OpenSubtitles only serve what someone has uploaded, and Bazarr's Whisper path needs a second service running beside it; WhisperSubs runs inside Jellyfin and makes the subtitle from the audio, in the audio's own language, and can translate it into English or, from English audio, into 24 more languages. Transcription runs on hardware you control: an [akou](https://github.com/GeiserX/akou) server next to Jellyfin by default, or this Jellyfin server itself, plus any workers you add, and your media never reaches a third-party cloud unless you deliberately configure one.
 
 <p align="center"><img src="docs/images/screenshots/playback.jpg" alt="Tears of Steel playing in Jellyfin with the subtitle track WhisperSubs made from its audio" width="880"></p>
 
@@ -29,11 +29,24 @@
 
 ## Quick start
 
-1. In Jellyfin, go to **Dashboard** > **Plugins** > **Repositories** and add `https://geiserx.github.io/whisper-subs/manifest.json`.
-2. Install **WhisperSubs** from **Catalog** and restart Jellyfin.
-3. Open **Dashboard** > **Plugins** > **My Plugins** > **WhisperSubs**, download the engine and a model, then press **Generate Subtitles** on any title.
+1. Start an akou server next to Jellyfin, fetch its Qwen3-ASR model and make a key for the plugin:
 
-A few minutes later the player offers a subtitle track named **WhisperSubs**, and `<title>.<lang>.WhisperSubs.srt` sits next to the media file. It runs on Jellyfin 10.11 and 12.1, with or without a GPU. On a macOS or Windows server there is no engine download: install `whisper-cli` yourself and set its path, as the [setup guide](https://geiserx.github.io/whisper-subs/docs/setup/) explains.
+   ```bash
+   docker network create akou-net
+   docker network connect akou-net jellyfin   # your Jellyfin container's name
+   docker run -d --name akou --network akou-net -e AKOU_BEHIND_PROXY=true \
+     -v akou-data:/data -v akou-models:/models drumsergio/akou:1.2.4
+   docker exec akou akou models pull best
+   docker exec akou akou keys create --name whisper-subs --scope jobs
+   ```
+
+   akou refuses to start on a container's open address unless `AKOU_BEHIND_PROXY=true` says something else guards it. Here nothing publishes the port, so only containers on `akou-net` reach it.
+
+2. In Jellyfin, go to **Dashboard** > **Plugins** > **Repositories** and add `https://geiserx.github.io/whisper-subs/manifest.json`.
+3. Install **WhisperSubs** from **Catalog** and restart Jellyfin.
+4. Open **Dashboard** > **Plugins** > **My Plugins** > **WhisperSubs**. Under **Connect an akou server**, enter the URL (`http://akou:8476`, the container's name on the shared network) and the `ak_` key, press **Test**, then **Save**. Press **Generate Subtitles** on any title.
+
+A few minutes later the player offers a subtitle track named **WhisperSubs**, and `<title>.<lang>.WhisperSubs.srt` sits next to the media file. akou covers 30 languages and names the language of untagged titles. English translation, forced subtitles and the other languages need the local Whisper engine: open **Transcribe on this server instead** on the same page to download it, or skip akou and use that engine alone, as the [setup guide](https://geiserx.github.io/whisper-subs/docs/setup/) explains; on a macOS or Windows server you install `whisper-cli` yourself and set its path. It runs on Jellyfin 10.11 and 12.1, with or without a GPU.
 
 ## Documentation
 

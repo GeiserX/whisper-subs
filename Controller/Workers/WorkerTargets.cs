@@ -106,10 +106,14 @@ namespace WhisperSubs.Controller.Workers
         /// because that dialect can only translate into English: the pool must never route a Canary target
         /// to a worker that would answer it with an English subtitle.
         /// </summary>
-        public static IReadOnlySet<string> ForRow(WhisperWorker row)
+        /// <param name="hostAssistedEnglish">For a Qwen3-ASR or akou row: this server's Whisper translates into
+        /// English and the host's own worker is not in the pool, so the row's English goes to that Whisper
+        /// (<see cref="Providers.HostAssistedProvider"/>). With the host's worker in the pool it serves English
+        /// itself and the row advertises nothing, exactly as before.</param>
+        public static IReadOnlySet<string> ForRow(WhisperWorker row, bool hostAssistedEnglish = false)
         {
-            // A Qwen3-ASR or akou server translates nothing, whatever the row's targets say.
-            if (WorkerDialect.IsHostAssisted(row.Dialect)) return None;
+            // A Qwen3-ASR or akou server translates nothing itself, whatever the row's targets say.
+            if (WorkerDialect.IsHostAssisted(row.Dialect)) return hostAssistedEnglish ? EnglishOnly : None;
             if (row.TranslateTargets == null || row.TranslateTargets.Count == 0) return row.CanTranslate ? EnglishOnly : None;
 
             var crisp = WorkerDialect.Normalize(row.Dialect) == WorkerDialect.CrispAsr;
@@ -134,6 +138,13 @@ namespace WhisperSubs.Controller.Workers
             => WorkerDialect.Normalize(dialect) != WorkerDialect.CrispAsr || targets.Contains("en");
 
         /// <summary>
+        /// Whether a Qwen3-ASR or akou row advertises English: this server's Whisper translates and the host's
+        /// own worker is not in the pool (it would serve English itself). Pure.
+        /// </summary>
+        public static bool HostAssistedEnglish(bool hostWhisperTranslates, bool localWorkerInPool)
+            => hostWhisperTranslates && !localWorkerInPool;
+
+        /// <summary>
         /// The host's own worker: English through whisper-cli, plus all 24 Canary targets while the crispasr
         /// binary and the Canary model are installed. Not limited to the targets ticked for the nightly run:
         /// per-title translation needs every target with that list empty, and the nightly run only ever asks
@@ -151,14 +162,15 @@ namespace WhisperSubs.Controller.Workers
         /// <paramref name="localWhisperTranslates"/>); the single legacy remote server, which makes English;
         /// or an enabled row with a URL that lists the target. The same rows the registry builds from. Pure.
         /// </summary>
+        /// <param name="hostAssistedEnglish">Passed to <see cref="ForRow"/>, as the registry does.</param>
         public static bool ServedByConfig(string target, bool canaryInstalled, bool hostsLocal, IEnumerable<WhisperWorker>? rows,
-            bool legacyRemote = false, bool localWhisperTranslates = true)
+            bool legacyRemote = false, bool localWhisperTranslates = true, bool hostAssistedEnglish = false)
         {
             var english = string.Equals(target, "en", StringComparison.OrdinalIgnoreCase);
             return (hostsLocal && ForLocal(canaryInstalled).Contains(target) && (!english || localWhisperTranslates))
                    || (english && legacyRemote)
                    || (rows ?? Enumerable.Empty<WhisperWorker>()).Any(w => w.Enabled && !string.IsNullOrWhiteSpace(w.ApiUrl)
-                                                                        && ForRow(w).Contains(target));
+                                                                        && ForRow(w, hostAssistedEnglish).Contains(target));
         }
 
         /// <summary>
@@ -198,9 +210,14 @@ namespace WhisperSubs.Controller.Workers
         public static TargetLeasePolicy Decide(IReadOnlySet<string> ownTargets, string target)
         {
             if (ownTargets.Contains(target)) return TargetLeasePolicy.UseOwnWorker;
-            return ownTargets.Any(t => !string.Equals(t, "en", StringComparison.OrdinalIgnoreCase))
-                ? TargetLeasePolicy.TakeFreeAnotherOnly
-                : TargetLeasePolicy.WaitForAnother;
+            return MayWait(ownTargets) ? TargetLeasePolicy.WaitForAnother : TargetLeasePolicy.TakeFreeAnotherOnly;
         }
+
+        /// <summary>
+        /// Whether an item may wait for a second worker while it holds one with <paramref name="ownTargets"/>:
+        /// only when that worker serves no Canary target (the rule above). Pure.
+        /// </summary>
+        public static bool MayWait(IReadOnlySet<string> ownTargets)
+            => !ownTargets.Any(t => !string.Equals(t, "en", StringComparison.OrdinalIgnoreCase));
     }
 }

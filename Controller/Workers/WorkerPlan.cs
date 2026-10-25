@@ -1,3 +1,5 @@
+using System.Linq;
+
 namespace WhisperSubs.Controller.Workers
 {
     /// <summary>Which set of workers the pool should be built from (backward-compatibility).</summary>
@@ -41,10 +43,31 @@ namespace WhisperSubs.Controller.Workers
         public static bool IncludesLocal(bool addLocal, int builtRemoteWorkers) => addLocal || builtRemoteWorkers == 0;
 
         /// <summary>
+        /// Whether the host's own worker may join a pool that also holds <paramref name="builtRemoteWorkers"/>
+        /// other workers: always when it has an engine, and never without one while another worker exists. A
+        /// host with nothing installed would otherwise win every tie against an idle akou row and fail the
+        /// title. Alone, it stays, so its "download a model" error is what the admin sees. Pure.
+        /// </summary>
+        public static bool LocalUsable(bool hasEngine, int builtRemoteWorkers) => hasEngine || builtRemoteWorkers == 0;
+
+        /// <summary>
+        /// Whether the configuration has anything that transcribes, so the nightly task has a reason to run:
+        /// a local model path, the legacy remote URL, or an enabled worker row with a URL (an akou-only
+        /// install sets no model path at all). Pure.
+        /// </summary>
+        public static bool HasTranscriber(WhisperSubs.Configuration.PluginConfiguration config)
+            => !string.IsNullOrWhiteSpace(config.WhisperModelPath)
+               || !string.IsNullOrWhiteSpace(config.RemoteWhisperApiUrl)
+               || (config.Workers?.Any(w => w.Enabled && !string.IsNullOrWhiteSpace(w.ApiUrl)) ?? false);
+
+        /// <summary>
         /// <see cref="IncludesLocal"/> from config counts: <paramref name="usableExplicitRows"/> is the number
         /// of enabled explicit rows with a URL, which is what the registry builds remote workers from.
         /// </summary>
-        public static bool HostsLocal(int explicitWorkerCount, int usableExplicitRows, bool hasLegacyRemoteUrl, bool enableLocalWorker)
+        /// <param name="localHasEngine">Whether the host has an engine (<see cref="LocalUsable"/>); true keeps the
+        /// rule as it was for callers that do not know.</param>
+        public static bool HostsLocal(int explicitWorkerCount, int usableExplicitRows, bool hasLegacyRemoteUrl, bool enableLocalWorker,
+            bool localHasEngine = true)
         {
             var (source, addLocal) = Decide(explicitWorkerCount, hasLegacyRemoteUrl, enableLocalWorker);
             var remotes = source switch
@@ -53,7 +76,7 @@ namespace WhisperSubs.Controller.Workers
                 WorkerSource.LegacyRemote => 1,
                 _ => 0,
             };
-            return IncludesLocal(addLocal, remotes);
+            return IncludesLocal(addLocal, remotes) && LocalUsable(localHasEngine, remotes);
         }
     }
 }
