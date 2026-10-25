@@ -379,10 +379,11 @@ namespace WhisperSubs.Providers
         /// transcript still fails, and so does an empty answer for a Canary target, which is how a CrispASR
         /// server says it cannot serve that language. Pure.
         /// </summary>
-        internal static string TranscriptFromResponse(string response, double audioDurationSeconds, int wordCueMaxChars, string? canaryTarget)
+        internal static string TranscriptFromResponse(string response, double audioDurationSeconds, int wordCueMaxChars, string? canaryTarget,
+            Func<List<(double Start, double End, string Text)>, List<(double Start, double End, string Text)>>? splitSegments = null)
         {
             if (canaryTarget == null && HeardNoSpeech(response)) return string.Empty;
-            return RequireSrtCues(ConvertTranscriptionResponseToSrt(response, audioDurationSeconds, wordCueMaxChars), canaryTarget);
+            return RequireSrtCues(ConvertTranscriptionResponseToSrt(response, audioDurationSeconds, wordCueMaxChars, splitSegments), canaryTarget);
         }
 
         /// <summary>
@@ -683,8 +684,11 @@ namespace WhisperSubs.Providers
         /// deliberately rejected because its text-only response has no timings and cannot produce a
         /// synchronized subtitle without fabricating them.
         /// </summary>
+        /// <param name="splitSegments">Rewrites the segment cues before they are written (the akou dialect's
+        /// <see cref="AkouCueSplit"/>); not used for cues cut from word times.</param>
         internal static string ConvertTranscriptionResponseToSrt(
-            string response, double? maxDurationSeconds = null, int wordCueMaxChars = 0)
+            string response, double? maxDurationSeconds = null, int wordCueMaxChars = 0,
+            Func<List<(double Start, double End, string Text)>, List<(double Start, double End, string Text)>>? splitSegments = null)
         {
             if (string.IsNullOrWhiteSpace(response))
             {
@@ -739,8 +743,7 @@ namespace WhisperSubs.Providers
                     }
                 }
 
-                var output = new StringBuilder();
-                var index = 1;
+                var cues = new List<(double Start, double End, string Text)>();
                 var previousStart = -1d;
                 foreach (var segment in segments.EnumerateArray())
                 {
@@ -769,6 +772,18 @@ namespace WhisperSubs.Providers
                         continue;
                     }
 
+                    cues.Add((start, end, text));
+                }
+
+                if (splitSegments != null)
+                {
+                    cues = splitSegments(cues);
+                }
+
+                var output = new StringBuilder();
+                var index = 1;
+                foreach (var (start, end, text) in cues)
+                {
                     var startTimestamp = FormatSrtTimestamp(start);
                     var endTimestamp = FormatSrtTimestamp(end);
                     if (startTimestamp.TotalMilliseconds >= endTimestamp.TotalMilliseconds)
@@ -1199,7 +1214,8 @@ namespace WhisperSubs.Providers
         /// the transcript as OpenAI <c>verbose_json</c>, and delete the job whatever happened, which removes
         /// the uploaded audio and the result from the server. The realtime deadline starts when akou starts the
         /// job: the time it waits behind akou's other clients is what the low priority asks for, so that wait is
-        /// bounded only by the job's maximum hours.
+        /// bounded only by the job's maximum hours. Segments longer than a cue should be are split
+        /// (<see cref="AkouCueSplit"/>), since <c>best</c> gives no word times.
         /// </summary>
         private async Task<string> TranscribeAkouJobAsync(string audioPath, string language, CancellationToken cancellationToken)
         {
@@ -1215,75 +1231,20 @@ namespace WhisperSubs.Providers
                         UploadPreflight.ExplainIfBlocked(sourceAudioBytes, uploadBytes, _maxUploadBytes, effectiveCodec));
                 }
 
-                using var turn = await TakeTurnAsync(cancellationToken).ConfigureAwait(false);
-                var deadline = TranscriptionTimeout.Compute(sourceAudioBytes, _realtimeFactor, _minTimeoutSeconds, _maxTimeoutHours);
-                var queuedCap = AkouQueuedCap(_maxTimeoutHours, deadline);
-                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                timeoutCts.CancelAfter(queuedCap);
-                var started = false;
-                var jobsEndpoint = _apiUrl + "/v1/jobs";
-                string? jobId = null;
-                try
+                _logger.LogInformation("Sending audio to akou: {Endpoint} [lang={Language}, priority={Priority}]",
+                    UpstreamErrorSanitizer.SanitizeEndpoint(_apiUrl + "/v1/jobs"), language, _akou.Priority);
+                var body = await RunAkouJobAsync(uploadPath, effectiveCodec, sourceAudioBytes,
+                    BuildAkouJobFields(_model, language, _akou.Priority, _akou.Languages), "?format=verbose_json", cancellationToken).ConfigureAwait(false);
+                var srt = AkouTranscript(body, SourceAudioDurationSeconds(sourceAudioBytes));
+                if (srt.Length == 0)
                 {
-                    _logger.LogInformation("Sending audio to akou: {Endpoint} [lang={Language}, priority={Priority}]",
-                        UpstreamErrorSanitizer.SanitizeEndpoint(jobsEndpoint), language, _akou.Priority);
-
-                    using (var content = new MultipartFormDataContent())
-                    {
-                        var fileContent = new StreamContent(File.OpenRead(uploadPath));
-                        fileContent.Headers.ContentType = new MediaTypeHeaderValue(RemoteUploadFormat.ContentType(effectiveCodec));
-                        content.Add(fileContent, "file", RemoteUploadFormat.FileName(effectiveCodec));
-                        foreach (var (name, value) in BuildAkouJobFields(_model, language, _akou.Priority, _akou.Languages))
-                        {
-                            content.Add(new StringContent(value), name);
-                        }
-                        using var submit = new HttpRequestMessage(HttpMethod.Post, jobsEndpoint) { Content = content };
-                        jobId = ParseAkouJob(await SendForBodyAsync(submit, MaxAkouJobBytes, timeoutCts.Token).ConfigureAwait(false)).Id;
-                    }
-
-                    var jobUrl = jobsEndpoint + "/" + jobId;
-                    while (true)
-                    {
-                        using var poll = new HttpRequestMessage(HttpMethod.Get, jobUrl + "?wait=60");
-                        var job = ParseAkouJob(await SendForBodyAsync(poll, MaxAkouJobBytes, timeoutCts.Token).ConfigureAwait(false));
-                        if (!started && job.Status != "queued")
-                        {
-                            // From here the job runs: hold it to the realtime deadline, as any other worker.
-                            started = true;
-                            timeoutCts.CancelAfter(deadline);
-                        }
-                        if (job.Status == "done") break;
-                        if (!AkouJobStillRunning(job.Status))
-                        {
-                            throw new InvalidOperationException($"The akou job ended {job.Status}: {job.Error ?? "no reason given"}");
-                        }
-                        // akou holds the poll up to 60 s; the pause only matters for a server that answers at once.
-                        await Task.Delay(TimeSpan.FromSeconds(1), timeoutCts.Token).ConfigureAwait(false);
-                    }
-
-                    using var read = new HttpRequestMessage(HttpMethod.Get, jobUrl + "/result?format=verbose_json");
-                    var body = await SendForBodyAsync(read, MaxTranscriptionResponseBytes, timeoutCts.Token).ConfigureAwait(false);
-                    var srt = TranscriptFromResponse(body, SourceAudioDurationSeconds(sourceAudioBytes), 0, null);
-                    if (srt.Length == 0)
-                    {
-                        _logger.LogInformation("akou heard no speech in this audio; no cues");
-                    }
-                    else
-                    {
-                        _logger.LogInformation("akou transcription complete, received {Length} characters of SRT", srt.Length);
-                    }
-                    return srt;
+                    _logger.LogInformation("akou heard no speech in this audio; no cues");
                 }
-                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                else
                 {
-                    throw new TimeoutException(started
-                        ? $"akou job exceeded its {deadline.TotalSeconds:F0}s deadline once it started (server slow or unreachable): {UpstreamErrorSanitizer.SanitizeEndpoint(jobsEndpoint)}"
-                        : $"akou job waited {queuedCap.TotalHours:F1}h without starting (server busy with other clients, or unreachable): {UpstreamErrorSanitizer.SanitizeEndpoint(jobsEndpoint)}");
+                    _logger.LogInformation("akou transcription complete, received {Length} characters of SRT", srt.Length);
                 }
-                finally
-                {
-                    if (jobId != null) await DeleteAkouJobAsync(jobsEndpoint + "/" + jobId).ConfigureAwait(false);
-                }
+                return srt;
             }
             finally
             {
@@ -1291,6 +1252,167 @@ namespace WhisperSubs.Providers
                 {
                     RemoteAudioEncoder.TryDelete(uploadPath);
                 }
+            }
+        }
+
+        /// <summary>
+        /// The subtitle in an akou <c>verbose_json</c> result: one cue per segment, split where a segment is
+        /// longer than <see cref="AkouCueSplit.MaxChars"/> characters or <see cref="AkouCueSplit.MaxSeconds"/>
+        /// seconds. No speech is an empty subtitle. Pure.
+        /// </summary>
+        internal static string AkouTranscript(string body, double audioDurationSeconds)
+            => TranscriptFromResponse(body, audioDurationSeconds, 0, null, cues => AkouCueSplit.Split(cues));
+
+        /// <summary>Seconds of audio per akou language-detection job.</summary>
+        internal const double AkouDetectionSliceSeconds = 30;
+
+        /// <summary>How many slices detection tries before it gives up on a title that is silent at the start.</summary>
+        internal const int AkouDetectionSlices = 3;
+
+        /// <summary>
+        /// Names the language of <paramref name="audioPath"/> through akou, for a server with no Whisper of its
+        /// own. Each try sends one <see cref="AkouDetectionSliceSeconds"/> slice (the first, then the next) as a
+        /// <c>best</c> job with an explicit <c>languages[]</c>: the row's list, else Qwen3-ASR's 30. The explicit
+        /// list overrides the server's own <c>asr.languages</c> bound, which on a server bound to one language
+        /// would name every title that language. A slice akou hears no speech in moves to the next; after
+        /// <see cref="AkouDetectionSlices"/> it fails. akou gives no confidence, so the probability is 1.0, and
+        /// the forced pass, which thresholds on it, never comes here.
+        /// </summary>
+        public async Task<(string Language, float Probability)> DetectAkouLanguageAsync(string audioPath, CancellationToken cancellationToken)
+        {
+            if (_dialect != WorkerDialect.Akou) throw new NotSupportedException("Only an akou row detects languages through its server.");
+            if (!File.Exists(audioPath)) throw new FileNotFoundException($"Audio file not found: {audioPath}");
+
+            var fields = BuildAkouDetectionFields(_akou.Priority, _akou.Languages);
+            for (var slice = 0; slice < AkouDetectionSlices; slice++)
+            {
+                var slicePath = Path.Combine(Path.GetTempPath(), $"whispersubs_akoulid_{Guid.NewGuid():N}.wav");
+                try
+                {
+                    var bytes = WavSlice.CopyFile(audioPath, slicePath, slice * AkouDetectionSliceSeconds, AkouDetectionSliceSeconds);
+                    if (bytes <= 0) break;   // the audio ended before this slice
+                    _logger.LogInformation("Asking akou for the language of slice {Slice} ({From:F0}-{To:F0}s) [priority={Priority}]",
+                        slice + 1, slice * AkouDetectionSliceSeconds, (slice + 1) * AkouDetectionSliceSeconds, _akou.Priority);
+                    var body = await RunAkouJobAsync(slicePath, RemoteUploadFormat.Normalize(null), bytes + WavSlice.HeaderBytes,
+                        fields, string.Empty, cancellationToken).ConfigureAwait(false);
+                    var (language, noSpeech) = ParseAkouDetection(body);
+                    var code = noSpeech ? null : Qwen3Provider.NormalizeLanguage(language);
+                    if (code != null)
+                    {
+                        _logger.LogInformation("akou named the language {Language}", code);
+                        return (code, 1.0f);
+                    }
+                    _logger.LogInformation("akou heard no speech in slice {Slice}; trying the next", slice + 1);
+                }
+                finally
+                {
+                    RemoteAudioEncoder.TryDelete(slicePath);
+                }
+            }
+            throw new InvalidOperationException(AkouUndetectedMessage);
+        }
+
+        /// <summary>The error when akou names no language in any slice.</summary>
+        internal const string AkouUndetectedMessage =
+            "akou could not detect the language: tag the audio track or install the local Whisper engine.";
+
+        /// <summary>
+        /// The form fields of an akou detection job: preset <c>best</c>, never a language (a bare
+        /// <c>auto</c> would take the server's own bound), always <c>languages[]</c>, the row's priority. Pure.
+        /// </summary>
+        internal static IReadOnlyList<(string Name, string Value)> BuildAkouDetectionFields(int priority, IReadOnlyList<string>? rowLanguages)
+        {
+            var fields = new List<(string Name, string Value)> { ("preset", "best") };
+            var languages = rowLanguages is { Count: > 0 } ? rowLanguages : Setup.Qwen3Catalog.LanguageCodes();
+            foreach (var code in languages) fields.Add(("languages[]", code));
+            fields.Add(("priority", priority.ToString(CultureInfo.InvariantCulture)));
+            fields.Add(("title", "whisper-subs language"));
+            return fields;
+        }
+
+        /// <summary>
+        /// The language of a done akou job's result (<c>format=json</c>), and whether akou heard no speech
+        /// (<c>note: no_speech</c>). Pure.
+        /// </summary>
+        internal static (string? Language, bool NoSpeech) ParseAkouDetection(string json)
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(json);
+                var root = document.RootElement;
+                if (root.ValueKind != JsonValueKind.Object) throw new InvalidOperationException("akou answered without a transcript.");
+                var noSpeech = root.TryGetProperty("note", out var note) && note.ValueKind == JsonValueKind.String && note.GetString() == "no_speech";
+                var language = root.TryGetProperty("language", out var l) && l.ValueKind == JsonValueKind.String ? l.GetString() : null;
+                return (string.IsNullOrWhiteSpace(language) ? null : language, noSpeech);
+            }
+            catch (JsonException ex)
+            {
+                throw new InvalidOperationException("akou answered with malformed JSON instead of a transcript.", ex);
+            }
+        }
+
+        /// <summary>
+        /// Runs one akou file job: submit, long-poll until it ends, read the result with
+        /// <paramref name="resultQuery"/>, and delete it whatever happened. Waits for the row's request gate.
+        /// </summary>
+        private async Task<string> RunAkouJobAsync(string uploadPath, string codec, long sourceAudioBytes,
+            IReadOnlyList<(string Name, string Value)> fields, string resultQuery, CancellationToken cancellationToken)
+        {
+            using var turn = await TakeTurnAsync(cancellationToken).ConfigureAwait(false);
+            var deadline = TranscriptionTimeout.Compute(sourceAudioBytes, _realtimeFactor, _minTimeoutSeconds, _maxTimeoutHours);
+            var queuedCap = AkouQueuedCap(_maxTimeoutHours, deadline);
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(queuedCap);
+            var started = false;
+            var jobsEndpoint = _apiUrl + "/v1/jobs";
+            string? jobId = null;
+            try
+            {
+                using (var content = new MultipartFormDataContent())
+                {
+                    var fileContent = new StreamContent(File.OpenRead(uploadPath));
+                    fileContent.Headers.ContentType = new MediaTypeHeaderValue(RemoteUploadFormat.ContentType(codec));
+                    content.Add(fileContent, "file", RemoteUploadFormat.FileName(codec));
+                    foreach (var (name, value) in fields)
+                    {
+                        content.Add(new StringContent(value), name);
+                    }
+                    using var submit = new HttpRequestMessage(HttpMethod.Post, jobsEndpoint) { Content = content };
+                    jobId = ParseAkouJob(await SendForBodyAsync(submit, MaxAkouJobBytes, timeoutCts.Token).ConfigureAwait(false)).Id;
+                }
+
+                var jobUrl = jobsEndpoint + "/" + jobId;
+                while (true)
+                {
+                    using var poll = new HttpRequestMessage(HttpMethod.Get, jobUrl + "?wait=60");
+                    var job = ParseAkouJob(await SendForBodyAsync(poll, MaxAkouJobBytes, timeoutCts.Token).ConfigureAwait(false));
+                    if (!started && job.Status != "queued")
+                    {
+                        // From here the job runs: hold it to the realtime deadline, as any other worker.
+                        started = true;
+                        timeoutCts.CancelAfter(deadline);
+                    }
+                    if (job.Status == "done") break;
+                    if (!AkouJobStillRunning(job.Status))
+                    {
+                        throw new InvalidOperationException($"The akou job ended {job.Status}: {job.Error ?? "no reason given"}");
+                    }
+                    // akou holds the poll up to 60 s; the pause only matters for a server that answers at once.
+                    await Task.Delay(TimeSpan.FromSeconds(1), timeoutCts.Token).ConfigureAwait(false);
+                }
+
+                using var read = new HttpRequestMessage(HttpMethod.Get, jobUrl + "/result" + resultQuery);
+                return await SendForBodyAsync(read, MaxTranscriptionResponseBytes, timeoutCts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                throw new TimeoutException(started
+                    ? $"akou job exceeded its {deadline.TotalSeconds:F0}s deadline once it started (server slow or unreachable): {UpstreamErrorSanitizer.SanitizeEndpoint(jobsEndpoint)}"
+                    : $"akou job waited {queuedCap.TotalHours:F1}h without starting (server busy with other clients, or unreachable): {UpstreamErrorSanitizer.SanitizeEndpoint(jobsEndpoint)}");
+            }
+            finally
+            {
+                if (jobId != null) await DeleteAkouJobAsync(jobsEndpoint + "/" + jobId).ConfigureAwait(false);
             }
         }
 

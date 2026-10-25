@@ -72,7 +72,30 @@ namespace WhisperSubs.Controller
         /// hence which items read as already-satisfied. The ordered extra translation targets are included
         /// too, so adding, removing or reordering one invalidates cached skips. (Issue #110; guards #82/#83.)
         /// </summary>
-        public static string ComputeSignature(PluginConfiguration c, IReadOnlyCollection<string>? unservedTargets = null)
+        /// <param name="degraded">What this run cannot do (<see cref="Degraded"/>), appended only when non-empty so
+        /// an install that can do everything keeps its signature.</param>
+        public static string ComputeSignature(PluginConfiguration c, IReadOnlyCollection<string>? unservedTargets = null,
+            IReadOnlyCollection<string>? degraded = null)
+            => degraded == null || degraded.Count == 0
+                ? BaseSignature(c, unservedTargets)
+                : BaseSignature(c, unservedTargets) + "|degraded=" + string.Join(",", degraded);
+
+        /// <summary>
+        /// The parts of a run the pool cannot do, in a fixed order: <c>forced</c> (no worker detects for the
+        /// forced pass), <c>en</c> (no worker makes English), <c>whisper</c> (an akou or Qwen3-ASR row runs
+        /// with no Whisper on this server, so uncovered languages are skipped). Titles cached without them must
+        /// be looked at again once the engine is installed. Pure.
+        /// </summary>
+        public static IReadOnlyList<string> Degraded(bool forcedMissing, bool englishMissing, bool hostWhisperMissing)
+        {
+            var parts = new List<string>();
+            if (forcedMissing) parts.Add("forced");
+            if (englishMissing) parts.Add("en");
+            if (hostWhisperMissing) parts.Add("whisper");
+            return parts;
+        }
+
+        private static string BaseSignature(PluginConfiguration c, IReadOnlyCollection<string>? unservedTargets)
         {
             var signature = string.Join(
                 "|",

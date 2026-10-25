@@ -54,6 +54,13 @@ namespace WhisperSubs.Controller
 
         /// <summary>An engine for <paramref name="target"/>. Throws when none can be had for this item.</summary>
         Task<TargetEngineLease> AcquireAsync(string target, string itemName, CancellationToken cancellationToken);
+
+        /// <summary>
+        /// Whether some worker that takes whole items translates into English
+        /// (<see cref="WorkerJob.EnglishItems"/>). False only for a pool where none does; then the item's English
+        /// pass is off, as the run's requirements say (<see cref="WorkerJob.Requirements"/>).
+        /// </summary>
+        bool ItemsTranslateToEnglish => true;
     }
 
     /// <summary>
@@ -90,6 +97,8 @@ namespace WhisperSubs.Controller
         public bool? LocalWorkerInPool => _pool.HasLocalWorker;
 
         public bool CanServe(string target) => _pool.HasCapableWorker(WorkerJob.ForTarget(target, _localWhisperTranslates));
+
+        public bool ItemsTranslateToEnglish => _pool.HasCapableWorker(WorkerJob.EnglishItems);
 
         public async Task<TargetEngineLease> AcquireAsync(string target, string itemName, CancellationToken cancellationToken)
         {

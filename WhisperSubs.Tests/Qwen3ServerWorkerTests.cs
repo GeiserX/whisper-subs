@@ -200,13 +200,39 @@ public class Qwen3ServerWorkerTests
     [Theory]
     [InlineData("auto")]
     [InlineData("")]
-    [InlineData("sw")]
-    public async Task HostAssistedProvider_AutoAndUnsupportedLanguages_StayOnWhisperFirst(string language)
+    public async Task HostAssistedProvider_AutoLanguage_StaysOnWhisperFirst(string language)
     {
         var remote = new RemoteWhisperProvider(NullLogger.Instance, "http://mini:9020", "qwen3", dialect: "crispasr-qwen3", wordCueMaxChars: 42);
         var wrapped = new HostAssistedProvider(remote, Whisper());
         var ex = await Assert.ThrowsAsync<System.IO.FileNotFoundException>(
             () => wrapped.TranscribeAsync("/nope/a.wav", language, CancellationToken.None));
+        Assert.Contains("Whisper model", ex.Message);
+    }
+
+    // A language the model does not cover goes to this server's Whisper when it is installed, and ends as
+    // a clean "not covered" skip when it is not, instead of a missing-model failure retried every run.
+    [Fact]
+    public async Task HostAssistedProvider_UncoveredLanguage_WithoutHostWhisper_IsNotCovered()
+    {
+        var remote = new RemoteWhisperProvider(NullLogger.Instance, "http://mini:9020", "qwen3", dialect: "crispasr-qwen3", wordCueMaxChars: 42);
+        var wrapped = new HostAssistedProvider(remote, Whisper(), () => false);
+        var ex = await Assert.ThrowsAsync<LanguageNotCoveredException>(
+            () => wrapped.TranscribeAsync("/nope/a.wav", "sw", CancellationToken.None));
+        Assert.Equal("sw", ex.Language);
+        Assert.Contains("The Qwen3-ASR server does not cover sw", ex.Message);
+        Assert.False(wrapped.Covers("sw"));
+        Assert.True(wrapped.Covers("es"));
+        Assert.True(wrapped.Covers("auto"));
+    }
+
+    [Fact]
+    public async Task HostAssistedProvider_UncoveredLanguage_WithHostWhisper_GoesToWhisper()
+    {
+        var remote = new RemoteWhisperProvider(NullLogger.Instance, "http://mini:9020", "qwen3", dialect: "crispasr-qwen3", wordCueMaxChars: 42);
+        var wrapped = new HostAssistedProvider(remote, Whisper(), () => true);
+        Assert.True(wrapped.Covers("sw"));
+        var ex = await Assert.ThrowsAsync<System.IO.FileNotFoundException>(
+            () => wrapped.TranscribeAsync("/nope/a.wav", "sw", CancellationToken.None));
         Assert.Contains("Whisper model", ex.Message);
     }
 

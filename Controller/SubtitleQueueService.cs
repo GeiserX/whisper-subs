@@ -193,6 +193,26 @@ namespace WhisperSubs.Controller
         }
 
         /// <summary>
+        /// The job requirements of one drain or run over <paramref name="pool"/>, logging once what the pool
+        /// cannot do: English translation with no worker that makes it (translation is then off for the run),
+        /// and forced subtitles with no worker that can detect per-chunk languages.
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "Reads the live pool and logs; WorkerJob.Requirements, TranslationSkippedWarning and SubtitleManager.ForcedSkippedWarning are unit-tested")]
+        internal static JobRequirements RunRequirements(PluginConfiguration config, WorkerPool pool, ILogger logger)
+        {
+            var poolTranslates = pool.HasCapableWorker(WorkerJob.EnglishItems);
+            if (WorkerJob.TranslationSkippedWarning(config.SubtitleMode, config.EnableTranslation, poolTranslates) is { } translation)
+            {
+                logger.LogWarning("{Warning}", translation);
+            }
+            if (SubtitleManager.ForcedSkippedWarning(config.SubtitleMode, pool.AnyItemWorker(w => SubtitleManager.DetectsForced(w.Provider))) is { } forced)
+            {
+                logger.LogWarning("{Warning}", forced);
+            }
+            return WorkerJob.Requirements(config.SubtitleMode, config.EnableTranslation, poolTranslates);
+        }
+
+        /// <summary>
         /// The live pool, or null when nothing has built one yet. Read-only: unlike <see cref="GetPool"/> it
         /// never builds or rebuilds, so a controller can ask it between two jobs of a running drain without
         /// swapping the pool under the dispatcher.
@@ -213,7 +233,8 @@ namespace WhisperSubs.Controller
             var rows = config.Workers ?? new List<WhisperWorker>();
             var usable = rows.Count(w => w.Enabled && !string.IsNullOrWhiteSpace(w.ApiUrl));
             var legacy = !string.IsNullOrWhiteSpace(config.RemoteWhisperApiUrl);
-            var hostsLocal = WorkerPlan.HostsLocal(rows.Count, usable, legacy, config.EnableLocalWorker);
+            var engines = SubtitleProviderFactory.ProbeLocalEngines(config);
+            var hostsLocal = WorkerPlan.HostsLocal(rows.Count, usable, legacy, config.EnableLocalWorker, engines.HasEngine);
             var legacyRemote = WorkerPlan.Decide(rows.Count, legacy, config.EnableLocalWorker).Source == WorkerSource.LegacyRemote;
             var pool = CurrentPool;
 
@@ -222,7 +243,8 @@ namespace WhisperSubs.Controller
                 var translates = ModelCatalog.IsTranslationCapable(config.WhisperModelPath);
                 var english = pool != null
                     ? pool.HasCapableWorker(WorkerJob.ForTarget("en", translates))
-                    : WorkerTargets.ServedByConfig("en", installed, hostsLocal, rows, legacyRemote, translates);
+                    : WorkerTargets.ServedByConfig("en", installed, hostsLocal, rows, legacyRemote, translates,
+                        WorkerTargets.HostAssistedEnglish(engines.WhisperTranslates, hostsLocal));
                 return english ? null : TranslationRoute.EnglishMissingReason(pool?.HasLocalWorker ?? hostsLocal, translates, config.WhisperModelPath);
             }
 
@@ -1018,7 +1040,7 @@ namespace WhisperSubs.Controller
                         // a Jellyfin restart. Now a build failure is caught, _isDraining is reset, and — since
                         // the config is broken — we do NOT re-fire (started stays false), avoiding a busy-loop.
                         var pool = GetPool(config, loggerFactory, forTask: false);
-                        var requirements = WorkerJob.Requirements(config.SubtitleMode, config.EnableTranslation);
+                        var requirements = RunRequirements(config, pool, logger);
                         started = true;
                         paused = await DispatchDrainAsync(manager, pool, requirements, countProcessed: true, config.JobMaxRetries, logger, cancellationToken);
                     }
@@ -1306,6 +1328,16 @@ namespace WhisperSubs.Controller
                             parked.Enqueue(wi);
                             logger.LogWarning("[Dispatch] {ItemName} waits for the next run: no worker that makes '{Target}' is available — {Reason}",
                                 wi.Item.Name, wi.Target, ex.Message);
+                        }
+                        catch (LanguageNotCoveredException ex)
+                        {
+                            // The title's language is not one the worker's Qwen3-ASR covers and this server has
+                            // no Whisper: every attempt gives the same answer, so it is dropped without a retry.
+                            _lastError = $"{wi.Item.Name}: {ex.Message}";
+                            wi.Completion?.TrySetException(ex);
+                            if (countProcessed) Interlocked.Increment(ref _processedCount);
+                            logger.LogWarning("[Dispatch] {ItemName}: {Message}", wi.Item.Name, ex.Message);
+                            ReleaseInFlightAndPersist(key);
                         }
                         catch (TranslationNotPossibleException ex)
                         {

@@ -22,6 +22,7 @@ namespace WhisperSubs.Controller.Workers
         public static IReadOnlyList<ITranscriptionWorker> BuildWorkers(PluginConfiguration config, ILoggerFactory loggerFactory)
         {
             var workers = new List<ITranscriptionWorker>();
+            var engines = SubtitleProviderFactory.ProbeLocalEngines(config);
             var plan = WorkerPlan.Decide(
                 config.Workers?.Count ?? 0,
                 !string.IsNullOrWhiteSpace(config.RemoteWhisperApiUrl),
@@ -36,7 +37,12 @@ namespace WhisperSubs.Controller.Workers
                     // and oversubscribe that backend. CollapseByEndpoint keeps the first row and takes the min
                     // MaxConcurrency, so each physical endpoint becomes exactly one worker (v4.3.1).
                     var enabledRows = config.Workers!.Where(x => x.Enabled && !string.IsNullOrWhiteSpace(x.ApiUrl));
-                    foreach (var w in WorkerEndpointDedup.CollapseByEndpoint(enabledRows))
+                    var rows = WorkerEndpointDedup.CollapseByEndpoint(enabledRows).ToList();
+                    // A Qwen3-ASR or akou row offers English only when this server's Whisper translates and the
+                    // host's own worker, which would serve English itself, stays out of the pool.
+                    var hostEnglish = WorkerTargets.HostAssistedEnglish(engines.WhisperTranslates,
+                        WorkerPlan.IncludesLocal(plan.AddLocal, rows.Count) && WorkerPlan.LocalUsable(engines.HasEngine, rows.Count));
+                    foreach (var w in rows)
                     {
                         workers.Add(BuildRemote(
                             id: string.IsNullOrWhiteSpace(w.Id) ? w.ApiUrl : w.Id,
@@ -46,7 +52,7 @@ namespace WhisperSubs.Controller.Workers
                             model: string.IsNullOrWhiteSpace(w.Model) ? config.RemoteWhisperModel : w.Model,
                             maxConcurrency: w.MaxConcurrency,
                             costWeight: w.CostWeight,
-                            translateTargets: WorkerTargets.ForRow(w),
+                            translateTargets: WorkerTargets.ForRow(w, hostEnglish),
                             dialect: w.Dialect,
                             maxUploadBytes: w.MaxUploadBytes,
                             uploadCodec: w.UploadCodec,
@@ -75,7 +81,17 @@ namespace WhisperSubs.Controller.Workers
 
             // Add the host's own local whisper unless the plan says otherwise. The fallback guarantees the
             // pool is never empty (e.g. an explicit list of all-disabled/blank workers with local off).
-            if (WorkerPlan.IncludesLocal(plan.AddLocal, workers.Count))
+            var includesLocal = WorkerPlan.IncludesLocal(plan.AddLocal, workers.Count);
+            if (includesLocal && !WorkerPlan.LocalUsable(engines.HasEngine, workers.Count))
+            {
+                // Nothing to transcribe with here, and other workers to do it: the host's worker would only win
+                // ties against them and fail each title it took.
+                loggerFactory.CreateLogger(typeof(WorkerRegistry).FullName ?? nameof(WorkerRegistry)).LogInformation(
+                    "This server has no transcription engine installed, so its own worker stays out of the pool and the {Count} configured worker(s) take every title",
+                    workers.Count);
+                includesLocal = false;
+            }
+            if (includesLocal)
             {
                 // English is whisper-cli's translate task. The Canary targets are live: read from the install
                 // state each time the pool asks, so installing the engine works without waiting for the pool

@@ -81,9 +81,9 @@ namespace WhisperSubs.ScheduledTasks
                 return;
             }
 
-            if (string.IsNullOrWhiteSpace(config.RemoteWhisperApiUrl) && string.IsNullOrWhiteSpace(config.WhisperModelPath))
+            if (!WorkerPlan.HasTranscriber(config))
             {
-                _logger.LogWarning("Neither remote API URL nor local model path is configured, aborting task");
+                _logger.LogWarning("Nothing transcribes: no local model path, no remote API URL and no enabled worker, aborting task");
                 return;
             }
 
@@ -113,7 +113,12 @@ namespace WhisperSubs.ScheduledTasks
             var manager = new SubtitleManager(_libraryManager, _loggerFactory.CreateLogger<SubtitleManager>());
             var language = config.DefaultLanguage;
             var pool = queue.GetPool(config, _loggerFactory, forTask: true);
-            var requirements = WorkerJob.Requirements(config.SubtitleMode, config.EnableTranslation);
+            // What the pool can do this run: with no worker that makes English, translation is off; with no
+            // worker that can detect per-chunk languages, so is the forced pass. Each is said once, here.
+            var requirements = SubtitleQueueService.RunRequirements(config, pool, _logger);
+            var poolTranslates = requirements.TranslateTarget != null;
+            var forcedPossible = pool.AnyItemWorker(w => SubtitleManager.DetectsForced(w.Provider));
+            var mode = SubtitleManager.EffectiveMode(config.SubtitleMode, forcedPossible, poolTranslates);
 
             // Restore persisted queue from disk (survives restarts). Pass the retry cap so an in-flight lease
             // that was killed mid-transcription is restored as one consumed attempt (RetryCount+1) and given
@@ -123,6 +128,13 @@ namespace WhisperSubs.ScheduledTasks
             {
                 _logger.LogInformation("Draining {Count} restored priority items before auto-generation", restored);
                 await queue.DrainPriorityAsync(manager, pool, requirements, config.JobMaxRetries, _logger, cancellationToken);
+            }
+
+            if (mode == null)
+            {
+                _logger.LogWarning("Subtitle mode {Mode} has nothing to make with the configured workers; the sweep is skipped", config.SubtitleMode);
+                progress.Report(100);
+                return;
             }
 
             // Collect items — the query is fast (DB lookup), no bulk in-memory storage needed
@@ -143,13 +155,10 @@ namespace WhisperSubs.ScheduledTasks
 
             // In ForcedOnly/FullAndForced modes, items with full subtitles but no forced
             // subtitles must still be considered. Only filter by HasSubtitles in Full mode.
-            var needsForced = config.SubtitleMode == Configuration.SubtitleMode.ForcedOnly
-                || config.SubtitleMode == Configuration.SubtitleMode.FullAndForced;
+            var needsForced = mode == Configuration.SubtitleMode.ForcedOnly
+                || mode == Configuration.SubtitleMode.FullAndForced;
             var translationTargets = SubtitleManager.NormalizeTranslationTargets(config.TranslationTargetLanguages);
-            var needsTranslation = config.SubtitleMode == Configuration.SubtitleMode.TranslationOnly
-                || (config.EnableTranslation
-                    && (config.SubtitleMode == Configuration.SubtitleMode.Full
-                        || config.SubtitleMode == Configuration.SubtitleMode.FullAndForced));
+            var needsTranslation = WorkerJob.TranslationOn(mode.Value, config.EnableTranslation, poolTranslates);
 
             var includeKinds = new List<BaseItemKind> { BaseItemKind.Movie, BaseItemKind.Episode, BaseItemKind.Video };
             if (config.EnableLyricsGeneration)
@@ -219,7 +228,16 @@ namespace WhisperSubs.ScheduledTasks
                 : Array.Empty<string>();
 
             var cachePath = SubtitleSkipCache.DefaultPath();
-            var cacheSignature = SubtitleSkipCache.ComputeSignature(config, unservedTargets);
+            // Anything this run cannot do lets titles be cached as complete without it, so installing the
+            // engine later must drop those entries: the signature names what is missing, only while it is.
+            var degraded = SubtitleSkipCache.Degraded(
+                forcedMissing: mode != config.SubtitleMode,
+                englishMissing: WorkerJob.TranslationPossible(config.SubtitleMode, config.EnableTranslation) && !poolTranslates,
+                hostWhisperMissing: pool.AnyItemWorker(w => w.Provider is HostAssistedProvider h && !h.HostWhisperInstalled));
+            var cacheSignature = SubtitleSkipCache.ComputeSignature(config, unservedTargets, degraded);
+            // Titles in a language no worker here covers: remembered at the end of the run, so the sweep
+            // does not extract and send them again every night.
+            var notCovered = new System.Collections.Concurrent.ConcurrentDictionary<Guid, long>();
             var skipCache = (config.CacheSkippedItems && !string.IsNullOrEmpty(cachePath))
                 ? SubtitleSkipCache.Load(cachePath, cacheSignature, _logger)
                 : null;
@@ -456,7 +474,7 @@ namespace WhisperSubs.ScheduledTasks
                         }
 
                         bool alreadyComplete = SubtitleManager.IsSubtitleSetComplete(
-                            config.SubtitleMode, needsTranslation, hasFullSrt, hasForcedSrt, hasTranslatedSrt);
+                            mode.Value, needsTranslation, hasFullSrt, hasForcedSrt, hasTranslatedSrt);
 
                         // Issue #110: remember the verdict for unchanged future runs. Record only a
                         // positive (complete) result; a not-complete video is removed so it is always
@@ -599,6 +617,10 @@ namespace WhisperSubs.ScheduledTasks
                 // (The task-running flag is cleared by ExecuteAsync's outer finally.)
                 if (skipCache != null)
                 {
+                    foreach (var (id, token) in notCovered)
+                    {
+                        skipCache.Record(id, new SubtitleSkipCache.Entry { Token = token, CachedAtTicks = nowTicks });
+                    }
                     skipCache.PruneTo(candidateIds);
                     skipCache.Save(cachePath, cacheSignature, _logger);
                 }
@@ -627,6 +649,12 @@ namespace WhisperSubs.ScheduledTasks
                         await manager.GenerateSubtitleAsync(item, lease.Worker.Provider, language, cancellationToken,
                             targetEngines: new PoolTargetEngines(pool, lease, skipUnservedTargets: true));
                     }
+                    CountSweptItem();
+                }
+                catch (LanguageNotCoveredException)
+                {
+                    // Logged by the manager; a skip, not a failure, and remembered for the next runs.
+                    notCovered[item.Id] = item.DateLastSaved.Ticks;
                     CountSweptItem();
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

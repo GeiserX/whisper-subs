@@ -6,6 +6,36 @@ description: Getting the whisper engine working on TrueNAS, Proxmox LXC, Synolog
 
 Most support reports that start with "the plugin downloaded the binary but nothing happens" come from four deployments: TrueNAS SCALE, Proxmox LXC, Synology DSM and unRAID. The plugin is not doing anything different on them. The container or the CPU is.
 
+## akou next to Jellyfin
+
+The shortest install needs no engine inside the Jellyfin container at all: an [akou](https://github.com/GeiserX/akou) container beside it transcribes, and nothing below about binaries and shared libraries applies. In Docker Compose, add a service to the file Jellyfin is in:
+
+```yaml
+services:
+  akou:
+    image: drumsergio/akou:1.2.4
+    container_name: akou
+    restart: unless-stopped
+    volumes:
+      - akou-data:/data
+      - akou-models:/models
+
+volumes:
+  akou-data:
+  akou-models:
+```
+
+Then fetch the Qwen3-ASR model and make a key:
+
+```bash
+docker exec akou akou models pull best
+docker exec akou akou keys create --name whisper-subs --scope jobs
+```
+
+On the plugin's settings page, under **Connect an akou server**, enter `http://akou:8476` (the service name works because both containers share the Compose network) and the `ak_` key, press **Test**, then **Save**. No port needs publishing for Jellyfin to reach it. akou keeps settings, keys and jobs under `/data` and models under `/models`; both must be writable by uid 1000, so a bind-mounted folder needs `chown 1000:1000` on the host. The [akou server guide](https://github.com/GeiserX/akou/blob/main/docs/server.md) covers GPU images and the rest.
+
+akou alone transcribes the 30 languages Qwen3-ASR covers and names the language of untagged titles. English translation, forced subtitles and other languages need the local Whisper engine; the sections below are how to get it running on each platform. See [akou server workers](remote-workers.md#akou-server-workers) for what changes with and without it.
+
 ## What all of these have in common
 
 Two things have to be true before a single subtitle gets generated.

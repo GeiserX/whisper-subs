@@ -20,6 +20,14 @@ namespace WhisperSubs.Providers
                 loggerFactory.CreateLogger<WhisperSetupService>(),
                 Plugin.Instance?.DataFolderPath ?? "");
 
+            // Nothing is fetched for an engine that is not here: the VAD model serves whisper-cli and crispasr
+            // (Qwen3-ASR, Canary), the small detection model only whisper-cli. An install that transcribes
+            // through akou alone downloads neither.
+            var downloads = LocalDownloads(
+                WhisperProvider.BinaryOnDisk(config.WhisperBinaryPath, Plugin.Instance?.DataFolderPath,
+                    Environment.GetEnvironmentVariable("PATH"), System.IO.File.Exists),
+                !string.IsNullOrWhiteSpace(config.CrispAsrBinaryPath) && System.IO.File.Exists(config.CrispAsrBinaryPath));
+
             // Resolve the Silero VAD model path when native VAD is enabled. Empty => VAD off
             // (the provider only adds --vad when given an existing model file).
             var vadModelPath = "";
@@ -36,7 +44,7 @@ namespace WhisperSubs.Providers
                 var selectedModelPath = setup.VadModelPathFor(ModelCatalog.ResolveVadModel(config.VadModelVersion).FileName);
                 var usingExternalModel = !string.IsNullOrEmpty(vadModelPath)
                     && !WhisperSetupService.IsManagedVadPath(vadModelPath, setup.VadDirectory);
-                if (!usingExternalModel && !System.IO.File.Exists(selectedModelPath)
+                if (downloads.Vad && !usingExternalModel && !System.IO.File.Exists(selectedModelPath)
                     && WhisperSetupService.TryAcquire("vad", "Downloading Silero VAD model..."))
                 {
                     var logger = loggerFactory.CreateLogger<WhisperSetupService>();
@@ -63,7 +71,7 @@ namespace WhisperSubs.Providers
                 loggerFactory.CreateLogger<WhisperProvider>().LogWarning(
                     "The detection model {Path} was not found; language detection uses the small model instead", config.DetectionModelPath);
             }
-            if (detectionModelPath == setup.DetectionModelPath && !System.IO.File.Exists(detectionModelPath)
+            if (downloads.DetectionModel && detectionModelPath == setup.DetectionModelPath && !System.IO.File.Exists(detectionModelPath)
                 && WhisperSetupService.TryAcquire("detect", "Downloading language-detection model..."))
             {
                 var logger = loggerFactory.CreateLogger<WhisperSetupService>();
@@ -94,6 +102,19 @@ namespace WhisperSubs.Providers
             return new EngineSwitchProvider(whisper, () => CreateQwen3(Plugin.Instance?.Configuration ?? config, qwen3Logger),
                 loggerFactory.CreateLogger<EngineSwitchProvider>());
         }
+
+        /// <summary>
+        /// Which background model downloads may start: the Silero VAD model when whisper-cli or crispasr is on
+        /// disk (both use it), the small detection model only with whisper-cli. Without the binary the models
+        /// are useless, so an install that transcribes through akou alone fetches nothing. Pure.
+        /// </summary>
+        internal static (bool Vad, bool DetectionModel) LocalDownloads(bool whisperBinaryOnDisk, bool crispAsrBinaryOnDisk)
+            => (whisperBinaryOnDisk || crispAsrBinaryOnDisk, whisperBinaryOnDisk);
+
+        /// <summary>What this server can run itself, from the configuration and the files on disk.</summary>
+        [ExcludeFromCodeCoverage(Justification = "Reads Plugin.Instance, PATH and the filesystem; LocalEngines.From is the tested rule")]
+        public static LocalEngines ProbeLocalEngines(PluginConfiguration config)
+            => LocalEngines.From(config, Plugin.Instance?.DataFolderPath, Environment.GetEnvironmentVariable("PATH"), System.IO.File.Exists);
 
         /// <summary>
         /// The model language detection runs on: "" (the transcription model) when that is chosen; else the
@@ -184,5 +205,35 @@ namespace WhisperSubs.Providers
                 config.VadMaxSpeechDurationS,
                 config.VadSpeechPadMs,
                 config.VadSamplesOverlap);
+    }
+
+    /// <summary>
+    /// What this server can run itself: whisper-cli with its model, Qwen3-ASR (selected, binary and model
+    /// on disk) and Canary. Decides whether the host's own worker joins a pool that has other workers, and
+    /// whether this server's Whisper detects, translates and takes uncovered languages for the
+    /// Qwen3-ASR and akou rows.
+    /// </summary>
+    public readonly record struct LocalEngines(bool WhisperBinary, bool WhisperModel, bool WhisperModelTranslates, bool Qwen3, bool Canary)
+    {
+        /// <summary>whisper-cli and a model: detection, translation (with a translating model), any language.</summary>
+        public bool Whisper => WhisperBinary && WhisperModel;
+
+        /// <summary>This server's Whisper translates into English: installed, and not a turbo model.</summary>
+        public bool WhisperTranslates => Whisper && WhisperModelTranslates;
+
+        /// <summary>The host's worker has an engine for some job.</summary>
+        public bool HasEngine => Whisper || Qwen3 || Canary;
+
+        /// <summary>The probe over the configuration. Pure apart from <paramref name="exists"/>.</summary>
+        public static LocalEngines From(PluginConfiguration config, string? dataDir, string? pathVariable, Func<string, bool> exists)
+        {
+            var model = config.WhisperModelPath;
+            return new LocalEngines(
+                WhisperProvider.BinaryOnDisk(config.WhisperBinaryPath, dataDir, pathVariable, exists),
+                !string.IsNullOrWhiteSpace(model) && exists(model),
+                ModelCatalog.IsTranslationCapable(model),
+                SubtitleProviderFactory.IsQwen3Active(config.TranscriptionEngine, config.CrispAsrBinaryPath, config.Qwen3ModelPath, exists),
+                SubtitleProviderFactory.IsCanaryInstalled(config.CrispAsrBinaryPath, config.CanaryModelPath, exists));
+        }
     }
 }

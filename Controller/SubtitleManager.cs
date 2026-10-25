@@ -235,11 +235,21 @@ namespace WhisperSubs.Controller
             // idioms (`!= false` = default-on; `== true` = default-off) stay here at the impure edge.
             var config = Plugin.Instance?.Configuration;
             var subtitleMode = config?.SubtitleMode ?? SubtitleMode.Full;
+            // What the pool and this item's worker can do: no worker that makes English turns the English
+            // pass off (the run logged it once), and a worker that cannot detect per-chunk languages skips
+            // the forced pass, so neither fails every title.
+            var forcedPossible = DetectsForced(provider);
             var plan = ResolveGenerationPlan(
                 subtitleMode,
                 generateOriginalLanguage: config?.GenerateOriginalLanguageSubtitles != false,
                 enableTranslation: config?.EnableTranslation == true,
-                force: force);
+                force: force,
+                poolTranslates: targetEngines?.ItemsTranslateToEnglish ?? true,
+                forcedPossible: forcedPossible);
+            if (!forcedPossible && (subtitleMode == SubtitleMode.ForcedOnly || subtitleMode == SubtitleMode.FullAndForced))
+            {
+                _logger.LogInformation("Skipping forced subtitles for {ItemName}: they need the local Whisper engine to detect each line's language", item.Name);
+            }
 
             // Which audio-track languages the per-track passes below transcribe. PrimaryOnly restricts
             // the "auto" multi-audio case to just the primary/default track; All (default) keeps every
@@ -309,6 +319,10 @@ namespace WhisperSubs.Controller
                     $"Subtitle generation failed for \"{item.Name}\" — all {attempted} attempt(s) failed.",
                     outcomes.FirstOrDefault(o => o.Outcome == GenerationOutcome.Failed).Error);
             }
+
+            // Nothing was made because the title's language is one no engine here covers: the caller records
+            // that, so the sweep does not try the title again every night.
+            if (NotCoveredOnly(outcomes) is { } notCovered) throw notCovered;
 
             QueueMetadataRefresh(item);
         }
@@ -423,6 +437,65 @@ namespace WhisperSubs.Controller
             Failed
         }
 
+        /// <summary>
+        /// Whether <paramref name="provider"/> can run the forced pass, which detects the language of some 200
+        /// chunks a film and thresholds on each one's probability: every provider but a Qwen3-ASR or akou row
+        /// on a server without Whisper (akou names a language with no confidence, and one job per chunk at
+        /// low priority would take days). Pure.
+        /// </summary>
+        internal static bool DetectsForced(ISubtitleProvider? provider)
+            => provider is not HostAssistedProvider hosted || hosted.HostWhisperInstalled;
+
+        /// <summary>
+        /// The warning a run logs once when its mode wants forced subtitles and no worker can detect for
+        /// them, or null. Pure.
+        /// </summary>
+        internal static string? ForcedSkippedWarning(SubtitleMode mode, bool someWorkerDetects)
+            => someWorkerDetects ? null : mode switch
+            {
+                SubtitleMode.FullAndForced => "Forced subtitles skipped, so Full and Forced runs as Full: they need the local Whisper engine to detect each line's language",
+                SubtitleMode.ForcedOnly => "Forced subtitles skipped, so Forced Only mode makes nothing: they need the local Whisper engine to detect each line's language",
+                _ => null,
+            };
+
+        /// <summary>
+        /// The mode the nightly sweep runs in when the pool cannot do part of it: FullAndForced as Full with no
+        /// worker that detects for the forced pass, and null (nothing to make) for ForcedOnly without one or
+        /// TranslationOnly with no worker that makes English. Unchanged otherwise. Pure.
+        /// </summary>
+        internal static SubtitleMode? EffectiveMode(SubtitleMode mode, bool forcedPossible, bool poolTranslates)
+            => mode switch
+            {
+                SubtitleMode.FullAndForced when !forcedPossible => SubtitleMode.Full,
+                SubtitleMode.ForcedOnly when !forcedPossible => null,
+                SubtitleMode.TranslationOnly when !poolTranslates => null,
+                _ => mode,
+            };
+
+        /// <summary>
+        /// The <see cref="LanguageNotCoveredException"/> to report when nothing was made and at least one pass
+        /// skipped because its language is not covered; null when any pass succeeded or failed, or none was
+        /// uncovered. Pure.
+        /// </summary>
+        internal static LanguageNotCoveredException? NotCoveredOnly(IEnumerable<(GenerationOutcome Outcome, Exception? Error)> outcomes)
+        {
+            LanguageNotCoveredException? found = null;
+            foreach (var (outcome, error) in outcomes)
+            {
+                if (outcome != GenerationOutcome.Skipped) return null;
+                found ??= error as LanguageNotCoveredException;
+            }
+            return found;
+        }
+
+        /// <summary>
+        /// Whether this window of a windowed pass names the title's language before it transcribes: the first
+        /// window of an untagged title. Every later window gets that code, so a 2 h film detects once instead
+        /// of twelve times, and no two windows disagree. Pure.
+        /// </summary>
+        internal static bool DetectOnceForWindows(string? language, double windowSeconds, string? resolvedLanguage)
+            => windowSeconds > 0 && resolvedLanguage == null && Qwen3Provider.NormalizeLanguage(language) == null;
+
         /// <summary>Which generation passes apply for one run, derived from mode + toggles + force.</summary>
         internal readonly record struct GenerationPlan(
             bool FullPassApplies, bool ForcedPassApplies, bool OriginalPassApplies, bool TranslationApplies);
@@ -439,14 +512,19 @@ namespace WhisperSubs.Controller
         /// <paramref name="enableTranslation"/> — never in ForcedOnly.</item>
         /// </list>
         /// </summary>
+        /// <param name="poolTranslates">False when no worker makes English (<see cref="WorkerJob.Requirements"/>):
+        /// the translation pass is off, TranslationOnly included.</param>
+        /// <param name="forcedPossible">False when the item's worker cannot detect per-chunk languages
+        /// (<see cref="DetectsForced"/>): the forced pass is off, so FullAndForced runs as Full.</param>
         internal static GenerationPlan ResolveGenerationPlan(
-            SubtitleMode mode, bool generateOriginalLanguage, bool enableTranslation, bool force)
+            SubtitleMode mode, bool generateOriginalLanguage, bool enableTranslation, bool force,
+            bool poolTranslates = true, bool forcedPossible = true)
         {
             var fullPassApplies = mode == SubtitleMode.Full || mode == SubtitleMode.FullAndForced;
-            var forcedPassApplies = mode == SubtitleMode.ForcedOnly || mode == SubtitleMode.FullAndForced;
+            var forcedPassApplies = forcedPossible && (mode == SubtitleMode.ForcedOnly || mode == SubtitleMode.FullAndForced);
             var wantOriginal = force || generateOriginalLanguage;
-            var translationApplies = mode == SubtitleMode.TranslationOnly
-                || (enableTranslation && fullPassApplies);
+            var translationApplies = poolTranslates && (mode == SubtitleMode.TranslationOnly
+                || (enableTranslation && fullPassApplies));
             return new GenerationPlan(
                 FullPassApplies: fullPassApplies,
                 ForcedPassApplies: forcedPassApplies,
@@ -586,8 +664,18 @@ namespace WhisperSubs.Controller
         private async Task<(GenerationOutcome Outcome, Exception? Error)> GenerateFullSubtitleForLanguageAsync(
             BaseItem item, ISubtitleProvider provider, string lang,
             string mediaPath, bool force, CancellationToken cancellationToken,
-            double continueFromSeconds = -1, string? heldCueText = null, double heldCueDurationSeconds = 0)
+            double continueFromSeconds = -1, string? heldCueText = null, double heldCueDurationSeconds = 0,
+            string? resolvedLanguage = null)
         {
+            // A Qwen3-ASR or akou row on a server without Whisper cannot take a language Qwen3-ASR lacks:
+            // say so once and skip before any audio is extracted.
+            if (continueFromSeconds < 0 && provider is HostAssistedProvider hosted && !hosted.Covers(lang))
+            {
+                var notCovered = hosted.NotCovered(lang);
+                _logger.LogWarning("{ItemName}: {Message}", item.Name, notCovered.Message);
+                return (GenerationOutcome.Skipped, notCovered);
+            }
+
             var config = Plugin.Instance?.Configuration;
             var label = config?.SubtitleLabel ?? SubtitleNaming.DefaultLabel;
             var template = SubtitleNaming.EffectiveTemplate(config?.SubtitleFilenameTemplate);
@@ -703,8 +791,20 @@ namespace WhisperSubs.Controller
                 await ExtractAudioForTranscriptionAsync(
                     mediaPath, tempAudioPath, lang, cancellationToken, extractionOffset, audioStreamIndex,
                     maxDurationSeconds: ExtractionCapSeconds(moreRemains, windowSeconds));
+                // An untagged title in windows: name its language once, on the first window, and give every
+                // window that code.
+                var transcribeLanguage = resolvedLanguage ?? lang;
+                if (DetectOnceForWindows(lang, windowSeconds, resolvedLanguage))
+                {
+                    SubtitleQueueService.Instance.ReportPhase("Detecting language");
+                    var (detected, _) = await provider.DetectLanguageAsync(tempAudioPath, cancellationToken);
+                    transcribeLanguage = Qwen3Provider.NormalizeLanguage(detected)
+                        ?? throw new InvalidOperationException("The language of the audio could not be detected.");
+                    _logger.LogInformation("Detected {Language} for {ItemName}; every window is transcribed as {Language}",
+                        transcribeLanguage, item.Name, transcribeLanguage);
+                }
                 SubtitleQueueService.Instance.ReportPhase("Transcribing");
-                string srtContent = await provider.TranscribeAsync(tempAudioPath, lang, cancellationToken);
+                string srtContent = await provider.TranscribeAsync(tempAudioPath, transcribeLanguage, cancellationToken);
                 if (!string.IsNullOrWhiteSpace(srtContent))
                 {
                     srtContent = await ApplyTimingCorrectionsAsync(
@@ -765,7 +865,8 @@ namespace WhisperSubs.Controller
                     try { if (File.Exists(tempAudioPath)) File.Delete(tempAudioPath); } catch { /* the finally retries */ }
                     var rest = await GenerateFullSubtitleForLanguageAsync(
                         item, provider, lang, mediaPath, force, cancellationToken,
-                        continueFromSeconds: nextWindowStart, heldCueText: nextHeldText, heldCueDurationSeconds: nextHeldDuration);
+                        continueFromSeconds: nextWindowStart, heldCueText: nextHeldText, heldCueDurationSeconds: nextHeldDuration,
+                        resolvedLanguage: Qwen3Provider.NormalizeLanguage(transcribeLanguage));
                     // The top of that call may find the file complete and report a skip; for this run it is a success.
                     return rest.Outcome == GenerationOutcome.Skipped ? (GenerationOutcome.Succeeded, null) : rest;
                 }
@@ -783,6 +884,12 @@ namespace WhisperSubs.Controller
             {
                 _logger.LogInformation("Cancelled full subtitle generation for {ItemName} [{Language}]", item.Name, lang);
                 throw;
+            }
+            catch (LanguageNotCoveredException ex)
+            {
+                // The language was named only now (an untagged title): same answer as the check above.
+                _logger.LogWarning("{ItemName}: {Message}", item.Name, ex.Message);
+                return (GenerationOutcome.Skipped, ex);
             }
             catch (Exception ex)
             {

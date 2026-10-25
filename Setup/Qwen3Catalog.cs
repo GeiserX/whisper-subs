@@ -53,7 +53,13 @@ namespace WhisperSubs.Setup
         /// codes handed to crispasr as <c>-l</c>. A title in any other language stays on Whisper, which
         /// knows it; the 22 Chinese dialects all ride on <c>zh</c>.
         /// </summary>
-        public static readonly IReadOnlySet<string> Languages = new HashSet<string>(StringComparer.Ordinal)
+        public static readonly IReadOnlySet<string> Languages = new HashSet<string>(LanguageCodes(), StringComparer.Ordinal);
+
+        /// <summary>
+        /// The same 30 codes in the model card's order, which is akou's <c>bound_languages</c> order too: the
+        /// explicit <c>languages[]</c> of an akou detection job.
+        /// </summary>
+        public static string[] LanguageCodes() => new[]
         {
             "zh", "en", "yue", "ar", "de", "fr", "es", "pt", "id", "it", "ko", "ru", "th", "vi", "ja",
             "tr", "hi", "ms", "nl", "sv", "da", "fi", "pl", "cs", "fil", "fa", "el", "hu", "mk", "ro",

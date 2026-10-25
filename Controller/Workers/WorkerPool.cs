@@ -202,6 +202,23 @@ namespace WhisperSubs.Controller.Workers
         }
 
         /// <summary>
+        /// True when some worker that takes whole items satisfies <paramref name="predicate"/>, whatever its
+        /// load: for example one whose provider can detect per-chunk languages for the forced pass.
+        /// </summary>
+        public bool AnyItemWorker(Func<ITranscriptionWorker, bool> predicate)
+        {
+            lock (_gate)
+            {
+                foreach (var key in _keys)
+                {
+                    var worker = _byKey[key];
+                    if (worker.Capabilities.TranscribesItems && predicate(worker)) return true;
+                }
+                return false;
+            }
+        }
+
+        /// <summary>
         /// True if ANY worker could serve <paramref name="job"/>'s hard requirements ignoring current load —
         /// i.e. a capable worker exists (maybe busy). The dispatcher checks this before <see cref="AcquireAsync"/>
         /// so a job no worker can EVER serve is failed fast instead of blocking a slot forever.

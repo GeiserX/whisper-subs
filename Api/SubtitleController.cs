@@ -415,6 +415,161 @@ namespace WhisperSubs.Api
         }
 
         /// <summary>
+        /// The addresses a probe of <paramref name="url"/> may connect to, or why it may not (SSRF hardening,
+        /// v4.0.1): this admin endpoint makes the server call an arbitrary URL, so the cloud-metadata link-local
+        /// range (169.254.0.0/16 and IPv6 fe80::/10) is blocked, never a real worker and the highest-value SSRF
+        /// target. Loopback/LAN stay allowed (legitimate worker locations).
+        /// </summary>
+        private static async Task<(string? Error, System.Net.IPAddress[] Addresses)> ResolveProbeAddressesAsync(string url)
+        {
+            if (!System.Uri.TryCreate((url ?? "").Trim(), System.UriKind.Absolute, out var probeUri))
+            {
+                return ("Endpoint URL is invalid.", Array.Empty<System.Net.IPAddress>());
+            }
+
+            if (System.Net.IPAddress.TryParse(probeUri.Host, out var probeIp))
+            {
+                if (Controller.Workers.WorkerProbe.IsBlockedLinkLocal(probeIp))
+                {
+                    return ("Endpoint host is link-local (169.254.0.0/16), which is blocked.", Array.Empty<System.Net.IPAddress>());
+                }
+                return (null, [probeIp]);
+            }
+
+            try
+            {
+                var resolved = await System.Net.Dns.GetHostAddressesAsync(probeUri.Host)
+                    .WaitAsync(TimeSpan.FromSeconds(8));
+                if (resolved.Length == 0)
+                {
+                    return ("Endpoint hostname did not resolve to an address.", Array.Empty<System.Net.IPAddress>());
+                }
+                if (resolved.Any(Controller.Workers.WorkerProbe.IsBlockedLinkLocal))
+                {
+                    return ("Endpoint hostname resolves to a link-local address (169.254.0.0/16), which is blocked.", Array.Empty<System.Net.IPAddress>());
+                }
+                return (null, resolved);
+            }
+            catch (System.Exception)
+            {
+                return ("Endpoint hostname did not resolve (DNS lookup failed).", Array.Empty<System.Net.IPAddress>());
+            }
+        }
+
+        /// <summary>A no-redirect handler whose connections go only to <paramref name="pinnedAddresses"/>.</summary>
+        private static System.Net.Http.SocketsHttpHandler CreatePinnedProbeHandler(System.Net.IPAddress[] pinnedAddresses, TimeSpan connectTimeout)
+        {
+            var handler = new System.Net.Http.SocketsHttpHandler
+            {
+                AllowAutoRedirect = false,
+                ConnectTimeout = connectTimeout
+            };
+            // SECURITY-REVIEW: pin both probe connections to the address validated above so DNS
+            // rebinding cannot switch the hostname to link-local metadata between validation and use.
+            handler.ConnectCallback = async (context, cancellationToken) =>
+            {
+                Exception? lastError = null;
+                foreach (var pinnedAddress in pinnedAddresses)
+                {
+                    var socket = new System.Net.Sockets.Socket(
+                        pinnedAddress.AddressFamily,
+                        System.Net.Sockets.SocketType.Stream,
+                        System.Net.Sockets.ProtocolType.Tcp);
+                    try
+                    {
+                        await socket.ConnectAsync(
+                            new System.Net.IPEndPoint(pinnedAddress, context.DnsEndPoint.Port),
+                            cancellationToken);
+                        return new System.Net.Sockets.NetworkStream(socket, ownsSocket: true);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        socket.Dispose();
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        socket.Dispose();
+                        lastError = ex;
+                    }
+                }
+                throw new System.Net.Http.HttpRequestException(
+                    "No validated endpoint address accepted the connection", lastError);
+            };
+            return handler;
+        }
+
+        /// <summary>
+        /// Checks an akou server for the "Connect an akou server" section and akou worker rows: GET /v1/server
+        /// (no key) and GET /v1/keys/me (with the key), read by <see cref="Providers.AkouServerCheck"/>. The key
+        /// is sent from this server, never from the browser to akou. Never throws.
+        /// </summary>
+        [HttpPost("Setup/TestAkou")]
+        public async Task<ActionResult> TestAkou([FromBody] AkouTestRequest request)
+        {
+            if (request == null || string.IsNullOrWhiteSpace(request.Url))
+            {
+                return Ok(new { ok = false, message = "Enter the akou server's URL first.", problems = new[] { "Enter the akou server's URL first." } });
+            }
+            var (validationOk, validationError) = Controller.Workers.WorkerConfigValidation.Validate(
+                new Configuration.WhisperWorker { ApiUrl = request.Url, Dialect = Controller.Workers.WorkerDialect.Akou, MaxConcurrency = 1 });
+            if (!validationOk)
+            {
+                return Ok(new { ok = false, message = validationError, problems = new[] { validationError } });
+            }
+            var (probeError, pinned) = await ResolveProbeAddressesAsync(request.Url);
+            if (probeError != null)
+            {
+                return Ok(new { ok = false, message = probeError, problems = new[] { probeError } });
+            }
+            var result = await CheckAkouAsync(request.Url, request.Key, pinned);
+            return Ok(new
+            {
+                ok = result.Ok,
+                version = result.Version,
+                presets = result.Presets,
+                bestAvailable = result.BestAvailable,
+                boundLanguages = result.BoundLanguages,
+                queueDepth = result.QueueDepth,
+                problems = result.Problems,
+                message = result.Message,
+            });
+        }
+
+        [ExcludeFromCodeCoverage(Justification = "HTTP I/O against the admin's akou; the verdict is the unit-tested AkouServerCheck.Evaluate")]
+        private static async Task<Providers.AkouCheckResult> CheckAkouAsync(string url, string? key, System.Net.IPAddress[] pinned)
+        {
+            var baseUrl = url.Trim().TrimEnd('/');
+            using var handler = CreatePinnedProbeHandler(pinned, TimeSpan.FromSeconds(8));
+            using var http = new System.Net.Http.HttpClient(handler) { Timeout = TimeSpan.FromSeconds(15) };
+
+            async Task<(int Status, string Body)> GetAsync(string path, string? bearer)
+            {
+                using var request = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Get, baseUrl + path);
+                if (!string.IsNullOrWhiteSpace(bearer))
+                {
+                    request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", bearer.Trim());
+                }
+                using var response = await http.SendAsync(request, System.Net.Http.HttpCompletionOption.ResponseHeadersRead);
+                var body = await Providers.RemoteWhisperProvider.ReadUtf8BoundedAsync(response.Content, 256 * 1024, CancellationToken.None);
+                return ((int)response.StatusCode, body);
+            }
+
+            try
+            {
+                var server = await GetAsync("/v1/server", null);
+                (int Status, string Body)? me = string.IsNullOrWhiteSpace(key) ? null : await GetAsync("/v1/keys/me", key);
+                return Providers.AkouServerCheck.Evaluate(server.Status, server.Body, me?.Status, me?.Body);
+            }
+            catch (Exception ex) when (ex is System.Net.Http.HttpRequestException or OperationCanceledException or InvalidOperationException)
+            {
+                var reason = ex is OperationCanceledException ? "no answer within 15 s" : ex.Message;
+                var problem = $"Could not reach {Controller.Workers.UpstreamErrorSanitizer.SanitizeEndpoint(baseUrl)}: {reason}";
+                return new Providers.AkouCheckResult(false, null, Array.Empty<string>(), false, Array.Empty<string>(), null, new[] { problem });
+            }
+        }
+
+        /// <summary>
         /// Tests a worker endpoint (v4.0 config UI): POSTs a tiny silent WAV to its transcription route so
         /// the admin can confirm reachability + auth + a working transcribe path before saving the worker,
         /// without touching the media library. Never throws — always returns a shaped {ok, message} result.
@@ -443,85 +598,21 @@ namespace WhisperSubs.Api
                 return Ok(new { ok = false, message = error });
             }
 
-            // SSRF hardening (v4.0.1): this admin endpoint makes the server POST to an arbitrary URL. Block
-            // the cloud-metadata link-local range (169.254.0.0/16 and IPv6 fe80::/10) — never a real worker,
-            // the highest-value SSRF target. Loopback/LAN stay allowed (legitimate worker locations).
-            if (!System.Uri.TryCreate(worker.ApiUrl.Trim(), System.UriKind.Absolute, out var probeUri))
+            var (probeError, pinnedAddresses) = await ResolveProbeAddressesAsync(worker.ApiUrl);
+            if (probeError != null)
             {
-                return Ok(new { ok = false, message = "Endpoint URL is invalid." });
-            }
-
-            System.Net.IPAddress[] pinnedAddresses;
-            if (System.Net.IPAddress.TryParse(probeUri.Host, out var probeIp))
-            {
-                if (Controller.Workers.WorkerProbe.IsBlockedLinkLocal(probeIp))
-                {
-                    return Ok(new { ok = false, message = "Endpoint host is link-local (169.254.0.0/16), which is blocked." });
-                }
-                pinnedAddresses = [probeIp];
-            }
-            else
-            {
-                try
-                {
-                    var resolved = await System.Net.Dns.GetHostAddressesAsync(probeUri.Host)
-                        .WaitAsync(TimeSpan.FromSeconds(8));
-                    if (resolved.Length == 0)
-                    {
-                        return Ok(new { ok = false, message = "Endpoint hostname did not resolve to an address." });
-                    }
-                    if (resolved.Any(Controller.Workers.WorkerProbe.IsBlockedLinkLocal))
-                    {
-                        return Ok(new { ok = false, message = "Endpoint hostname resolves to a link-local address (169.254.0.0/16), which is blocked." });
-                    }
-                    pinnedAddresses = resolved;
-                }
-                catch (System.Exception)
-                {
-                    return Ok(new { ok = false, message = "Endpoint hostname did not resolve (DNS lookup failed)." });
-                }
+                return Ok(new { ok = false, message = probeError });
             }
 
             System.Net.Http.SocketsHttpHandler CreatePinnedHandler(TimeSpan connectTimeout)
+                => CreatePinnedProbeHandler(pinnedAddresses, connectTimeout);
+
+            // An akou row is checked the akou way: what the server is and runs, and whether the key takes jobs.
+            // A silent WAV to its OpenAI route would test a model name akou does not use.
+            if (Controller.Workers.WorkerDialect.Normalize(worker.Dialect) == Controller.Workers.WorkerDialect.Akou)
             {
-                var handler = new System.Net.Http.SocketsHttpHandler
-                {
-                    AllowAutoRedirect = false,
-                    ConnectTimeout = connectTimeout
-                };
-                // SECURITY-REVIEW: pin both probe connections to the address validated above so DNS
-                // rebinding cannot switch the hostname to link-local metadata between validation and use.
-                handler.ConnectCallback = async (context, cancellationToken) =>
-                {
-                    Exception? lastError = null;
-                    foreach (var pinnedAddress in pinnedAddresses)
-                    {
-                        var socket = new System.Net.Sockets.Socket(
-                            pinnedAddress.AddressFamily,
-                            System.Net.Sockets.SocketType.Stream,
-                            System.Net.Sockets.ProtocolType.Tcp);
-                        try
-                        {
-                            await socket.ConnectAsync(
-                                new System.Net.IPEndPoint(pinnedAddress, context.DnsEndPoint.Port),
-                                cancellationToken);
-                            return new System.Net.Sockets.NetworkStream(socket, ownsSocket: true);
-                        }
-                        catch (OperationCanceledException)
-                        {
-                            socket.Dispose();
-                            throw;
-                        }
-                        catch (Exception ex)
-                        {
-                            socket.Dispose();
-                            lastError = ex;
-                        }
-                    }
-                    throw new System.Net.Http.HttpRequestException(
-                        "No validated endpoint address accepted the connection", lastError);
-                };
-                return handler;
+                var akou = await CheckAkouAsync(worker.ApiUrl, worker.ApiKey, pinnedAddresses);
+                return Ok(new { ok = akou.Ok, warning = false, message = akou.Message });
             }
 
             var url = worker.ApiUrl.TrimEnd('/') + "/v1/audio/transcriptions";
@@ -1775,6 +1866,13 @@ namespace WhisperSubs.Api
     }
 
     /// <summary>Body for the worker "Test connection" probe (v4.0): the endpoint + optional key/model to try.</summary>
+    /// <summary>The "Connect an akou server" Test: the server's URL and the key to check.</summary>
+    public class AkouTestRequest
+    {
+        public string? Url { get; set; }
+        public string? Key { get; set; }
+    }
+
     public class WorkerTestRequest
     {
         public string? ApiUrl { get; set; }
