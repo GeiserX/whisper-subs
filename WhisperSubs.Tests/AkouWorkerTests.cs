@@ -25,10 +25,10 @@ namespace WhisperSubs.Tests;
 /// </summary>
 public class AkouWorkerTests
 {
-    private const string Done = """{"language":"es","duration":1,"text":"Hola.","segments":[{"start":0.0,"end":0.9,"text":"Hola."}]}""";
+    private const string Done = """{"status":"done","language":"es","duration_s":1,"text":"Hola.","segments":[{"s":0.0,"e":0.9,"text":"Hola.","speaker":null}],"words":[{"w":"Hola.","s":null,"e":null,"c":null}]}""";
 
     [Fact]
-    public async Task Job_IsSubmittedLowPriority_ReadAsVerboseJson_AndDeleted()
+    public async Task Job_IsSubmittedLowPriority_ReadAsNativeJson_AndDeleted()
     {
         var akou = new FakeAkou(statuses: new[] { "running", "done" }, result: Done);
         var wav = Wav();
@@ -41,7 +41,7 @@ public class AkouWorkerTests
             Assert.Equal("es", akou.SubmittedFields["language"]);
             Assert.Equal("best", akou.SubmittedFields["model"]);
             Assert.Equal("whisper-subs", akou.SubmittedFields["title"]);
-            Assert.Contains("GET /v1/jobs/job_1/result?format=verbose_json", akou.Calls);
+            Assert.Contains("GET /v1/jobs/job_1/result?format=json", akou.Calls);
             Assert.Equal("DELETE /v1/jobs/job_1", akou.Calls.Last());
             Assert.All(akou.Calls.Where(c => c.StartsWith("GET /v1/jobs/job_1?", StringComparison.Ordinal)), c => Assert.EndsWith("?wait=60", c));
         }
@@ -313,7 +313,7 @@ public class AkouWorkerTests
                 var err = error == null ? "" : $",\"error\":{{\"code\":\"{error}\",\"message\":\"{error}\"}}";
                 return Json(HttpStatusCode.OK, $"{{\"id\":\"job_1\",\"status\":\"{status}\"{err}}}");
             }
-            if (request.Method == HttpMethod.Get && path == "/v1/jobs/job_1/result?format=verbose_json")
+            if (request.Method == HttpMethod.Get && path == "/v1/jobs/job_1/result?format=json")
             {
                 return Json(HttpStatusCode.OK, result);
             }

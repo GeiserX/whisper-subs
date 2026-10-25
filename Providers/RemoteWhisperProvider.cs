@@ -219,7 +219,10 @@ namespace WhisperSubs.Providers
         {
             // Only a CrispASR server takes a non-English target; an OpenAI-compatible endpoint would answer
             // it with an English subtitle, so that dialect refuses before anything is uploaded.
-            if (WorkerDialect.IsHostAssisted(_dialect) && (translate || !string.IsNullOrWhiteSpace(targetLanguage)))
+            // An akou server that offers its translate task makes English; anything else on a Qwen3-ASR or
+            // akou row only transcribes.
+            var akouTranslation = AkouTranslatesRequest(_dialect, _akouTranslates, translate, targetLanguage);
+            if (WorkerDialect.IsHostAssisted(_dialect) && !akouTranslation && (translate || !string.IsNullOrWhiteSpace(targetLanguage)))
             {
                 throw new NotSupportedException("A Qwen3-ASR or akou server only transcribes; it is never given a translation.");
             }
@@ -234,7 +237,7 @@ namespace WhisperSubs.Providers
 
             if (_dialect == WorkerDialect.Akou)
             {
-                return await TranscribeAkouJobAsync(audioPath, language, cancellationToken).ConfigureAwait(false);
+                return await TranscribeAkouJobAsync(audioPath, language, akouTranslation, cancellationToken).ConfigureAwait(false);
             }
 
             var canaryTarget = CanaryTargetOrNull(translate, targetLanguage);
@@ -1211,13 +1214,13 @@ namespace WhisperSubs.Providers
 
         /// <summary>
         /// The akou dialect: submit the audio as a file job at <see cref="AkouJobPriority"/>, wait for it, read
-        /// the transcript as OpenAI <c>verbose_json</c>, and delete the job whatever happened, which removes
+        /// the result in akou's own <c>json</c> (words with their times), and delete the job whatever happened, which removes
         /// the uploaded audio and the result from the server. The realtime deadline starts when akou starts the
         /// job: the time it waits behind akou's other clients is what the low priority asks for, so that wait is
-        /// bounded only by the job's maximum hours. Segments longer than a cue should be are split
-        /// (<see cref="AkouCueSplit"/>), since <c>best</c> gives no word times.
+        /// bounded only by the job's maximum hours. Cues follow akou's word times where it gives them
+        /// (<see cref="AkouTranscript"/>). With <paramref name="translate"/> it is akou's translate task.
         /// </summary>
-        private async Task<string> TranscribeAkouJobAsync(string audioPath, string language, CancellationToken cancellationToken)
+        private async Task<string> TranscribeAkouJobAsync(string audioPath, string language, bool translate, CancellationToken cancellationToken)
         {
             var sourceAudioBytes = new FileInfo(audioPath).Length;
             var (uploadPath, uploadIsTemporary, effectiveCodec) = await RemoteAudioEncoder
@@ -1231,11 +1234,17 @@ namespace WhisperSubs.Providers
                         UploadPreflight.ExplainIfBlocked(sourceAudioBytes, uploadBytes, _maxUploadBytes, effectiveCodec));
                 }
 
-                _logger.LogInformation("Sending audio to akou: {Endpoint} [lang={Language}, priority={Priority}]",
-                    UpstreamErrorSanitizer.SanitizeEndpoint(_apiUrl + "/v1/jobs"), language, _akou.Priority);
-                var body = await RunAkouJobAsync(uploadPath, effectiveCodec, sourceAudioBytes,
-                    BuildAkouJobFields(_model, language, _akou.Priority, _akou.Languages), "?format=verbose_json", cancellationToken).ConfigureAwait(false);
-                var srt = AkouTranscript(body, SourceAudioDurationSeconds(sourceAudioBytes));
+                _logger.LogInformation("Sending audio to akou: {Endpoint} [lang={Language}, priority={Priority}, task={Task}]",
+                    UpstreamErrorSanitizer.SanitizeEndpoint(_apiUrl + "/v1/jobs"), language, _akou.Priority, translate ? "translate" : "transcribe");
+                var fields = translate
+                    ? BuildAkouTranslateFields(language, _akou.Priority)
+                    : BuildAkouJobFields(_model, language, _akou.Priority, _akou.Languages);
+                var body = await RunAkouJobAsync(uploadPath, effectiveCodec, sourceAudioBytes, fields, "?format=json", cancellationToken).ConfigureAwait(false);
+                foreach (var warning in AkouWarnings(body))
+                {
+                    _logger.LogInformation("akou: {Warning}", warning);
+                }
+                var srt = AkouTranscript(body, SourceAudioDurationSeconds(sourceAudioBytes), _wordCueMaxChars);
                 if (srt.Length == 0)
                 {
                     _logger.LogInformation("akou heard no speech in this audio; no cues");
@@ -1256,12 +1265,256 @@ namespace WhisperSubs.Providers
         }
 
         /// <summary>
-        /// The subtitle in an akou <c>verbose_json</c> result: one cue per segment, split where a segment is
-        /// longer than <see cref="AkouCueSplit.MaxChars"/> characters or <see cref="AkouCueSplit.MaxSeconds"/>
-        /// seconds. No speech is an empty subtitle. Pure.
+        /// The subtitle in an akou job result (<c>format=json</c>). Where akou gives word times, cues are cut at
+        /// them (<see cref="CutCues"/>, <paramref name="wordCueMaxChars"/> characters, 42 when unset), as for a
+        /// Qwen3-ASR server's aligned words. A segment whose words have no times (an akou without the word-time
+        /// aligner, a piece the aligner could not time, a translation) is split by <see cref="AkouCueSplit"/>;
+        /// so is every segment when the words do not spell the segments. No speech is an empty subtitle. Pure.
         /// </summary>
-        internal static string AkouTranscript(string body, double audioDurationSeconds)
-            => TranscriptFromResponse(body, audioDurationSeconds, 0, null, cues => AkouCueSplit.Split(cues));
+        internal static string AkouTranscript(string body, double audioDurationSeconds, int wordCueMaxChars = 0)
+        {
+            JsonDocument document;
+            try
+            {
+                document = JsonDocument.Parse(body.TrimStart('﻿', ' ', '\t', '\r', '\n'));
+            }
+            catch (JsonException ex)
+            {
+                throw new InvalidOperationException("akou answered with malformed JSON instead of a transcript.", ex);
+            }
+            using (document)
+            {
+                var root = document.RootElement;
+                if (root.ValueKind != JsonValueKind.Object
+                    || !root.TryGetProperty("segments", out var segmentArray)
+                    || segmentArray.ValueKind != JsonValueKind.Array)
+                {
+                    throw new InvalidOperationException("akou answered without timed segments.");
+                }
+
+                var segments = new List<(double Start, double End, string Text)>();
+                var previousStart = -1d;
+                foreach (var segment in segmentArray.EnumerateArray())
+                {
+                    if (segment.ValueKind != JsonValueKind.Object
+                        || !TryReadSeconds(segment, "s", out var start)
+                        || !TryReadSeconds(segment, "e", out var end)
+                        || end < start
+                        || start < previousStart
+                        || (audioDurationSeconds > 0 && end > audioDurationSeconds + 5))
+                    {
+                        throw new InvalidOperationException("akou answered a segment with invalid or out-of-order times.");
+                    }
+                    previousStart = start;
+                    var text = segment.TryGetProperty("text", out var t) && t.ValueKind == JsonValueKind.String
+                        ? NormalizeCueText(t.GetString()).Replace('\n', ' ').Trim()
+                        : "";
+                    segments.Add((start, end, text));
+                }
+
+                var words = new List<(string Text, double? Start, double? End)>();
+                if (root.TryGetProperty("words", out var wordArray) && wordArray.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var w in wordArray.EnumerateArray())
+                    {
+                        if (w.ValueKind != JsonValueKind.Object
+                            || !w.TryGetProperty("w", out var wt)
+                            || wt.ValueKind != JsonValueKind.String) continue;
+                        var text = NormalizeCueText(wt.GetString()).Replace('\n', ' ').Trim();
+                        if (text.Length == 0) continue;
+                        double? ws = TryReadSeconds(w, "s", out var a) ? a : null;
+                        double? we = TryReadSeconds(w, "e", out var b) ? b : null;
+                        words.Add((text, ws, we));
+                    }
+                }
+
+                segments.RemoveAll(s => s.Text.Length == 0);
+                if (segments.Count == 0) return string.Empty;
+                if (words.Any(w => w.Start is { } s && audioDurationSeconds > 0 && s > audioDurationSeconds + 5))
+                {
+                    throw new InvalidOperationException("akou answered a word time past the end of the audio.");
+                }
+
+                var maxChars = wordCueMaxChars > 0 ? wordCueMaxChars : Qwen3Provider.DefaultMaxLineLength;
+                var cues = AkouCues(segments, words, maxChars);
+                var output = new StringBuilder();
+                var index = 1;
+                foreach (var (start, end, text) in cues)
+                {
+                    var startTimestamp = FormatSrtTimestamp(start);
+                    var endTimestamp = FormatSrtTimestamp(end);
+                    if (startTimestamp.TotalMilliseconds >= endTimestamp.TotalMilliseconds) continue;
+                    if (output.Length > 0) output.AppendLine();
+                    output.Append(index++).AppendLine();
+                    output.Append(startTimestamp.Text).Append(" --> ").Append(endTimestamp.Text).AppendLine();
+                    output.AppendLine(text);
+                }
+                if (index == 1)
+                {
+                    throw new InvalidOperationException("akou answered no segment longer than one millisecond.");
+                }
+                return output.ToString().TrimEnd();
+            }
+        }
+
+        /// <summary>
+        /// The cues of an akou result: every word timed, cues cut from all of them; else segment by segment, a
+        /// segment whose words all have times cut from its words and each run of the others split by
+        /// <see cref="AkouCueSplit"/>; words that do not spell the segments, every segment split. Pure.
+        /// </summary>
+        internal static List<(double Start, double End, string Text)> AkouCues(
+            IReadOnlyList<(double Start, double End, string Text)> segments,
+            IReadOnlyList<(string Text, double? Start, double? End)> words,
+            int maxChars)
+        {
+            static bool Timed((string Text, double? Start, double? End) w) => w.Start != null && w.End != null;
+            static TimedWord Word((string Text, double? Start, double? End) w)
+                => new(w.Text, w.Start!.Value, Math.Max(w.End!.Value, w.Start!.Value));
+
+            if (words.Count > 0 && words.All(Timed))
+            {
+                return CutCues(words.Select(Word).ToList(), maxChars);
+            }
+            var groups = WordsBySegment(segments, words);
+            if (groups == null) return AkouCueSplit.Split(segments);
+
+            var cues = new List<(double Start, double End, string Text)>();
+            var untimed = new List<(double Start, double End, string Text)>();
+            for (var i = 0; i < segments.Count; i++)
+            {
+                if (groups[i].Count > 0 && groups[i].All(Timed))
+                {
+                    cues.AddRange(AkouCueSplit.Split(untimed));
+                    untimed.Clear();
+                    cues.AddRange(CutCues(groups[i].Select(Word).ToList(), maxChars));
+                }
+                else
+                {
+                    untimed.Add(segments[i]);
+                }
+            }
+            cues.AddRange(AkouCueSplit.Split(untimed));
+            // A cue may not run into the next one's start.
+            for (var i = 0; i < cues.Count - 1; i++)
+            {
+                if (cues[i].End > cues[i + 1].Start && cues[i + 1].Start > cues[i].Start)
+                {
+                    cues[i] = (cues[i].Start, cues[i + 1].Start, cues[i].Text);
+                }
+            }
+            return cues;
+        }
+
+        /// <summary>
+        /// The words of each segment, in order: they spell its text, spaces aside, as akou's own subtitle
+        /// rendering reads them. Null when they do not. Pure.
+        /// </summary>
+        internal static List<List<(string Text, double? Start, double? End)>>? WordsBySegment(
+            IReadOnlyList<(double Start, double End, string Text)> segments,
+            IReadOnlyList<(string Text, double? Start, double? End)> words)
+        {
+            static string Bare(string text) => Regex.Replace(text, @"\s+", "");
+            var groups = new List<List<(string Text, double? Start, double? End)>>();
+            var next = 0;
+            foreach (var segment in segments)
+            {
+                var want = Bare(segment.Text);
+                var got = new StringBuilder();
+                var mine = new List<(string Text, double? Start, double? End)>();
+                while (got.Length < want.Length && next < words.Count)
+                {
+                    got.Append(Bare(words[next].Text));
+                    mine.Add(words[next++]);
+                }
+                if (got.ToString() != want) return null;
+                groups.Add(mine);
+            }
+            return next == words.Count ? groups : null;
+        }
+
+        /// <summary>akou's <c>warnings</c> on a result, such as why its word times are missing. Pure.</summary>
+        internal static IReadOnlyList<string> AkouWarnings(string body)
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(body);
+                if (document.RootElement.ValueKind != JsonValueKind.Object
+                    || !document.RootElement.TryGetProperty("warnings", out var warnings)
+                    || warnings.ValueKind != JsonValueKind.Array) return Array.Empty<string>();
+                return warnings.EnumerateArray()
+                    .Where(w => w.ValueKind == JsonValueKind.String)
+                    .Select(w => w.GetString()!.Length > 300 ? w.GetString()![..300] : w.GetString()!)
+                    .Take(5)
+                    .ToList();
+            }
+            catch (JsonException)
+            {
+                return Array.Empty<string>();
+            }
+        }
+
+        /// <summary>Whether the akou server's <c>GET /v1/server</c> offered its translate task, at the last refresh.</summary>
+        public bool AkouTranslates => _akouTranslates;
+
+        private volatile bool _akouTranslates;
+
+        /// <summary>
+        /// Reads <c>GET /v1/server</c> and remembers whether akou offers its translate task. Called at the start
+        /// of each run; never throws, and keeps the last answer when the server does not answer.
+        /// </summary>
+        [ExcludeFromCodeCoverage(Justification = "HTTP I/O; AkouServerCheck.Translates is unit-tested")]
+        public async Task RefreshAkouServerAsync(CancellationToken cancellationToken)
+        {
+            if (_dialect != WorkerDialect.Akou) return;
+            try
+            {
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                cts.CancelAfter(TimeSpan.FromSeconds(15));
+                using var request = new HttpRequestMessage(HttpMethod.Get, _apiUrl + "/v1/server");
+                var body = await SendForBodyAsync(request, MaxAkouJobBytes, cts.Token).ConfigureAwait(false);
+                var translates = AkouServerCheck.Translates(body);
+                if (translates != _akouTranslates)
+                {
+                    _logger.LogInformation(translates
+                        ? "The akou server at {Endpoint} translates into English; its row makes the English subtitles"
+                        : "The akou server at {Endpoint} has no translate task", UpstreamErrorSanitizer.SanitizeEndpoint(_apiUrl));
+                }
+                _akouTranslates = translates;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogWarning("Could not read {Endpoint}/v1/server: {Error}", UpstreamErrorSanitizer.SanitizeEndpoint(_apiUrl), ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// An English translation on an akou row whose server offers the translate task. akou translates into
+        /// English only, so a Canary target never qualifies. Pure.
+        /// </summary>
+        internal static bool AkouTranslatesRequest(string dialect, bool serverTranslates, bool translate, string? targetLanguage)
+        {
+            var target = (targetLanguage ?? "").Trim();
+            return dialect == WorkerDialect.Akou && serverTranslates
+                && (translate || target.Length > 0)
+                && (target.Length == 0 || string.Equals(target, "en", StringComparison.OrdinalIgnoreCase));
+        }
+
+        /// <summary>
+        /// The form fields of an akou translate job: <c>task=translate</c>, the source language (or
+        /// <c>auto</c>), the priority and the title. No model: akou picks Canary or Whisper by the language and
+        /// refuses <c>best</c> for a translation. Pure.
+        /// </summary>
+        internal static IReadOnlyList<(string Name, string Value)> BuildAkouTranslateFields(string? language, int priority = AkouJobPriority)
+        {
+            var code = string.IsNullOrWhiteSpace(language) ? "auto" : language.Trim();
+            return new List<(string Name, string Value)>
+            {
+                ("task", "translate"),
+                ("language", code),
+                ("priority", priority.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+                ("title", "whisper-subs"),
+            };
+        }
 
         /// <summary>Seconds of audio per akou language-detection job.</summary>
         internal const double AkouDetectionSliceSeconds = 30;

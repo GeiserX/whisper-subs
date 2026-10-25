@@ -115,6 +115,7 @@ namespace WhisperSubs.ScheduledTasks
             var pool = queue.GetPool(config, _loggerFactory, forTask: true);
             // What the pool can do this run: with no worker that makes English, translation is off; with no
             // worker that can detect per-chunk languages, so is the forced pass. Each is said once, here.
+            await pool.RefreshAsync(cancellationToken);
             var requirements = SubtitleQueueService.RunRequirements(config, pool, _logger);
             var poolTranslates = requirements.TranslateTarget != null;
             var forcedPossible = pool.AnyItemWorker(w => SubtitleManager.DetectsForced(w.Provider));

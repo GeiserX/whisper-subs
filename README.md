@@ -46,7 +46,7 @@
 3. Install **WhisperSubs** from **Catalog** and restart Jellyfin.
 4. Open **Dashboard** > **Plugins** > **My Plugins** > **WhisperSubs**. Under **Connect an akou server**, enter the URL (`http://akou:8476`, the container's name on the shared network) and the `ak_` key, press **Test**, then **Save**. Press **Generate Subtitles** on any title.
 
-A few minutes later the player offers a subtitle track named **WhisperSubs**, and `<title>.<lang>.WhisperSubs.srt` sits next to the media file. akou covers 30 languages and names the language of untagged titles. English translation, forced subtitles and the other languages need the local Whisper engine: open **Transcribe on this server instead** on the same page to download it, or skip akou and use that engine alone, as the [setup guide](https://geiserx.github.io/whisper-subs/docs/setup/) explains; on a macOS or Windows server you install `whisper-cli` yourself and set its path. It runs on Jellyfin 10.11 and 12.1, with or without a GPU.
+A few minutes later the player offers a subtitle track named **WhisperSubs**, and `<title>.<lang>.WhisperSubs.srt` sits next to the media file. akou covers 30 languages, names the language of untagged titles and, from the akou release with its translate task, makes the English translation too. Forced subtitles and the other languages need the local Whisper engine, and so does English translation with an older akou: open **Transcribe on this server instead** on the same page to download it, or skip akou and use that engine alone, as the [setup guide](https://geiserx.github.io/whisper-subs/docs/setup/) explains; on a macOS or Windows server you install `whisper-cli` yourself and set its path. It runs on Jellyfin 10.11 and 12.1, with or without a GPU.
 
 ## Documentation
 

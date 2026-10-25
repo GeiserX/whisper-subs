@@ -39,8 +39,9 @@
                         <span id="akouTestResult" role="status" aria-live="polite" style="font-size:0.9em;"></span>
                     </div>
                     <div class="fieldDescription" style="margin-top:0.75em;">
-                        Save fills the first akou row under Workers (or adds one). Without the local Whisper engine below:
-                        translation into English is skipped, Full and Forced runs as Full, Forced Only makes nothing, and a title tagged with a
+                        Save fills the first akou row under Workers (or adds one). An akou server that offers its translate task
+                        (Test says "translates into English") makes the English translation too. Without the local Whisper engine below:
+                        translation into English is skipped on an akou without that task, Full and Forced runs as Full, Forced Only makes nothing, and a title tagged with a
                         language Qwen3-ASR does not cover goes to another worker that is not akou, or is skipped with a note in the log.
                         An untagged title is named as one of akou's 30 languages, so one spoken in another language gets a subtitle in the
                         nearest of them. Install the local engine to get those back.
@@ -3438,7 +3439,7 @@
 
                     row.appendChild(WhisperSubsConfig._workerSelect(
                         'Dialect', 'wkDialect',
-                        [['openai', 'OpenAI-compatible'], ['crispasr', 'CrispASR server (Canary)'], ['crispasr-qwen3', 'CrispASR server (Qwen3-ASR, transcribe only)'], ['akou', 'akou server (low-priority jobs, transcribe only)']],
+                        [['openai', 'OpenAI-compatible'], ['crispasr', 'CrispASR server (Canary)'], ['crispasr-qwen3', 'CrispASR server (Qwen3-ASR, transcribe only)'], ['akou', 'akou server (low-priority jobs)']],
                         WhisperSubsConfig.normalizeDialect(w.Dialect),
                         'OpenAI-compatible covers whisper-server, OpenAI and Groq. CrispASR server (Canary) is crispasr --server with the Canary model, for the extra translation targets. CrispASR server (Qwen3-ASR) is crispasr --server with a Qwen3-ASR model: it only transcribes, cues are cut from its word timestamps, and this server\'s Whisper detects languages for it.'));
                     // akou rows only: job priority, seconds of audio per job, and the languages[] bound.

@@ -531,6 +531,7 @@ namespace WhisperSubs.Api
                 bestAvailable = result.BestAvailable,
                 boundLanguages = result.BoundLanguages,
                 queueDepth = result.QueueDepth,
+                translates = result.Translates,
                 problems = result.Problems,
                 message = result.Message,
             });

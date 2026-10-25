@@ -38,7 +38,7 @@ docker exec akou akou keys create --name whisper-subs --scope jobs
 
 On the plugin's settings page, under **Connect an akou server**, enter `http://akou:8476` (the service name works because both containers share the Compose network) and the `ak_` key, press **Test**, then **Save**. No port needs publishing for Jellyfin to reach it. akou keeps settings, keys and jobs under `/data` and models under `/models`; both must be writable by uid 1000, so a bind-mounted folder needs `chown 1000:1000` on the host. The [akou server guide](https://github.com/GeiserX/akou/blob/main/docs/server.md) covers GPU images and the rest.
 
-akou alone transcribes the 30 languages Qwen3-ASR covers and names the language of untagged titles. English translation, forced subtitles and other languages need the local Whisper engine; the sections below are how to get it running on each platform. See [akou server workers](remote-workers.md#akou-server-workers) for what changes with and without it.
+akou alone transcribes the 30 languages Qwen3-ASR covers, names the language of untagged titles and, when the server offers its translate task, makes the English translation. Forced subtitles and other languages need the local Whisper engine, and so does English translation with an older akou; the sections below are how to get it running on each platform. See [akou server workers](remote-workers.md#akou-server-workers) for what changes with and without it.
 
 ## What all of these have in common
 

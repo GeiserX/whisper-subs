@@ -13,11 +13,12 @@ namespace WhisperSubs.Providers
         bool BestAvailable,
         IReadOnlyList<string> BoundLanguages,
         int? QueueDepth,
-        IReadOnlyList<string> Problems)
+        IReadOnlyList<string> Problems,
+        bool Translates = false)
     {
         /// <summary>One line for the page: what was found when it works, every problem when it does not.</summary>
         public string Message => Ok
-            ? $"akou {Version}: takes jobs, best is installed" + (QueueDepth is { } depth ? $", {depth} job(s) queued." : ".")
+            ? $"akou {Version}: takes jobs, best is installed" + (Translates ? ", translates into English" : "") + (QueueDepth is { } depth ? $", {depth} job(s) queued." : ".")
             : string.Join(" ", Problems);
     }
 
@@ -127,8 +128,30 @@ namespace WhisperSubs.Providers
                     break;
             }
 
-            return new AkouCheckResult(problems.Count == 0, version, presets, best, bound, depth, problems);
+            return new AkouCheckResult(problems.Count == 0, version, presets, best, bound, depth, problems, Translates(root));
         }
+
+        /// <summary>
+        /// Whether akou offers its translate task (<c>capabilities.translate</c> in <c>GET /v1/server</c>, from
+        /// the akou release that added it): a job with <c>task=translate</c> then makes the English subtitle. Pure.
+        /// </summary>
+        internal static bool Translates(string? serverBody)
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(serverBody ?? "");
+                return Translates(document.RootElement);
+            }
+            catch (JsonException)
+            {
+                return false;
+            }
+        }
+
+        private static bool Translates(JsonElement root)
+            => root.ValueKind == JsonValueKind.Object
+                && root.TryGetProperty("capabilities", out var caps) && caps.ValueKind == JsonValueKind.Object
+                && caps.TryGetProperty("translate", out var t) && t.ValueKind == JsonValueKind.True;
 
         private const string NotAkou = "This is not an akou server: GET /v1/server did not answer as akou.";
 

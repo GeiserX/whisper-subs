@@ -101,7 +101,7 @@ public class AkouDefaultTests
     [Fact]
     public void AkouTranscript_SplitsSegmentsWithoutWords()
     {
-        const string body = """{"text":"x","segments":[{"start":0,"end":24,"text":"First sentence is here and it is long enough to matter. Second one follows it closely. And a third sentence ends this long segment."}]}""";
+        const string body = """{"text":"x","segments":[{"s":0,"e":24,"text":"First sentence is here and it is long enough to matter. Second one follows it closely. And a third sentence ends this long segment."}]}""";
         var srt = RemoteWhisperProvider.AkouTranscript(body, 30);
         var cues = Regex.Matches(srt, @"^\d+$", RegexOptions.Multiline).Count;
         Assert.True(cues >= 4, srt);
@@ -350,7 +350,7 @@ public class AkouDefaultTests
     {
         var akou = new MultiJobAkou(
             """{"language":"en","segments":[]}""",
-            """{"language":"en","duration":1,"text":"Hi.","segments":[{"start":0,"end":0.8,"text":"Hi."}]}""");
+            """{"language":"en","duration_s":1,"text":"Hi.","segments":[{"s":0,"e":0.8,"text":"Hi.","speaker":null}],"words":[{"w":"Hi.","s":null,"e":null,"c":null}]}""");
         var wav = Wav(3_000);
         try
         {
