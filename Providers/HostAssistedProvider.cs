@@ -15,7 +15,9 @@ namespace WhisperSubs.Providers
     /// <para>
     /// An akou row works without a Whisper here: when this server has none, akou names the language itself
     /// (<see cref="RemoteWhisperProvider.DetectAkouLanguageAsync"/>), and a language Qwen3-ASR does not cover
-    /// ends as <see cref="LanguageNotCoveredException"/> instead of a missing-file error.
+    /// ends as <see cref="LanguageNotCoveredException"/> instead of a missing-file error. An akou server that
+    /// offers its translate task (<see cref="RemoteWhisperProvider.AkouTranslates"/>) makes the English
+    /// translation too.
     /// </para>
     /// </summary>
     public sealed class HostAssistedProvider : ISubtitleProvider
@@ -51,7 +53,10 @@ namespace WhisperSubs.Providers
         {
             if (IsTranslation(translate, targetLanguage))
             {
-                return await Whisper.TranscribeAsync(audioPath, language, cancellationToken, translate, targetLanguage);
+                // An akou server with its translate task makes English itself; otherwise this server's Whisper does.
+                return Akou is { } akou && RemoteWhisperProvider.AkouTranslatesRequest(akou.Dialect, akou.AkouTranslates, translate, targetLanguage)
+                    ? await Remote.TranscribeAsync(audioPath, language, cancellationToken, translate, targetLanguage)
+                    : await Whisper.TranscribeAsync(audioPath, language, cancellationToken, translate, targetLanguage);
             }
             // Untagged audio arrives as "auto". The server would then run the detection this dialect
             // exists to avoid, so the language is named first (this server's Whisper, or akou when there

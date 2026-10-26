@@ -126,7 +126,8 @@ namespace WhisperSubs.Controller.Workers
                 config.JobTimeoutRealtimeFactor, config.JobMinTimeoutSeconds, config.JobMaxTimeoutHours,
                 httpClient: null, maxUploadBytes: maxUploadBytes, uploadCodec: uploadCodec,
                 dialect: normalizedDialect,
-                wordCueMaxChars: qwen3Server ? WordCueMaxChars(config.SubtitleMaxLineLength) : 0,
+                // A Qwen3-ASR server's aligned words and akou's word times are cut into cues of this length.
+                wordCueMaxChars: qwen3Server || normalizedDialect == WorkerDialect.Akou ? WordCueMaxChars(config.SubtitleMaxLineLength) : 0,
                 maxConcurrentRequests: requests,
                 akou: akou);
             if (WorkerDialect.IsHostAssisted(normalizedDialect))
@@ -135,7 +136,7 @@ namespace WhisperSubs.Controller.Workers
                 provider = new HostAssistedProvider(provider, LocalWhisper(config, loggerFactory));
             }
 
-            return new TranscriptionWorker(id, name, provider, new WorkerCapabilities
+            var capabilities = new WorkerCapabilities
             {
                 IsLocal = false,
                 CostWeight = costWeight,
@@ -146,7 +147,11 @@ namespace WhisperSubs.Controller.Workers
                 TranslateTargets = translateTargets,
                 TranscribesItems = WorkerTargets.TranscribesItems(dialect, translateTargets),
                 HostAssisted = provider is HostAssistedProvider,
-            });
+            };
+            // An akou row also makes English while its server offers the translate task, read at each run.
+            return provider is HostAssistedProvider { Remote: RemoteWhisperProvider { Dialect: WorkerDialect.Akou } akouProvider }
+                ? new AkouTranscriptionWorker(id, name, provider, capabilities, akouProvider)
+                : new TranscriptionWorker(id, name, provider, capabilities);
         }
 
         /// <summary>

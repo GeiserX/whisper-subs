@@ -1040,6 +1040,8 @@ namespace WhisperSubs.Controller
                         // a Jellyfin restart. Now a build failure is caught, _isDraining is reset, and — since
                         // the config is broken — we do NOT re-fire (started stays false), avoiding a busy-loop.
                         var pool = GetPool(config, loggerFactory, forTask: false);
+                        // What each worker's server offers now (an akou server's translate task) decides the run.
+                        await pool.RefreshAsync(cancellationToken);
                         var requirements = RunRequirements(config, pool, logger);
                         started = true;
                         paused = await DispatchDrainAsync(manager, pool, requirements, countProcessed: true, config.JobMaxRetries, logger, cancellationToken);

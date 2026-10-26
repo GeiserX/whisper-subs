@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
@@ -199,6 +200,20 @@ namespace WhisperSubs.Controller.Workers
                     return false;
                 }
             }
+        }
+
+        /// <summary>
+        /// Lets every worker re-read what its server offers (<see cref="ITranscriptionWorker.RefreshAsync"/>), all
+        /// at once, before a run asks the pool what it can do.
+        /// </summary>
+        public Task RefreshAsync(CancellationToken cancellationToken)
+        {
+            List<ITranscriptionWorker> workers;
+            lock (_gate)
+            {
+                workers = _keys.Select(k => _byKey[k]).ToList();
+            }
+            return Task.WhenAll(workers.Select(w => w.RefreshAsync(cancellationToken)));
         }
 
         /// <summary>
