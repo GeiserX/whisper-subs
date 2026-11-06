@@ -37,7 +37,7 @@ jobs:
     name: Docs site builds
     runs-on: ubuntu-latest
     # Least privilege: this job only reads the tree and runs a static build. Checkout leaves its
-    # token in .git/config by default, which pip and every MkDocs plugin would inherit.
+    # token in .git/config by default, which pip and the docs build would inherit.
     permissions:
       contents: read
     steps:
@@ -45,17 +45,23 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: '3.12'
+          python-version: '3.13'
           cache: pip
           cache-dependency-path: docs/requirements-docs.txt
 
       - name: Install
         run: pip install -r docs/requirements-docs.txt
 
+      # `python -m zensical`, never the bare `zensical` command; zensical.toml sets strict too.
       - name: Build
-        run: mkdocs build --strict
+        run: python -m zensical build --clean --strict
+
+      # What the strict build does not check: a page in no nav entry, a nav entry for a missing
+      # file, a missing image, a /rooted link, a raw <title> in a page.
+      - name: Check the built site
+        run: python -I .github/scripts/site-check.py site
 
       # /docs/setup/ is compiled into every shipped plugin DLL, so it has to exist in the output
       # whatever the docs structure does. A generator emitting its own manifest.json at the site root

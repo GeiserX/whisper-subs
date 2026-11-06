@@ -1,9 +1,10 @@
 /* docs/stylesheets/theme.css: the site takes its colours from the banner.
  *
  * banner.svg is an amber plate (#F2B33D) with the wordmark in #1A1A1A and the
- * tagline in #3A2A12. The header is that plate; the page body stays Material's
- * own dark or light surface, because an amber page would be unreadable.
- * mkdocs.yml sets `primary: custom` and `accent: custom`, so Material paints
+ * tagline in #3A2A12. The amber is the accent; the header and the page body
+ * stay the theme's own dark or light surface, because an amber page would be
+ * unreadable.
+ * zensical.toml sets `primary: custom` and `accent: custom`, so the theme paints
  * nothing until these variables exist.
  */
 :root {
@@ -41,9 +42,12 @@
  *
  * Only the first topic is styled. Material puts the site name in one
  * .md-header__topic and the page title in a second one, and swaps them on
- * scroll. Styling both would change every page title too. */
+ * scroll. Styling both would change every page title too.
+ *
+ * No colour: the header takes the page surface in both schemes, so the name
+ * keeps the default text colour. The old #1A1A1A (the wordmark on the amber
+ * plate) vanished on the dark scheme. */
 .md-header__topic:first-child .md-ellipsis {
-  color: #1a1a1a;
   font-weight: 800;
   letter-spacing: -0.01em;
 }

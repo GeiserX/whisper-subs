@@ -1,0 +1,131 @@
+# Generated from mkdocs.yml by mkdocs-to-zensical.py; the why of every block is in
+# new-repo/templates/zensical.toml. Edit this file, not mkdocs.yml, which is gone.
+
+[project]
+site_name = "WhisperSubs"
+site_url = "https://geiserx.github.io/whisper-subs/"
+site_description = "Local AI subtitle generation for Jellyfin. Audio never leaves your server unless you say so."
+repo_url = "https://github.com/GeiserX/whisper-subs"
+repo_name = "GeiserX/whisper-subs"
+edit_uri = "edit/main/docs/"
+# A warning is a broken link or a broken anchor; both fail the build. What
+# Zensical does not check (a page in no nav entry, a nav entry for a missing
+# file, a missing image, a /rooted link) is checked by
+# .github/scripts/site-check.py after the build.
+strict = true
+extra_css = ["stylesheets/theme.css"]
+# Files under docs/ that are not pages. Zensical publishes every file in docs/
+# whether or not it is in the nav, so anything that is not a page must be
+# listed here. A name with a capital letter is a repo-facing note; design/,
+# research/ and notes/ hold material read on GitHub (docs/design/ has the
+# CrispASR translation design, which links repo files relatively).
+exclude_docs = """
+[A-Z]*.md
+design/
+research/
+notes/
+requirements-docs.txt
+"""
+# The nav title equals each page's H1.
+nav = [
+  { Home = "index.md" },
+  { "Getting started" = [
+      { "Setup guide" = "docs/setup.md" },
+      { "Choosing a whisper binary variant" = "choosing-a-variant.md" },
+      { "Platform-specific installs" = "install-topologies.md" },
+    ] },
+  { "Running it" = [
+      { "Settings reference" = "configuration.md" },
+      { "Remote workers and hosted providers" = "remote-workers.md" },
+    ] },
+  { Help = [
+      { "Diagnostics and the status endpoint" = "diagnostics.md" },
+      { Limitations = "limitations.md" },
+    ] },
+  { Reference = [
+      { "Features in detail" = "features.md" },
+      { "API and internals" = "api-and-internals.md" },
+    ] },
+]
+
+[project.validation]
+invalid_links = true
+invalid_link_anchors = true
+
+[project.theme]
+language = "en"
+variant = "modern"
+logo = "images/logo.svg"
+favicon = "images/icon.svg"
+font = false
+features = [
+  "navigation.tabs",
+  "navigation.sections",
+  "navigation.expand",
+  "navigation.top",
+  "content.code.copy",
+  "content.action.edit",
+  "search.highlight",
+  "toc.follow",
+  "navigation.instant",
+  "navigation.instant.progress",
+  "content.action.copy",
+]
+icon.repo = "fontawesome/brands/github"
+
+[[project.theme.palette]]
+scheme = "slate"
+primary = "custom"
+accent = "custom"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to light mode"
+
+[[project.theme.palette]]
+scheme = "default"
+primary = "custom"
+accent = "custom"
+toggle.icon = "lucide/moon"
+toggle.name = "Switch to dark mode"
+
+[[project.extra.social]]
+icon = "fontawesome/brands/github"
+link = "https://github.com/GeiserX/whisper-subs"
+
+[[project.extra.social]]
+icon = "fontawesome/brands/docker"
+link = "https://hub.docker.com/r/drumsergio/whisper-subs-worker"
+
+[project.plugins.search]
+
+# The setup guide lives at docs/docs/setup.md so that its URL stays
+# /docs/setup/: that path is compiled into every shipped plugin DLL
+# (Web/configPage.html) and the README links it. /setup/, the name the other
+# nine pages would suggest, forwards there.
+[project.plugins.redirects.redirect_maps]
+"setup.md" = "docs/setup.md"
+
+[project.plugins.llmstxt.sections]
+Documentation = ["*.md", "*/*.md"]
+
+[project.markdown_extensions]
+admonition = {}
+"pymdownx.details" = {}
+"pymdownx.superfences".custom_fences = [
+  { name = "mermaid", class = "mermaid", format = "pymdownx.superfences.fence_code_format" },
+]
+"pymdownx.tabbed".alternate_style = true
+"pymdownx.highlight".anchor_linenums = true
+"pymdownx.inlinehilite" = {}
+"pymdownx.snippets".base_path = [".", "docs"]
+"pymdownx.snippets".check_paths = true
+"pymdownx.mark" = {}
+# attr_list also keeps the explicit heading ids the pages carry
+# (`## Quick start {#quick-start}`), so every anchor the old site had still resolves.
+attr_list = {}
+md_in_html = {}
+# Renders :material-xxx: shortcodes as icons. The grid cards on index.md use
+# them; without this they print as literal text.
+"pymdownx.emoji".emoji_index = "zensical.extensions.emoji.twemoji"
+"pymdownx.emoji".emoji_generator = "zensical.extensions.emoji.to_svg"
+tables = {}
+toc.permalink = true
