@@ -21,7 +21,7 @@ Thumbs.db
 *.log
 build_log.txt
 
-# MkDocs build output; pages.yml and ci.yml build it fresh
+# Docs build output; pages.yml and ci.yml build it fresh
 site/
 
 # Beads tracker: bead text lives in a private Dolt remote, never in this public repository.

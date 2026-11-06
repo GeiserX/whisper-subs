@@ -29,9 +29,10 @@ updates:
       - dependency-name: Jellyfin.Model
   - package-ecosystem: pip
     directory: /docs
+    # Monthly: Zensical releases every week or two, and the strict build plus
+    # site-check is what proves each bump.
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
     commit-message:
       prefix: deps
     labels:
@@ -48,13 +49,6 @@ updates:
         applies-to: security-updates
         patterns:
           - '*'
-    ignore:
-      # Material 9.7 is its last feature line and the next major needs MkDocs 2; take that on purpose.
-      - dependency-name: '*'
-        update-types:
-          - version-update:semver-major
-      # mkdocs-redirects 1.2.3 depends on properdocs, a MkDocs fork, and caps mkdocs<=1.6.1. Stay on 1.2.2.
-      - dependency-name: mkdocs-redirects
   - package-ecosystem: github-actions
     directory: /
     schedule:

@@ -11,9 +11,10 @@ on:
     branches: [main]
     paths:
       - 'docs/**'
-      - 'mkdocs.yml'
+      - 'zensical.toml'
       - 'manifest.json'
       - '.github/workflows/pages.yml'
+      - '.github/scripts/site-check.py'
   # A push made by the release workflow's GITHUB_TOKEN does NOT create a
   # workflow run, so the manifest commit can never trigger the push event
   # above. Fire on the release run completing instead.
@@ -48,9 +49,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: '3.12'
+          python-version: '3.13'
           cache: pip
           cache-dependency-path: docs/requirements-docs.txt
 
@@ -59,13 +60,17 @@ jobs:
         continue-on-error: true
         run: pip install -r docs/requirements-docs.txt
 
-      # mkdocs.yml sets `strict: true`; the flag keeps the build strict even
-      # if someone removes that line. Output: site/ (the MkDocs default).
+      # zensical.toml sets `strict = true`; the flag keeps the build strict even
+      # if someone removes that line. Output: site/. Then site-check.py checks
+      # what the strict build does not (a page in no nav entry, a missing
+      # image, a /rooted link); either failing counts as a failed docs build.
       - name: Build documentation
         id: docs
         if: steps.deps.outcome == 'success'
         continue-on-error: true
-        run: mkdocs build --strict
+        run: |
+          python -m zensical build --clean --strict
+          python -I .github/scripts/site-check.py site
 
       # The release workflow attaches manifest.json to every release, so the
       # newest release carries the authoritative catalog. There is no read of
